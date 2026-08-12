@@ -21,6 +21,7 @@ import json
 import math
 import os
 import random
+import threading
 import re
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,27 @@ from .srt import clean_text, load_cues
 # ---------------------------------------------------------------------------
 # Prompt
 # ---------------------------------------------------------------------------
+
+# --- OpenRouter throttle -----------------------------------------------------------------------
+# One draw is one call, so the pipeline is already sequential; this exists because everything ELSE
+# is not. Benchmarks fanned six models out at once and two runs of the same episode were briefly
+# alive together, and from the provider's side that is one account hammering it. The gate makes the
+# limit a property of the process rather than of whoever remembered to be careful.
+_OR_GATE = threading.Semaphore(3)
+_OR_LAST = [0.0]
+_OR_LOCK = threading.Lock()
+
+
+def _throttle(gap_ms: float) -> None:
+    """Keep at least gap_ms between the starts of two OpenRouter calls, process-wide."""
+    if gap_ms <= 0:
+        return
+    with _OR_LOCK:
+        wait = (_OR_LAST[0] + gap_ms / 1000.0) - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _OR_LAST[0] = time.monotonic()
+
 
 CONDENSE_SYSTEM = """Jesteś doświadczonym autorem tekstów lektorskich do polskiej telewizji.
 
@@ -384,12 +406,14 @@ def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format
     for attempt in range(retries):
         started = time.time()
         try:
-            r = requests.post(
-                f"{s['openrouter_base']}/chat/completions",
-                headers=headers,
-                json=body,
-                timeout=int(s.get("timeout_s", 600)),
-            )
+            with _OR_GATE:
+                _throttle(float(s.get("request_gap_ms", 400)))
+                r = requests.post(
+                    f"{s['openrouter_base']}/chat/completions",
+                    headers=headers,
+                    json=body,
+                    timeout=int(s.get("timeout_s", 600)),
+                )
         except requests.RequestException as exc:
             last = f"{type(exc).__name__}: {exc}"
             _sleep(attempt, retries, None)
@@ -570,6 +594,23 @@ def condense_episode(cues, target_ids: set[int], cfg: Config, api_key: str) -> C
         say(f"  re-roll {attempt + 1}/{rerolls}: {got}/{len(budgets)} inside budget, "
             f"below the {need} needed")
 
+    # Escalate rather than settle: a model that has drawn badly five times in a row will not draw
+    # well on the sixth, and a steadier one earns its higher price exactly here, where the cheap
+    # one has already had every chance. The best draw across both models wins, so this can only
+    # improve the result.
+    fallback = str(s.get("fallback_model") or "")
+    if best is not None and fits(best) < need and fallback and fallback != s.get("openrouter_model"):
+        say(f"  {fits(best)}/{len(budgets)} after {attempts} draw(s) - escalating to {fallback}")
+        alt = _ScriptOverride(cfg, dict(cfg.raw["script"], openrouter_model=fallback))
+        for _ in range(int(s.get("fallback_rerolls", 1)) + 1):
+            out = _condense_once(cues, target_ids, alt, api_key)
+            attempts += 1
+            spent.extend(out.calls)
+            if fits(out) > fits(best):
+                best = out
+            if fits(best) >= need or out.error:
+                break
+
     assert best is not None
     # Report the whole bill, not just the winning attempt's share of it.
     best.calls = spent
@@ -582,6 +623,21 @@ def condense_episode(cues, target_ids: set[int], cfg: Config, api_key: str) -> C
         say(f"  !! settled for {fits(best)}/{len(budgets)} inside budget after {attempts} "
             f"attempt(s); the rest will be sped up")
     return best
+
+
+class _ScriptOverride:
+    """A cfg wearing a different script.* table, so a fallback draw needs no plumbing through _ask."""
+
+    def __init__(self, cfg, script_table: dict):
+        self._cfg = cfg
+        self.raw = dict(cfg.raw)
+        self.raw["script"] = script_table
+
+    def __getitem__(self, key):
+        return self.raw[key]
+
+    def __getattr__(self, name):
+        return getattr(self._cfg, name)
 
 
 def _condense_once(cues, target_ids: set[int], cfg: Config, api_key: str) -> CondenseOutcome:

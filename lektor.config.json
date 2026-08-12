@@ -45,12 +45,18 @@
     "max_retries": 4,
     "timeout_s": 600,
     "measured_usd_per_episode": 0.014,
-    "_measured_usd_per_episode_note": "Reference figure for `cost` only, and only until an episode has really run. It must track openrouter_model AND the re-roll policy above, so it is the ~$0.014 an episode that luna averages at roughly 2.3 draws: a single clean draw of S02E01 (598 cues, 210 over budget) billed $0.0089, of which $0.0060 was the whole-episode call and $0.0029 the targeted retry. For comparison, the same episode through luna-pro in one draw billed $0.0233. Once <episode>.spend.json exists, `cost` reports what OpenRouter actually billed instead, read from usage.cost."
+    "_measured_usd_per_episode_note": "Reference figure for `cost` only, and only until an episode has really run. It must track openrouter_model AND the re-roll policy above, so it is the ~$0.014 an episode that luna averages at roughly 2.3 draws: a single clean draw of S02E01 (598 cues, 210 over budget) billed $0.0089, of which $0.0060 was the whole-episode call and $0.0029 the targeted retry. For comparison, the same episode through luna-pro in one draw billed $0.0233. Once <episode>.spend.json exists, `cost` reports what OpenRouter actually billed instead, read from usage.cost.",
+    "fallback_model": "openai/gpt-5.6-terra",
+    "_fallback_model_note": "Used when openrouter_model has burned every re-roll and still missed accept_fit_ratio. Re-rolling a model that has drawn badly five times in a row is throwing good money after bad; terra is steadier per draw (158/210 at effort medium against luna's swing between 67 and 207) and costs about 4x, which is worth it only here. The best reply across every draw from both models wins, so escalating can never make the result worse.",
+    "fallback_rerolls": 1,
+    "_fallback_rerolls_note": "Extra draws from the fallback model beyond its first. Two attempts is the point of diminishing returns; past that the honest move is to accept and speed the stragglers up.",
+    "request_gap_ms": 400,
+    "_request_gap_ms_note": "Minimum spacing between the starts of two OpenRouter calls, enforced process-wide alongside a hard cap of 3 concurrent calls. A single episode is already one call per draw, so this is not for the pipeline: it is for everything around it - benchmarks fanning several models out at once, or two runs of the same episode briefly overlapping - which from the provider's side is one account hammering it and shows up as requests queueing behind each other."
   },
   "timing": {
-    "overhead_ms": 47.0,
+    "overhead_ms": 80.0,
     "ms_per_char": 73.5,
-    "_duration_model_note": "Fitted over 598 real cues read by the configured voice: ms = 414 + 73.5 * chars before trimming. Nearly all of that fixed cost was dead air the ELEVENLABS engine pads on: 44 ms before the speech and 323 ms after it, measured over 180 clips. That backend trims it (audio.trim_silence), which leaves ~47 ms of real overhead and hands the rest back to the short cues where the timing actually fails. Piper is not in the same boat and does not trim: measured over its own output it pads 17 ms in front and 70 ms behind, and trim_silence keeps 40 ms of padding either side anyway, so there is nothing there to win. Set MS_PER_CHAR to 0 to fall back to a flat chars/second model: the fallback is gated on ms_per_char, not on overhead_ms, and overhead_ms of 0 only drops the fixed cost from the linear model. WARNING, re-measured on S02E01 with the numbers as they ship now (overhead 47, ms_per_char 73.5, max_borrow_ms 1500): 230 of 598 cues over budget, against 195 for the flat 14.5 chars/s model on the same windows. The older 210 -> 381 figure quoted here and in the README was fitted before trimming was accounted for AND before max_borrow_ms went from 700 to 1500; it does not describe this config. Whether accept_fit_ratio 0.9 is reachable at 230 marked cues has not been measured: the only recorded real run (see the spend file) marked 210 and landed 207 inside budget on the first draw.",
+    "_duration_model_note": "Fitted per voice by generating cues of every length and regressing duration on character count. Mateusz measures ms = 80 + 73.4 * chars, Bill measured 47 + 73.5, so the speaking rate is a property of the model rather than the voice and only the fixed cost moves. A flat chars_per_second misses that fixed part, and it dominates the short cues that make up half an episode. Most of it used to be dead air the engine pads on, which backends now trim. Re-fit when changing voice_id; set ms_per_char to 0 to fall back to the flat model.",
     "chars_per_second": 14.5,
     "_chars_per_second_note": "Speaking rate of the chosen voice at speed=1.0. Run `lektor.py calibrate` to measure it for real; the measured value is cached per backend+voice+model in the work dir. What it actually drives is the ElevenLabs backend's per-line speed prediction. It reaches the character budgets ONLY through budget_for's 1000/cps fallback, i.e. with ms_per_char at 0; with ms_per_char set, calibrating changes no budget at all. Backends that control duration directly (piper) ignore it entirely.",
     "max_borrow_ms": 1500,
@@ -72,8 +78,8 @@
     "concurrency": 8,
     "_concurrency_note": "Default parallel TTS calls. ElevenLabs caps this per plan. Flash/Turbo: Free 4, Starter 6, Creator 10, Pro 20, Scale/Business 30. Other models: Free 2, Starter 3, Creator 5, Pro 10, Scale/Business 15. 8 leaves headroom under the Creator/Flash cap of 10. A backend may override it in its own sub-table.",
     "elevenlabs": {
-      "voice_id": "pqHfZKP75CvOlQylNhV4",
-      "_voice_id_note": "Bill - Wise, Mature, Balanced. Chosen by ear over both Polish-labelled voices on the account (Mikolaj EmspiS7CSUabPeqBcrAP, Kamil mr1ubFaLs5xVrh1EqWtc) and over Zoltan wpOwQ2sCIZtmDUmuuAws and Daniel onwK4e9ZLuTAKqWW03F9. A calm, low, unexpressive male voice is the classic Polish lektor; the voice being labelled English does not matter because the multilingual models carry the timbre, not the accent. Comparison clips live in <input_dir>/_lektor/glosy/.",
+      "voice_id": "MM9TwXLP67IpAXY0UOGg",
+      "_voice_id_note": "Mateusz - Polish Legend Narrator, a low calm baritone from the shared library. Chosen by ear from ten candidates read over the same 150 s of S02E03, a window picked for English names and lines that invite acting. Replaced Bill pqHfZKP75CvOlQylNhV4, which was fine at first and wore thin: a lektor has to be transparent, and the test is whether you stop noticing him. Comparison clips are in <input_dir>/_lektor/glosy/.",
       "model_id": "eleven_flash_v2_5",
       "_model_id_note": "eleven_flash_v2_5 is flat, cheap ($0.05/1000 chars) and gets 2x the concurrency; eleven_multilingual_v2 and eleven_v3 are warmer at $0.10/1000 chars. Compare them with `lektor.py sample`.",
       "output_format": "mp3_44100_128",
@@ -153,12 +159,15 @@
     "program_gain_db": 4.0,
     "_program_gain_db_note": "Makeup applied to the original in the gaps. The source is quiet, and a lektor track should not make the film quieter than watching it without one.",
     "attack_ms": 180,
-    "release_ms": 420,
+    "release_ms": 600.0,
     "pre_roll_ms": 250,
     "post_roll_ms": 350,
     "limiter_ceiling_db": -1.0,
     "limiter_release_ms": 120,
-    "_limiter_note": "The limiter is sample-accurate: instantaneous attack, one-pole release over limiter_release_ms, and the reduction is carried across the 10 s encode blocks so a peak never steps the gain at a block seam. A peak therefore pulls down its own neighbourhood and nothing else. Shorter releases recover faster and pump more; 120 ms is long enough to hold a reduction across a syllable and short enough to be back before the next line."
+    "_limiter_note": "The limiter is sample-accurate: instantaneous attack, one-pole release over limiter_release_ms, and the reduction is carried across the 10 s encode blocks so a peak never steps the gain at a block seam. A peak therefore pulls down its own neighbourhood and nothing else. Shorter releases recover faster and pump more; 120 ms is long enough to hold a reduction across a syllable and short enough to be back before the next line.",
+    "hold_ms": 1500.0,
+    "_hold_ms_note": "Keep the original ducked through any gap shorter than this instead of letting it climb back and drop again. Measured without it on one episode: 324 full recoveries, 198 of them under a second, the programme swinging 11 dB at up to 52 dB/s between neighbouring lines. That pumping is what a listener hears as the film being chopped; holding through the short gaps removes it and costs only the brief moments of original audio nobody was going to hear anyway.",
+    "_release_ms_note": "How slowly the original climbs back once the lektor really has finished. Slower than the attack on purpose, and slower still since hold_ms landed, because every remaining recovery is now a real one and should feel gradual."
   },
   "encode": {
     "codec": "ac3",
