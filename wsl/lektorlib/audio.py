@@ -6,6 +6,7 @@ second generation.
 
 from __future__ import annotations
 
+import re
 import subprocess
 
 import numpy as np
@@ -106,3 +107,36 @@ def resample_linear(audio: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     n = int(round(audio.size * dst_sr / src_sr))
     idx = np.linspace(0, audio.size - 1, n)
     return np.interp(idx, np.arange(audio.size), audio).astype(np.float32)
+
+def apply_shelf(cfg, audio: np.ndarray, sr: int, gain_db: float, freq: float = 4000.0) -> np.ndarray:
+    """High shelf on the lektor, so a voice can be matched in tone and not just in level.
+
+    Two voices at the same loudness do not sound equally present: measured band by band at equal
+    RMS, one candidate had 3.6 dB less energy above 4 kHz than the one it replaced, which is where
+    consonants live. The result reads as "further away and quieter" and cannot be fixed with the
+    fader - turning it up only makes the mud louder. Shelving the top back restores the balance at
+    the same loudness.
+    """
+    if abs(gain_db) < 0.05 or audio.size == 0:
+        return audio
+    args = [
+        cfg.ffmpeg, "-hide_banner", "-loglevel", "error",
+        "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+        "-af", f"highshelf=f={freq:g}:g={gain_db:g}",
+        "-f", "f32le", "-ar", str(sr), "-ac", "1", "pipe:1",
+    ]
+    p = subprocess.run(args, input=audio.astype(np.float32).tobytes(), capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"shelf failed: {p.stderr.decode()[:300]}")
+    return np.frombuffer(p.stdout, dtype=np.float32).copy()
+
+
+def measure_lufs(cfg, audio: np.ndarray, sr: int) -> float:
+    """Integrated loudness (BS.1770 K-weighted), which is what a listener compares, not RMS."""
+    if audio.size == 0:
+        return float("nan")
+    args = [cfg.ffmpeg, "-hide_banner", "-nostats", "-f", "f32le", "-ar", str(sr), "-ac", "1",
+            "-i", "pipe:0", "-af", "ebur128=peak=none", "-f", "null", "-"]
+    p = subprocess.run(args, input=audio.astype(np.float32).tobytes(), capture_output=True)
+    hits = re.findall(r"I:\s*(-?\d+\.\d+)\s*LUFS", p.stderr.decode())
+    return float(hits[-1]) if hits else float("nan")

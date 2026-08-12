@@ -167,7 +167,23 @@
     "_limiter_note": "The limiter is sample-accurate: instantaneous attack, one-pole release over limiter_release_ms, and the reduction is carried across the 10 s encode blocks so a peak never steps the gain at a block seam. A peak therefore pulls down its own neighbourhood and nothing else. Shorter releases recover faster and pump more; 120 ms is long enough to hold a reduction across a syllable and short enough to be back before the next line.",
     "hold_ms": 1500.0,
     "_hold_ms_note": "Keep the original ducked through any gap shorter than this instead of letting it climb back and drop again. Measured without it on one episode: 324 full recoveries, 198 of them under a second, the programme swinging 11 dB at up to 52 dB/s between neighbouring lines. That pumping is what a listener hears as the film being chopped; holding through the short gaps removes it and costs only the brief moments of original audio nobody was going to hear anyway.",
-    "_release_ms_note": "How slowly the original climbs back once the lektor really has finished. Slower than the attack on purpose, and slower still since hold_ms landed, because every remaining recovery is now a real one and should feel gradual."
+    "_release_ms_note": "How slowly the original climbs back once the lektor really has finished. Slower than the attack on purpose, and slower still since hold_ms landed, because every remaining recovery is now a real one and should feel gradual.",
+    "voice_presence_db": 6.0,
+    "voice_presence_hz": 4000.0,
+    "_voice_presence_note": "High shelf on the lektor, matched by measurement rather than taste. Two voices at the same loudness are not equally present: band by band at equal RMS, Mateusz had 3.6 dB less above 4 kHz than Bill, where consonants live, and that reads as further away and quieter. A shelf of 6 dB at 4 kHz puts his 4-8 kHz band at 57.6 against Bill's 57.5, so the two are interchangeable in tone. Re-measure when changing voice_id; turning the fader up instead only makes the mud louder.",
+    "voice_trim_db": 1.5,
+    "_voice_trim_note": "Per-voice level nudge on top of voice_over_program_db, for when the tone is right and the balance still is not. Cheap to retune: the speech is cached, so only the mix is rebuilt.",
+    "duck_mode": "spectral",
+    "_duck_mode_note": "broadband turns the whole programme down under the lektor; spectral turns down only the band the voice actually occupies and leaves the bass and the air alone. The second is what a multiband sidechain does in a studio (FabFilter Pro-MB, sonible smart:comp, TrackSpacer): music keeps its weight and sparkle, the midrange makes room, and because the whole spectrum is not moving there is far less to hear as pumping. Masking happens in the midrange, so ducking the rest was paying with impact for nothing.",
+    "duck_band_hz": [
+      300,
+      4000
+    ],
+    "_duck_band_note": "The band the lektor competes for. Below it is weight and above it is air, neither of which masks speech. Split with a Linkwitz-Riley crossover (ffmpeg acrossover) because the two halves must sum back to the original when their gains are equal; band-passing the middle and calling the difference the rest does NOT work, since an IIR band-pass shifts phase and the difference still carries the midrange at full level. That shortcut measured 6.8 dB LOUDER in the speech band than broadband ducking, the opposite of the intent.",
+    "duck_mid_db": -11.0,
+    "_duck_mid_note": "How far the midrange drops under the lektor in spectral mode. Deeper than the broadband duck_to_db on purpose: it is the only band being touched, so it can afford to move more.",
+    "duck_rest_db": -1.5,
+    "_duck_rest_note": "What happens to bass and air under the lektor. Almost nothing, by design - just enough to keep a loud passage from swallowing him whole."
   },
   "encode": {
     "codec": "ac3",

@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 import soundfile as sf
 
 from . import say
-from .audio import resample_linear
+from .audio import apply_shelf, resample_linear
 from .config import Config, cps_path
 from .backends import get_backend
 from .backends.base import Backend, Utterance
@@ -232,8 +232,13 @@ def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | Non
 
             say("  assembling")
             voice, spans = assemble_voice(cfg, clips, total_samples)
+            # Tone first, level second: the shelf changes what the voice sounds like, so the
+            # normalisation that follows has to see the finished sound.
+            voice = apply_shelf(cfg, voice, sr, float(m.get("voice_presence_db", 0.0)),
+                                float(m.get("voice_presence_hz", 4000.0)))
             program_db = measure_program_level(orig_path)
             voice *= normalize_voice(cfg, voice, spans, program_db)
+            voice *= db_to_lin(float(m.get("voice_trim_db", 0.0)))
 
             say(f"  ducking + mixing (programme {program_db:.1f} dB, lektor "
                 f"{program_db + m['voice_over_program_db']:.1f} dB, under it {m['duck_to_db']:.0f} dB)")
