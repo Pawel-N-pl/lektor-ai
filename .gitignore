@@ -1,0 +1,105 @@
+# ─── Node / React / TypeScript ───────────────────────────────
+node_modules/
+dist/
+build/
+.next/
+out/
+.cache/
+*.tsbuildinfo
+.eslintcache
+.vite/
+coverage/
+.turbo/
+
+# ─── Package managers ────────────────────────────────────────
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# ─── Env / secrets ───────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!.env.template
+*.local
+
+# ─── PHP / Composer ──────────────────────────────────────────
+/vendor/
+composer.phar
+.php-cs-fixer.cache
+.phpunit.result.cache
+.phpunit.cache/
+
+# ─── Python ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.Python
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.ipynb_checkpoints/
+
+# ─── Docker ──────────────────────────────────────────────────
+docker-compose.override.yml
+*.env.docker
+
+# ─── Testing ─────────────────────────────────────────────────
+.nyc_output/
+playwright-report/
+test-results/
+*.lcov
+
+# ─── AI tool vendor dirs (ignore wholesale) ──────────────────
+.claude/
+.windsurf/
+.cursor/
+.gemini/
+.codex/
+.kimi/
+.kiro/
+.roo/
+.roomodes
+.opencode/
+.clinerules/
+.kilocodemodes
+.continue/
+.aider*
+.mcp.json
+.agents/
+
+# ─── BMad / bmad-assist ──────────────────────────────────────
+# input/config dirs are ignored; build output stays in the repo
+.bmad/
+_bmad/
+.bmad-assist/cache/
+# keep _bmad-output/ tracked — do NOT add it here
+
+# ─── OS / Editor ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# ─── Logs / temp ─────────────────────────────────────────────
+*.log
+logs/
+tmp/
+*.tmp
+*.pid
+
+# lektor-ai
+.venv/
+_lektor/
