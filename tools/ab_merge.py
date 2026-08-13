@@ -28,7 +28,8 @@ from lektorlib.backends import get_backend            # noqa: E402
 from lektorlib.backends.base import Utterance         # noqa: E402
 from lektorlib.config import Config                   # noqa: E402
 from lektorlib.audio import apply_shelf                # noqa: E402
-from lektorlib.mix import build_duck_envelope, db_to_lin, limit_block  # noqa: E402
+from lektorlib.mix import (build_duck_envelopes, crossover_graphs, db_to_lin,  # noqa: E402
+                           limit_block)
 from lektorlib.speech import load_events               # noqa: E402
 from lektorlib.srt import clean_text, compute_windows, merge_contiguous, parse_srt, should_skip  # noqa: E402
 
@@ -132,28 +133,30 @@ def render_window(cfg, backend, mkv, parts, merged_cue, start_s, dur_s, out_path
                     * db_to_lin(m.get("voice_trim_db", 0.0)))
         voice *= gain
 
-    # Same spectral duck as a real episode, or the A/B would be judged on a mix the pipeline no
-    # longer produces. The mid band is pulled with a Linkwitz-Riley crossover; the rest is what is
-    # left after subtracting it, which reconstructs exactly.
-    band = m.get("duck_band_hz", [300, 4000])
-    spectral = m.get("duck_mode", "broadband") == "spectral"
-    if spectral:
-        split = f"acrossover=split={band[0]} {band[1]}"
-        mid_raw = subprocess.run(
+    # Same spectral duck as a real episode, built by the same code, or the A/B would be judged on a
+    # mix the pipeline does not produce. Both bands come out of the Linkwitz-Riley crossover: the
+    # "rest" band is NOT the source minus the mid band, however obvious that shortcut looks. An IIR
+    # band-pass shifts phase, so the difference still carries the midrange at full level and the
+    # dip vanishes the moment the two are given different gains - measured at 6.8 dB LOUDER in the
+    # speech band than plain broadband ducking.
+    def band_of(graph: str, label: str) -> np.ndarray:
+        raw = subprocess.run(
             ["ffmpeg", "-v", "error", "-ss", str(start_s), "-t", str(dur_s), "-i", str(mkv),
-             "-filter_complex", f"[0:a]{split}[a][b][c];[a]anullsink;[c]anullsink", "-map", "[b]",
+             "-filter_complex", graph, "-map", label,
              "-ac", "2", "-ar", str(SR), "-f", "f32le", "pipe:1"], capture_output=True).stdout
-        mid = np.frombuffer(mid_raw, dtype=np.float32).reshape(-1, 2).copy()
-        if mid.shape[0] < total:
-            mid = np.pad(mid, ((0, total - mid.shape[0]), (0, 0)))
-        mid = mid[:total]
-        cfg.raw["mix"]["duck_to_db"] = m["duck_mid_db"]
-        gm = _at_rate(build_duck_envelope(cfg, spans, total), total)
-        cfg.raw["mix"]["duck_to_db"] = m["duck_rest_db"]
-        gr = _at_rate(build_duck_envelope(cfg, spans, total), total)
-        mixed = (bed - mid) * gr[:, None] + mid * gm[:, None]
+        x = np.frombuffer(raw, dtype=np.float32).reshape(-1, 2).copy()
+        if x.shape[0] < total:
+            x = np.pad(x, ((0, total - x.shape[0]), (0, 0)))
+        return x[:total]
+
+    envelopes = build_duck_envelopes(cfg, spans, total)
+    if "mid" in envelopes:
+        (fg_mid, lab_mid), (fg_rest, lab_rest) = crossover_graphs(m.get("duck_band_hz", [300, 4000]))
+        gm = _at_rate(envelopes["mid"], total)
+        gr = _at_rate(envelopes["rest"], total)
+        mixed = band_of(fg_rest, lab_rest) * gr[:, None] + band_of(fg_mid, lab_mid) * gm[:, None]
     else:
-        mixed = bed * _at_rate(build_duck_envelope(cfg, spans, total), total)[:, None]
+        mixed = bed * _at_rate(envelopes["all"], total)[:, None]
     mixed[:, 0] += voice * 0.7071
     mixed[:, 1] += voice * 0.7071
     mixed, _ = limit_block(mixed, db_to_lin(m["limiter_ceiling_db"]),

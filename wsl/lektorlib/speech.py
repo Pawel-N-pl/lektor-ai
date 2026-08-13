@@ -31,12 +31,12 @@ import shutil
 import subprocess
 import time
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from tempfile import gettempdir
 
 from . import say
-from .srt import parse_srt
+from .srt import parse_srt, predicted_ms
 
 # Runs INSIDE the asr container, fed on stdin to its python3. Kept as a string rather than a file
 # because it is not our code's environment: it needs the container's torch, and shipping it as a
@@ -248,6 +248,196 @@ def load_events(work_dir: Path, base: str, cfg) -> SpeechEvents | None:
         say(f"  !! {p.name} is unreadable ({exc}) – merging falls back to the text rules")
         return None
     return events_from(data, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Onsets: when the actor actually started, per card
+# ---------------------------------------------------------------------------
+#
+# The other half of what the artefact is for. The gate above asks the evidence about the SEAM
+# between two cards; this asks it about the START of one, because a handful of lines every episode
+# have the lektor talking before anyone on screen does.
+#
+# The prize is real and small, and both halves of that matter. Measured over all six episodes at
+# forced-alignment score >= 0.8: 182 of 3443 lines lead the first spoken word by more than 300 ms,
+# 35 by more than 500 ms, 8 by more than 800 ms - about thirty lines an episode.
+#
+# The score threshold is higher than the pause gate's 0.5 because the two failures are not
+# symmetrical: a pause gate acting on a bad alignment refuses a merge, while a delay acting on one
+# moves a line that was never early. But 0.8 does NOT bound the lead on its own - the worst one
+# passing it is +2526 ms, on a two-word cue - so what actually contains a bad anchor is the
+# max_delay_ms cap. That cap is load-bearing, not cosmetic.
+
+
+@dataclass
+class Onsets:
+    """Forced-aligned first-word times, indexed by the card they belong to.
+
+    Cards are matched by their start time rather than by their id, because the ids belong to two
+    different subtitle files - the aligner reads the English track, the lektor is written from the
+    Polish one. Measured over this release, 3191 of 3396 Polish cues start on a byte-identical
+    timestamp to their English counterpart, so a small tolerance matches almost everything and
+    anything outside it is a card that has no English counterpart at all.
+    """
+
+    rows: list[tuple[int, int, float]] = field(default_factory=list)  # card start, onset, score
+    min_score: float = 0.8
+    match_tol_ms: int = 120
+
+    def __post_init__(self) -> None:
+        self.rows = sorted((int(a), int(b), float(s)) for a, b, s in self.rows)
+        self._starts = [r[0] for r in self.rows]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def first_word_at(self, start_ms: int) -> int | None:
+        """The onset of the card starting here, or None when there is no confident evidence."""
+        if not self.rows:
+            return None
+        i = bisect_left(self._starts, start_ms)
+        best: tuple[int, int, float] | None = None
+        for j in (i - 1, i, i + 1):
+            if 0 <= j < len(self.rows):
+                r = self.rows[j]
+                if abs(r[0] - start_ms) <= self.match_tol_ms and (
+                        best is None or abs(r[0] - start_ms) < abs(best[0] - start_ms)):
+                    best = r
+        if best is None or best[2] < self.min_score:
+            return None
+        return best[1]
+
+    def describe(self) -> str:
+        """Count the rows that could actually anchor a line, not every row in the file.
+
+        The score filter lives in `first_word_at`, so `len(self.rows)` is the whole artefact -
+        about twice the usable figure on this release, and reporting that under a label naming the
+        threshold would make the matcher below look like it was losing half its evidence.
+        """
+        usable = sum(1 for r in self.rows if r[2] >= self.min_score)
+        return (f"{usable} card onsets at score >= {self.min_score}, "
+                f"of {len(self.rows)} aligned")
+
+
+def onsets_from(data: dict | None, cfg) -> Onsets | None:
+    """Build the onset index from a loaded artefact, or None to mean 'change nothing'."""
+    if not data:
+        return None
+    t = cfg["timing"]
+    if int(t.get("max_delay_ms", 0)) <= 0:
+        return None
+    rows = [(r["cue_start_ms"], r["fa_first_ms"], r.get("score", 0.0))
+            for r in data.get("cues", [])
+            if isinstance(r, dict) and r.get("fa_first_ms") is not None
+            and r.get("cue_start_ms") is not None]
+    if not rows:
+        return None
+    ons = Onsets(rows=rows,
+                 min_score=float(t.get("delay_min_score", 0.8)),
+                 match_tol_ms=int(t.get("delay_match_tol_ms", 120)))
+    return ons if len(ons) else None
+
+
+def load_onsets(work_dir: Path, base: str, cfg) -> Onsets | None:
+    """Read the onsets out of `<base>.speech.json`. A missing or broken file is not an error."""
+    p = speech_path(work_dir, base)
+    if not p.is_file():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return onsets_from(data, cfg)
+
+
+def plan_delays(cues, onsets: Onsets | None, t: dict, cps: float | None = None) -> dict:
+    """Push the lines that speak before the actor does, and only those.
+
+    Three limits, and each one is there for a different reason:
+
+      lead - delay_keep_lead_ms   a lektor that starts exactly on the first syllable sounds late;
+                                  the card's own lead is the working room, so some of it is kept
+      max_delay_ms                past this it stops being a nudge and becomes a re-timing, which
+                                  was measured to be a net loss (-50.8 s of room over an episode)
+      room left in the window     a delay must never create an overrun the speed planner then has
+                                  to buy back, so the line has to still fit after being moved
+
+    Never negative: subtitles lead speech deliberately, and moving a line EARLIER than its card
+    would be inventing timing evidence rather than following it.
+    """
+    report = {"considered": 0, "matched": 0, "early": 0, "delayed": 0, "total_ms": 0,
+              "max_ms": 0, "clamped_by_window": 0, "clamped_by_max": 0}
+    if onsets is None or not cues:
+        return report
+    max_delay = int(t.get("max_delay_ms", 600))
+    min_lead = int(t.get("delay_min_lead_ms", 300))
+    keep = int(t.get("delay_keep_lead_ms", 100))
+    safety = float(t.get("safety", 1.0))
+    if max_delay <= 0:
+        return report
+
+    for c in cues:
+        c.delay_ms = 0
+        report["considered"] += 1
+        onset = onsets.first_word_at(c.start_ms)
+        if onset is None:
+            continue
+        report["matched"] += 1
+        lead = onset - c.start_ms
+        if lead <= min_lead:
+            continue
+        report["early"] += 1
+        room = c.window_ms * safety - predicted_ms(c.text, t, cps)
+        want = lead - keep
+        delay = int(min(want, float(max_delay), room))
+        if delay <= 0:
+            continue
+        if delay < want:
+            report["clamped_by_max" if max_delay <= room else "clamped_by_window"] += 1
+        c.delay_ms = delay
+        report["delayed"] += 1
+        report["total_ms"] += delay
+        report["max_ms"] = max(report["max_ms"], delay)
+    return report
+
+
+def lead_counts(cues, onsets: Onsets | None, thresholds=(300, 500, 800)) -> dict:
+    """How many lines start before the actor does, before and after the delay is applied.
+
+    This is the metric the feature was designed against, so it is also the one that has to be
+    reported: a delay planner that quietly moved nothing would otherwise look exactly like one
+    that worked.
+    """
+    out = {"matched": 0, "before": {t: 0 for t in thresholds}, "after": {t: 0 for t in thresholds}}
+    if onsets is None:
+        return out
+    for c in cues:
+        onset = onsets.first_word_at(c.start_ms)
+        if onset is None:
+            continue
+        out["matched"] += 1
+        for t in thresholds:
+            if onset - c.start_ms > t:
+                out["before"][t] += 1
+            if onset - (c.start_ms + getattr(c, "delay_ms", 0)) > t:
+                out["after"][t] += 1
+    return out
+
+
+def describe_leads(counts: dict) -> str:
+    parts = [f">{t} ms: {counts['before'][t]} -> {counts['after'][t]}"
+             for t in sorted(counts["before"])]
+    return f"lines leading the first word, {counts['matched']} matched  " + ", ".join(parts)
+
+
+def describe_delays(report: dict) -> str:
+    if not report.get("delayed"):
+        return (f"no line moved ({report.get('early', 0)} early of "
+                f"{report.get('matched', 0)} matched)")
+    mean = report["total_ms"] / max(1, report["delayed"])
+    return (f"{report['delayed']} of {report['early']} early lines pushed later "
+            f"(mean {mean:.0f} ms, worst {report['max_ms']} ms; "
+            f"{report['clamped_by_window']} held back by their own window)")
 
 
 # ---------------------------------------------------------------------------

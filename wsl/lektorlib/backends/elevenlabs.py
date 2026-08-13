@@ -20,10 +20,11 @@ import threading
 import time
 from pathlib import Path
 
+import numpy as np
 import requests
 
 from .. import say
-from ..audio import decode_mono, trim_silence
+from ..audio import decode_mono, shorten_pauses, trim_silence
 from ..config import load_cps
 from .base import Backend, Rendered, Utterance
 
@@ -31,15 +32,23 @@ TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 
 # Only these are worth retrying. 401 (bad key), 402 (out of credits) and 422 (bad voice_settings)
 # will fail identically on every attempt, so they must surface at once instead of sleeping 5 times.
-RETRY_STATUS = (429, 500, 502, 503)
+# 409 is the concurrency limiter refusing a call it will happily accept a second later.
+RETRY_STATUS = (409, 429, 500, 502, 503)
 
 # Container extension per output_format family. Headerless PCM cannot be fed to `ffmpeg -i pipe:0`.
 _EXT = {"mp3": "mp3", "opus": "opus"}
 
 
-def cache_key(text: str, voice_id: str, model_id: str, speed: float, settings: dict) -> str:
+def cache_key(text: str, voice_id: str, model_id: str, speed: float, settings: dict,
+              prev: str = "", nxt: str = "") -> str:
+    """Everything the API was asked for, and therefore everything that decides what came back.
+
+    prev/next are in here because they are in the request: the same sentence read with different
+    neighbours is different audio, and a key that ignored them would serve one for the other.
+    """
     blob = json.dumps(
-        [text, voice_id, model_id, round(speed, 3), settings], sort_keys=True, ensure_ascii=False
+        [text, voice_id, model_id, round(speed, 3), settings, prev, nxt],
+        sort_keys=True, ensure_ascii=False,
     )
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
@@ -48,6 +57,7 @@ class ElevenLabsBackend(Backend):
     name = "elevenlabs"
     billable = True
     needs_calibration = True
+    wants_speed_plan = True    # one call per line, and no way to revise it for free
 
     def __init__(self, cfg):
         super().__init__(cfg)
@@ -100,9 +110,16 @@ class ElevenLabsBackend(Backend):
         predicted_s = len(text) / self._cps
         return round(min(hi, max(1.0, predicted_s / (target_ms / 1000.0))), 2)
 
-    def _drop_cache(self, text: str, speed: float, model_id: str | None = None) -> None:
+    def _neighbours(self, u: Utterance) -> tuple[str, str]:
+        """What to send as previous_text / next_text, or two empty strings if it is switched off."""
+        if not bool(self.v.get("send_neighbour_text", True)):
+            return "", ""
+        return u.prev_text or "", u.next_text or ""
+
+    def _drop_cache(self, text: str, speed: float, model_id: str | None = None,
+                    prev: str = "", nxt: str = "") -> None:
         key = cache_key(text, self.v["voice_id"], model_id or self.v["model_id"], speed,
-                        self.v["settings"])
+                        self.v["settings"], prev, nxt)
         self._cache_path(key).unlink(missing_ok=True)
 
     def _cache_path(self, key: str) -> Path:
@@ -110,10 +127,11 @@ class ElevenLabsBackend(Backend):
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{key}.{_EXT[self.v['output_format'].split('_')[0]]}"
 
-    def fetch(self, text: str, speed: float, model_id: str | None = None) -> tuple[bytes, bool]:
+    def fetch(self, text: str, speed: float, model_id: str | None = None,
+              prev: str = "", nxt: str = "") -> tuple[bytes, bool]:
         """Cached bytes for one line. Returns (audio, came_from_cache)."""
         model_id = model_id or self.v["model_id"]
-        key = cache_key(text, self.v["voice_id"], model_id, speed, self.v["settings"])
+        key = cache_key(text, self.v["voice_id"], model_id, speed, self.v["settings"], prev, nxt)
         path = self._cache_path(key)
         if path.exists():
             return path.read_bytes(), True
@@ -122,7 +140,8 @@ class ElevenLabsBackend(Backend):
         settings["speed"] = round(speed, 3)
         url = TTS_URL.format(voice_id=self.v["voice_id"])
         headers = {"xi-api-key": self.api_key, "Content-Type": "application/json"}
-        body = {"text": text, "model_id": model_id, "voice_settings": settings}
+        body = {"text": text, "model_id": model_id, "voice_settings": settings,
+                "previous_text": prev, "next_text": nxt}
         params = {"output_format": self.v["output_format"]}
 
         retries = int(self.v["max_retries"])
@@ -154,11 +173,25 @@ class ElevenLabsBackend(Backend):
             return r.content, False
         raise RuntimeError(f"TTS failed after {retries} tries: {last}")
 
+    def _finish(self, blob: bytes, atempo: float | None = None) -> np.ndarray:
+        """Decode, compress the pauses the engine put inside the line, then trim its ends.
+
+        The order is load-bearing: compressing a pause changes the length of the clip, and the
+        trim is what decides where the clip starts and stops. Doing it the other way round trims
+        an utterance that is then rewritten underneath the decision.
+        """
+        audio = decode_mono(self.cfg, blob, self.sample_rate, atempo=atempo)
+        return trim_silence(shorten_pauses(self.cfg, audio, self.sample_rate), self.sample_rate)
+
     def render(self, u: Utterance) -> Rendered:
-        speed = self._speed_for(u.text, u.target_ms)
-        blob, cached = self.fetch(u.text, speed)
+        # A speed planned across the whole episode wins over one computed from this line alone:
+        # a line at 1.2 between lines at 1.0 is heard as the lektor hurrying and then stopping.
+        speed = u.speed_hint if u.speed_hint is not None else self._speed_for(u.text, u.target_ms)
+        speed = round(float(speed), 2)
+        prev, nxt = self._neighbours(u)
+        blob, cached = self.fetch(u.text, speed, prev=prev, nxt=nxt)
         try:
-            audio = trim_silence(decode_mono(self.cfg, blob, self.sample_rate), self.sample_rate)
+            audio = self._finish(blob)
         except RuntimeError:
             if not cached:
                 raise
@@ -166,9 +199,9 @@ class ElevenLabsBackend(Backend):
             # verdict on the text. Left in place it fails every run from here on, so it is dropped
             # and the line is bought once more rather than making the user delete the file by hand.
             say(f"    .. unreadable cache entry for line {u.index} – refetching")
-            self._drop_cache(u.text, speed)
-            blob, cached = self.fetch(u.text, speed)
-            audio = trim_silence(decode_mono(self.cfg, blob, self.sample_rate), self.sample_rate)
+            self._drop_cache(u.text, speed, prev=prev, nxt=nxt)
+            blob, cached = self.fetch(u.text, speed, prev=prev, nxt=nxt)
+            audio = self._finish(blob)
 
         # Whatever still does not fit gets stretched locally -- from the cached bytes, so a miss
         # here costs no credits. Trim again afterwards: atempo works on the padded original.
@@ -179,9 +212,7 @@ class ElevenLabsBackend(Backend):
             if actual_s > window_s:
                 atempo = min(float(self.timing["max_atempo"]), actual_s / window_s)
                 if atempo > 1.01:
-                    audio = trim_silence(
-                        decode_mono(self.cfg, blob, self.sample_rate, atempo=atempo),
-                        self.sample_rate)
+                    audio = self._finish(blob, atempo=atempo)
                 else:
                     atempo = 1.0
 

@@ -445,3 +445,40 @@ Scratchpad sources for every MEASURED figure: `.../scratchpad/e06/{asr_job,fa_ep
 measure3,prize,prize2,freebies}.py`, data in `fa_w30.json`, `asr_words.json`, `anchors.json`,
 `measure3.json`, `prize.json`, `cuts_e06.txt`; subtitle-quality scripts in `.../scratchpad/plen/`.
 Nothing was written to `/mnt/e`.
+
+---
+
+## Corrections, measured while implementing §2 and §3.4
+
+Everything below was re-measured against the artefacts on disk after all six `speech.json` were
+regenerated. The decisions above survive; three of the numbers do not.
+
+**§2's prize was sized off the mildest episode.** S02E06 has 22 lines leading by more than 300 ms;
+S02E02 and S02E05 have 38 and 39. Across all six episodes at score ≥ 0.8: **182 of 3443 lines lead
+by more than 300 ms, 35 by more than 500 ms, 8 by more than 800 ms** – about 30 lines an episode
+rather than 24 in the only episode that was measured.
+
+**`score >= 0.8` does not bound the lead at 634 ms.** That figure was the maximum of one episode's
+distribution before the artefacts were rebuilt; the worst lead now passing the score gate is
+**+2526 ms** (S02E05), and S02E06's own worst is +991 ms. So the `min(..., max_delay_ms)` term is
+load-bearing rather than cosmetic – it is the only thing containing a bad anchor. The bad anchors
+are short rows, not low-scoring ones: `n_words >= 3` would drop the >800 ms cases from 8 to 3 while
+costing 8 % of the matched set, where `score >= 0.9` costs 41 % of it and changes the worst case not
+at all.
+
+**Matching is bimodal, so the tolerance barely matters.** A Polish card and its English counterpart
+start on the same millisecond 90.9 % of the time; loosening the match from 0 to 200 ms buys 10 cues
+in 3443, and to 400 ms buys 28. Everything past that is a card with no counterpart at all. The
+shipped `delay_match_tol_ms` of 120 ms is a safety margin, not a search.
+
+**The delay does not cost a push, measured on real audio rather than on predicted durations.**
+§3.6's test 4 asked that the "lines pushed later" count must not rise. On S02E06's shipped script,
+rendered through the real backend: **73 pushed with the delay off, 73 with it on.**
+
+**§3.4's proposed key was wrong in one respect.** It suggested keying reuse on
+`(tuple(merged_from) or idx, text_original, budget_chars)`. The id tuple must not be in the key:
+`parse_srt` numbers cues by their position in the file, so a re-extracted `.srt` with one extra
+block renumbers everything after it and would miss on every line whose text never changed. The
+merge is already carried by the text, since a merged cue's text is its parts joined. What the key
+gained instead is the **prompt**, as a hash of `CONDENSE_SYSTEM`, without which a prompt edit ships
+old text under a new prompt with nothing saying so.

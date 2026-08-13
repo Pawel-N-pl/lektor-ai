@@ -17,6 +17,9 @@ Stages
              fit their time window, in one whole-episode call to an LLM that sees the entire
              dialogue. Cheap, and the output is a plain JSON you are meant to open and edit
              before spending TTS credits.
+  retime     Push the handful of lines that speak before the actor does onto his first word,
+             using the onsets `speech` measured. Patches an existing script in place, changes no
+             text, and therefore costs nothing at all - no LLM draw, no TTS re-read.
   voice      Read the script with the configured backend, fit each line to its slot, duck the
              original audio underneath it, and encode the mix.
   sample     Render the same ~90 s of one episode several ways, into separate files, so the
@@ -63,11 +66,13 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("stage", choices=["calibrate", "speech", "script", "voice", "all", "sample",
-                                      "cost", "status"])
+    ap.add_argument("stage", choices=["calibrate", "speech", "script", "retime", "voice", "all",
+                                      "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")
+    ap.add_argument("--redraw", action="store_true",
+                    help="script: ignore <base>.condensed.json and pay for a clean draw")
     ap.add_argument("--plan", default="creator", help="cost: elevenlabs plan for the allowance table")
     ap.add_argument("--seconds", type=float, default=90.0, help="sample: how much to render")
     ap.add_argument("--models", default="", help="sample: comma-separated model ids to compare")
@@ -86,11 +91,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "speech":
         stages.stage_speech(cfg, args.only, args.force)
     elif args.stage == "script":
-        stages.stage_script(cfg, args.only, args.force)
+        stages.stage_script(cfg, args.only, args.force, args.redraw)
+    elif args.stage == "retime":
+        stages.stage_retime(cfg, args.only)
     elif args.stage == "voice":
         stages.stage_voice(cfg, args.only, args.force)
     elif args.stage == "all":
-        stages.stage_script(cfg, args.only, args.force)
+        stages.stage_script(cfg, args.only, args.force, args.redraw)
         stages.stage_voice(cfg, args.only, args.force)
     elif args.stage == "sample":
         models = [m.strip() for m in args.models.split(",") if m.strip()] or [

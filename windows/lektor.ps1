@@ -181,8 +181,22 @@ function Invoke-Extract {
     Write-Host "Next, in WSL:  python3 wsl/lektor.py script  &&  python3 wsl/lektor.py voice`n"
 }
 
+function Get-TrackExtension {
+    <#
+        Which file the WSL side actually wrote. The encode profile follows the channel layout:
+        a 5.1 mix is E-AC-3 because ac3 at 256k cannot carry six channels credibly, and the two
+        halves of the pipeline have to agree on the filename or the mux finds nothing at all.
+        Mirrors lektorlib.mix.encode_profile / is_surround.
+    #>
+    $layout = $cfg.mix.channel_layout
+    if ($layout -and $layout -notin @('stereo', '2.0', '') -and $cfg.encode.surround) {
+        return $cfg.encode.surround.extension
+    }
+    return $cfg.encode.extension
+}
+
 function Invoke-Mux {
-    $ext = $cfg.encode.extension
+    $ext = Get-TrackExtension
     $tracks = @(Get-ChildItem -Path $workDir -Filter "*.lektor.$ext" -File -ErrorAction SilentlyContinue | Sort-Object Name)
     if ($tracks.Count -eq 0) { throw "No *.lektor.$ext in $workDir -- run the WSL voice stage first" }
 
@@ -223,7 +237,7 @@ function Invoke-Mux {
 }
 
 function Invoke-Status {
-    $ext = $cfg.encode.extension
+    $ext = Get-TrackExtension
     $files = @(Get-ChildItem -Path $InputDir -Filter *.mkv -File -Recurse |
                Where-Object { $_.FullName -notlike "*$($cfg.paths.work_subdir)*" } | Sort-Object Name)
 

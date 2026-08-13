@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 from . import say
 
@@ -52,20 +51,33 @@ def db_to_lin(db: float) -> float:
 
 
 def assemble_voice(cfg, clips: list[Clip], total_samples: int) -> tuple[np.ndarray, list[tuple[int, int]]]:
-    """Lay the clips onto one timeline. Voice never overlaps voice: a long line pushes the next."""
+    """Lay the clips onto one timeline. Voice never overlaps voice: a long line pushes the next.
+
+    `delay_ms` on a cue is the only thing that moves a line off its card, and it only ever moves
+    it LATER: it is written by the script stage for the handful of lines whose actor had not
+    started speaking yet, and it is already bounded by the room left in that line's own window, so
+    it must not increase the number of lines pushed by the cursor below.
+    """
     sr = cfg["mix"]["sample_rate"]
     track = np.zeros(total_samples, dtype=np.float32)
     spans: list[tuple[int, int]] = []
     cursor = 0
     pushed = 0
+    delayed = 0
 
     for clip in clips:
         if clip.audio.size == 0:
             continue
-        start = int(clip.cue["start_ms"] / 1000.0 * sr)
+        delay = max(0, int(clip.cue.get("delay_ms", 0) or 0))
+        start = int((clip.cue["start_ms"] + delay) / 1000.0 * sr)
         if start < cursor:
             pushed += 1
             start = cursor
+        elif delay:
+            # Counted only when the delay is what actually placed the line. A delayed line that
+            # still lands inside the previous line's tail was placed by the cursor, and reporting
+            # it as both would be reporting it twice.
+            delayed += 1
         end = start + clip.audio.size
         if end > total_samples:
             clip.audio = clip.audio[: max(0, total_samples - start)]
@@ -76,6 +88,8 @@ def assemble_voice(cfg, clips: list[Clip], total_samples: int) -> tuple[np.ndarr
         spans.append((start, end))
         cursor = end + int(0.06 * sr)  # a beat of air between lines
 
+    if delayed:
+        say(f"    {delayed} line(s) placed on the actor's first word rather than on their card")
     if pushed:
         say(f"    {pushed} line(s) pushed later to avoid overlapping the previous one")
     return track, spans
@@ -132,6 +146,32 @@ def build_duck_envelope(cfg, spans: list[tuple[int, int]], total_samples: int) -
     return (quiet + (ducked - quiet) * env).astype(np.float32)
 
 
+def build_duck_envelopes(cfg, spans: list[tuple[int, int]], total_samples: int
+                         ) -> dict[str, np.ndarray]:
+    """One envelope for broadband ducking, two for spectral.
+
+    Spectral ducking pulls the band the lektor competes for much further down than the rest, so
+    the film keeps its weight and its air while the midrange gets out of the way. The two curves
+    have the same shape and differ only in how far their floor sits, which is a level the builder
+    above reads out of the config - so they are produced by pointing it at each floor in turn,
+    with the config restored afterwards. Passing the floor as an argument would be cleaner still,
+    but `build_duck_envelope` is also the A/B rig's entry point and its signature is not ours to
+    break.
+    """
+    m = cfg["mix"]
+    if m.get("duck_mode", "broadband") != "spectral":
+        return {"all": build_duck_envelope(cfg, spans, total_samples)}
+    keep = m["duck_to_db"]
+    try:
+        m["duck_to_db"] = m["duck_mid_db"]
+        mid = build_duck_envelope(cfg, spans, total_samples)
+        m["duck_to_db"] = m["duck_rest_db"]
+        rest = build_duck_envelope(cfg, spans, total_samples)
+    finally:
+        m["duck_to_db"] = keep
+    return {"mid": mid, "rest": rest}
+
+
 def _decay_max(x: np.ndarray, coef: float, carry: float) -> np.ndarray:
     """Running max with exponential decay: y[n] = max(x[n], coef * y[n-1]), starting from carry.
 
@@ -176,24 +216,91 @@ def limit_block(mixed: np.ndarray, ceiling: float, release_coef: float,
     return mixed, float(r[-1]) if r.size else carry
 
 
-def measure_program_level(orig_path: Path) -> float:
-    """RMS of the whole programme in dB.
+def source_channels(cfg, source: Path) -> int:
+    """How many channels the source audio really has, straight from ffprobe."""
+    probe = cfg.raw["paths"].get("ffprobe_wsl") or "ffprobe"
+    r = subprocess.run([probe, "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "stream=channels", "-of", "csv=p=0", str(source)],
+                       capture_output=True, text=True)
+    try:
+        return int((r.stdout.strip().splitlines() or ["0"])[0])
+    except ValueError:
+        return 0
+
+
+def decode_stream(cfg, source: Path, sr: int, channels: int, filtergraph: str = "",
+                  label: str = "") -> subprocess.Popen:
+    """One decode of the source audio as raw interleaved float32, optionally through a filter.
+
+    ffmpeg rather than soundfile, because the source is as likely to be the film's own E-AC-3 5.1
+    inside an mkv as it is to be a FLAC downmix, and the mix should not care which.
+    """
+    args = [cfg.ffmpeg, "-v", "error", "-i", str(source)]
+    if filtergraph:
+        args += ["-filter_complex", filtergraph, "-map", label]
+    else:
+        args += ["-map", "0:a:0"]
+    args += ["-ar", str(sr), "-ac", str(channels), "-f", "f32le", "pipe:1"]
+    # stderr is kept, not discarded. A decoder that dies mid-file would otherwise be indis-
+    # tinguishable from one that reached the end: the reader below zero-pads what it did not get,
+    # and the result is a full-length, perfectly encoded track with no film underneath the lektor.
+    return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
+def reap(proc: subprocess.Popen, what: str) -> None:
+    """Wait for a decoder and raise with what ffmpeg said if it failed."""
+    err = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+    if proc.wait() != 0:
+        raise RuntimeError(f"decoding {what} failed: {err.strip()[-400:] or 'no output'}")
+
+
+def crossover_graphs(band: list[int]) -> tuple[tuple[str, str], tuple[str, str]]:
+    """Filtergraphs for the speech band and for everything else.
+
+    A Linkwitz-Riley crossover, because the two halves have to sum back to the original when their
+    gains are equal. The obvious shortcut - band-pass the middle and call the difference "the rest"
+    - does not: an IIR band-pass shifts phase, so the difference still carries the midrange at full
+    level and the dip vanishes the moment the two are given different gains. Measured, that
+    shortcut left the speech band 6.8 dB LOUDER than broadband ducking instead of quieter.
+    """
+    split = f"acrossover=split={band[0]} {band[1]}"
+    mid = f"[0:a]{split}[a][b][c];[a]anullsink;[c]anullsink"
+    rest = f"[0:a]{split}[a][b][c];[b]anullsink;[a][c]amix=inputs=2:normalize=0[r]"
+    return (mid, "[b]"), (rest, "[r]")
+
+
+def measure_program_level(cfg, source: Path) -> float:
+    """RMS of the whole programme in dB, measured on a stereo fold of it.
 
     Every level in the mix is set against this rather than against dBFS. An absolute voice target
     made the lektor 20 dB louder than a quiet film and would have buried a loud one; a relative one
     behaves the same way on both.
+
+    The fold is not incidental. Every level in this pipeline was tuned by ear against a stereo
+    fold, and an RMS taken across six raw channels is a different number - the LFE and the
+    surrounds move it - so measuring the source "as it is" would quietly shift the balance of a
+    mix nobody had changed.
     """
+    sr = cfg["mix"]["sample_rate"]
+    channels = 2 if cfg["mix"].get("level_reference", "stereo_fold") == "stereo_fold" else \
+        max(1, source_channels(cfg, source))
+    proc = decode_stream(cfg, source, sr, channels)
     acc = 0.0
     n = 0
-    with sf.SoundFile(str(orig_path)) as f:
-        while True:
-            block = f.read(1 << 20, dtype="float32", always_2d=True)
-            if block.shape[0] == 0:
-                break
-            acc += float(np.sum(np.square(block, dtype=np.float64)))
-            n += block.size
+    assert proc.stdout is not None
+    while True:
+        raw = proc.stdout.read(1 << 22)
+        if not raw:
+            break
+        block = np.frombuffer(raw, dtype=np.float32)
+        acc += float(np.sum(np.square(block, dtype=np.float64)))
+        n += block.size
+    proc.stdout.close()
+    # A failed decode must not be mistaken for a quiet film. Every level in the mix hangs off this
+    # number, so inventing one would mis-set all of them and say nothing about it.
+    reap(proc, source.name)
     if n == 0:
-        return -60.0
+        raise RuntimeError(f"{source.name} decoded to no audio at all")
     return 20.0 * math.log10(max(1e-9, math.sqrt(acc / n)))
 
 
@@ -202,6 +309,11 @@ def normalize_voice(cfg, track: np.ndarray, spans: list[tuple[int, int]],
     """Scale factor putting the spoken parts voice_over_program_db above the programme.
 
     Silence between lines is excluded, so a sparse episode does not push the voice up.
+
+    voice_channel_comp_db is added on top, and it is a correction rather than a preference: with
+    the lektor on the centre channel alone, one channel is doing the work two channels did in the
+    mix these levels were tuned on, and two correlated channels sum 3 dB. Without it the voice
+    lands 3 dB below the number voice_over_program_db promises.
     """
     if not spans:
         return 1.0
@@ -210,23 +322,90 @@ def normalize_voice(cfg, track: np.ndarray, spans: list[tuple[int, int]],
     rms = float(np.sqrt(np.mean(np.square(speech, dtype=np.float64))))
     if rms <= 1e-9:
         return 1.0
-    target = db_to_lin(program_db + cfg["mix"]["voice_over_program_db"])
+    m = cfg["mix"]
+    target = db_to_lin(program_db + m["voice_over_program_db"] + voice_comp_db(cfg))
     return target / rms
 
 
-def write_mix(cfg, orig_path: Path, voice: np.ndarray, env: np.ndarray,
-              out_path: Path, total_samples: int) -> None:
-    """Stream the mix straight into ffmpeg. Blockwise, so RAM stays flat regardless of runtime."""
+def voice_comp_db(cfg) -> float:
+    """The centre-channel compensation, and 0 for any layout that keeps the voice on two."""
+    m = cfg["mix"]
+    if len(voice_channels(cfg)) > 1:
+        return 0.0
+    return float(m.get("voice_channel_comp_db", 0.0))
+
+
+# Layouts the mix loop can actually build, and how wide a frame each one is. Anything else is
+# refused rather than half-built: the channel count decides the shape of every buffer in the loop,
+# and guessing 6 for a layout that is not six channels would send ffmpeg frames of the wrong width
+# and silently shear the mix.
+LAYOUT_CHANNELS = {"stereo": 2, "2.0": 2, "5.1": 6, "5.1(side)": 6}
+
+
+def is_surround(cfg) -> bool:
+    return str(cfg["mix"].get("channel_layout", "stereo")).lower() not in ("stereo", "2.0", "")
+
+
+def voice_channels(cfg) -> list[int]:
+    """Which output channels carry the lektor. Both of them, in stereo."""
+    if not is_surround(cfg):
+        return [0, 1]
+    got = cfg["mix"].get("voice_channels") or [2]
+    return [int(i) for i in got]
+
+
+def encode_profile(cfg) -> dict:
+    """Codec, bitrate and extension for the layout in force. 5.1 needs its own; ac3 at 256k
+    cannot carry six channels credibly."""
+    enc = cfg["encode"]
+    if is_surround(cfg) and isinstance(enc.get("surround"), dict):
+        return dict(enc, **enc["surround"])
+    return enc
+
+
+def write_mix(cfg, source: Path, voice: np.ndarray, envelopes: dict[str, np.ndarray],
+              out_path: Path, total_samples: int) -> int:
+    """Stream the mix straight into ffmpeg. Blockwise, so RAM stays flat regardless of runtime.
+
+    One loop for both layouts and both ducking modes. The source is decoded through ffmpeg, so it
+    can be the film's own 5.1 inside an mkv or a stereo FLAC downmix and the mix does not care;
+    the lektor lands on whichever channels the layout says carry him, and everything else keeps
+    its own material with the duck riding on top.
+
+    In spectral mode the source is decoded twice, once band-passed to the speech range and once as
+    everything else, and the two are recombined at different gains. Only those two: the whole
+    signal is their sum by construction, so a third decode of the untouched source would be one
+    more full read of a 2.7 GB file over a slow mount for nothing.
+
+    Returns how many blocks the limiter had to pull down, which is worth reporting - a mix that
+    limits constantly is a mix whose levels are wrong.
+    """
     m = cfg["mix"]
     sr = m["sample_rate"]
     ceiling = db_to_lin(m["limiter_ceiling_db"])
     release_coef = math.exp(-1.0 / max(1.0, float(m.get("limiter_release_ms", 120.0)) / 1000.0 * sr))
     ctrl_hz = CTRL_HZ
+    layout = str(m.get("channel_layout", "stereo")) if is_surround(cfg) else "stereo"
+    ch = LAYOUT_CHANNELS.get(layout.lower())
+    if ch is None:
+        raise RuntimeError(
+            f"mix.channel_layout {layout!r} is not a layout this mix can build – "
+            f"pick one of {', '.join(sorted(LAYOUT_CHANNELS))}")
+    voice_ch = [c for c in voice_channels(cfg) if c < ch]
+    prof = encode_profile(cfg)
+    spectral = "mid" in envelopes
+
+    if spectral:
+        (fg_mid, lab_mid), (fg_rest, lab_rest) = crossover_graphs(m.get("duck_band_hz", [300, 4000]))
+        decoders = {"mid": decode_stream(cfg, source, sr, ch, fg_mid, lab_mid),
+                    "rest": decode_stream(cfg, source, sr, ch, fg_rest, lab_rest)}
+    else:
+        decoders = {"all": decode_stream(cfg, source, sr, ch)}
 
     args = [
         cfg.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-        "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "pipe:0",
-        "-c:a", cfg["encode"]["codec"], "-b:a", cfg["encode"]["bitrate"],
+        "-f", "f32le", "-ar", str(sr), "-channel_layout", layout, "-i", "pipe:0",
+        "-c:a", prof["codec"], "-b:a", prof["bitrate"],
         str(out_path),
     ]
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -235,39 +414,68 @@ def write_mix(cfg, orig_path: Path, voice: np.ndarray, env: np.ndarray,
     block = sr * 10
     pos = 0
     reduction = 0.0  # limiter state, carried across blocks so the seam is not a step
+    limited = 0
+
+    padded = {name: 0 for name in decoders}
+
+    def read_block(name: str, frames: int) -> np.ndarray:
+        """`frames` frames from one decoder, zero-padded if the stream ended early.
+
+        How much had to be padded is remembered. Padding a few frames at the very end is normal -
+        the container's duration and the stream's do not agree to the sample - but padding a
+        stretch means the decoder stopped, and a mix that quietly replaces the film with silence
+        is worse than a mix that fails.
+        """
+        raw = decoders[name].stdout.read(frames * ch * 4)
+        got = np.frombuffer(raw, dtype=np.float32).reshape(-1, ch).copy() if raw else \
+            np.zeros((0, ch), dtype=np.float32)
+        if got.shape[0] < frames:
+            padded[name] += frames - got.shape[0]
+            got = np.pad(got, ((0, frames - got.shape[0]), (0, 0)))
+        return got
+
     try:
-        with sf.SoundFile(str(orig_path)) as src:
-            resample = src.samplerate != sr
-            while pos < total_samples:
-                want = min(block, total_samples - pos)
-                need = int(round(want * src.samplerate / sr)) if resample else want
-                chunk = src.read(need, dtype="float32", always_2d=True)
-                if chunk.shape[0] == 0:
-                    chunk = np.zeros((want, 2), dtype=np.float32)
-                if chunk.shape[1] == 1:
-                    chunk = np.repeat(chunk, 2, axis=1)
-                elif chunk.shape[1] > 2:
-                    chunk = chunk[:, :2]
-                if chunk.shape[0] != want:
-                    idx = np.linspace(0, chunk.shape[0] - 1, want)
-                    chunk = np.stack(
-                        [np.interp(idx, np.arange(chunk.shape[0]), chunk[:, ch]) for ch in range(2)],
-                        axis=1,
-                    ).astype(np.float32)
+        while pos < total_samples:
+            want = min(block, total_samples - pos)
+            ctrl_idx = np.linspace(pos / sr * ctrl_hz, (pos + want) / sr * ctrl_hz, want)
 
-                ctrl_idx = np.linspace(pos / sr * ctrl_hz, (pos + want) / sr * ctrl_hz, want)
-                gain = np.interp(ctrl_idx, np.arange(env.size), env).astype(np.float32)
+            def gain_of(name: str) -> np.ndarray:
+                env = envelopes[name]
+                return np.interp(ctrl_idx, np.arange(env.size), env).astype(np.float32)
 
-                mixed = chunk * gain[:, None]
-                mixed += voice[pos : pos + want, None]
+            if spectral:
+                mixed = (read_block("rest", want) * gain_of("rest")[:, None]
+                         + read_block("mid", want) * gain_of("mid")[:, None])
+            else:
+                mixed = read_block("all", want) * gain_of("all")[:, None]
 
-                if mixed.size:
-                    mixed, reduction = limit_block(mixed, ceiling, release_coef, reduction)
+            block_voice = voice[pos : pos + want]
+            for c in voice_ch:
+                mixed[:, c] += block_voice
 
-                proc.stdin.write(mixed.astype(np.float32).tobytes())
-                pos += want
+            if mixed.size:
+                before = float(np.max(np.abs(mixed)))
+                mixed, reduction = limit_block(mixed, ceiling, release_coef, reduction)
+                limited += 1 if before > ceiling else 0
+
+            proc.stdin.write(mixed.astype(np.float32).tobytes())
+            pos += want
     finally:
         proc.stdin.close()
+        for d in decoders.values():
+            if d.stdout:
+                d.stdout.close()
         err = proc.stderr.read().decode() if proc.stderr else ""
         if proc.wait() != 0:
             raise RuntimeError(f"encode failed: {err[:400]}")
+    # After the encoder, so a genuine encode failure is reported as one - but before returning, so
+    # a decode that died half way cannot pass for a finished mix. The exit status alone cannot say
+    # which happened: rendering a 60 s sample of a 35 min episode closes the pipe on a healthy
+    # ffmpeg, and it dies of that every time. What distinguishes the two is whether the frames we
+    # needed actually arrived.
+    for name, d in decoders.items():
+        if padded[name] > sr // 2:
+            reap(d, f"{source.name} ({name}), {padded[name] / sr:.1f} s short")
+        else:
+            d.wait()
+    return limited

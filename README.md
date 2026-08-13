@@ -12,13 +12,18 @@ and both sides meet in a shared `_lektor` work dir that is the same folder seen 
   E:\Filmy\<show>\                 /mnt/e/Filmy/<show>/          <- same directory
     *.mkv            2.7 GB        (never opened from WSL)
     _lektor\
-      *.srt          ~40 KB        Windows writes  ->  WSL reads
-      *.orig.flac    ~300 MB       Windows writes  ->  WSL reads
-      *.lektor.json  ~150 KB       WSL writes      ->  you edit
-      *.lektor.ac3   ~80 MB        WSL writes      ->  Windows reads
+      *.srt             ~40 KB     Windows writes  ->  WSL reads
+      *.orig.flac      ~300 MB     Windows writes  ->  WSL reads (stereo layout only)
+      *.speech.json    ~170 KB     WSL writes: word onsets, pauses, shot cuts
+      *.lektor.json    ~160 KB     WSL writes      ->  you edit
+      *.condensed.json  ~70 KB     WSL writes: condensed text, so a rerun is free
+      *.lektor.eac3    ~200 MB     WSL writes      ->  Windows reads
     _lektor\output\
       *_PL_LEKTOR.mkv              Windows writes
 ```
+
+In the shipped 5.1 layout the mix is laid over the film's own surround track, read straight out of
+the mkv and never rewritten, so `*.orig.flac` is only needed for a stereo mix.
 
 ## Pipeline
 
@@ -27,9 +32,10 @@ and both sides meet in a shared `_lektor` work dir that is the same folder seen 
 | 1 | Windows | `.\windows\lektor.ps1 -Stage extract` | Polish `.srt` + stereo FLAC downmix of the original audio |
 | 2 | WSL | `python3 wsl/lektor.py calibrate` | measures how fast your voice really speaks (6 calls, once per voice; backends that set duration directly say so and do nothing) |
 | – | WSL | `python3 wsl/lektor.py speech` | optional, free, local: forced-aligned word times, the silences between them and the shot cuts → `_lektor/*.speech.json`. ~2 min of GPU+CPU per episode, no API of any kind. Run it before `script` and the merge gate uses it |
-| 3 | WSL | `python3 wsl/lektor.py script` | subtitles → lektor script, condensing what will not fit |
-| – | you | open `_lektor/*.lektor.json` | fix anything that reads badly, before spending TTS credits |
-| 4 | WSL | `python3 wsl/lektor.py voice` | TTS, time-fitting, ducking, mix, encode |
+| 3 | WSL | `python3 wsl/lektor.py script` | subtitles → lektor script, condensing what will not fit. Reuses `*.condensed.json`, so only lines whose input really changed are redrawn |
+| – | you | open `_lektor/*.lektor.json` | fix anything that reads badly, before spending TTS credits. Your edits survive the next `script --force` |
+| – | WSL | `python3 wsl/lektor.py retime` | free, changes no text: pushes the handful of lines that speak before the actor onto his first word |
+| 4 | WSL | `python3 wsl/lektor.py voice` | TTS, time-fitting, ducking, 5.1 mix with the lektor on the centre channel, encode |
 | 5 | Windows | `.\windows\lektor.ps1 -Stage mux` | remux into `*_PL_LEKTOR.mkv`, stream copy only |
 
 Progress at any point: `lektor.ps1 -Stage status` or `lektor.py status`.
@@ -51,7 +57,12 @@ anything loads a model or spends a credit. `sample` renders the same seconds of 
 several ways into separate files, so the choice is made by ear rather than from a table:
 `--backends` compares ENGINES (each with its own configured voice), `--models` compares ElevenLabs
 models on the current engine. Files land next to the episode as
-`<base>.lektor.sample.<backend>.ac3` and `<base>.lektor.sample.<model>.ac3`.
+`<base>.lektor.sample.<backend>.<ext>` and `<base>.lektor.sample.<model>.<ext>`, in the same layout
+and codec as a real render.
+
+A sample costs nothing on an episode that has already been rendered: the speed plan and the
+neighbour text that go into the TTS cache key are decided over the whole episode before the slice
+is cut, so a line in the sample has the same key it had in the full render.
 
 ## Backends
 
@@ -201,6 +212,67 @@ delivers *into* the pauses of the original instead of over them.
 Recurring cost: **$0**. One-off cost: 229 lines change text, 9610 characters, **$0.48** to re-read
 the season on ElevenLabs flash, $0.00 on piper. Without a `.speech.json` the key does nothing and
 the pipeline is byte-identical to the version before the gate existed.
+
+## The lektor waits for the actor
+
+A card goes up a median 73 ms before the first word is spoken, and that lead is working room, not
+error. But a handful of lines an episode go up much earlier than that, and the lektor then talks
+into a silent picture. `speech.json` already knows when each actor really started, so `retime`
+pushes those lines onto their onset – and nothing else moves.
+
+Measured across all six episodes at forced-alignment score ≥ 0.8: **182 of 3443 lines lead by more
+than 300 ms, 35 by more than 500 ms**, and after retiming that first figure falls to 26. The delay
+is capped three ways: it never closes the lead entirely (`delay_keep_lead_ms`), never exceeds
+`max_delay_ms` = 600, and never exceeds the room left in the line's own window – so a nudge can
+never become an overrun the speed planner has to buy back. Verified on the real audio of S02E06:
+the number of lines pushed later by the previous line **does not rise**, 73 either way.
+
+It costs nothing at all. No text changes, so every ElevenLabs line stays in cache: with `speech`,
+it is one of the two stages that bill nothing whatever they find.
+
+## Paying once: the reuse cache
+
+The LLM bill is the small one. **The TTS bill is 14–65x larger for the same change**, because any
+line whose text changes has to be read again – $0.71 an episode, $4.27 a season. And a whole-episode
+condensation draw rewrites every line, including the hundreds the change never touched.
+
+So condensed text is filed in `<base>.condensed.json` under a key that is the whole contract it was
+produced under: the cleaned source text, the character budget, the model, the reasoning effort, and
+a **hash of `CONDENSE_SYSTEM` itself** – automatic, because a hand-bumped version number is the
+thing that gets forgotten, and the result would not be a stale cache but an episode half-written by
+a prompt that no longer exists. Change the prompt and every line misses, by design. Change a
+cleaning rule and only the lines it touched miss.
+
+Measured on S02E06, `script --force` on an unchanged episode: **245 of 246 lines reused, one call,
+byte-identical text**, against a full redraw before. The one miss is a cue the model had failed on
+before – failures are deliberately not cached, so they get another chance instead of becoming
+permanent.
+
+Two things it will not do. It never overwrites a line you edited by hand in `<base>.lektor.json`
+(the report says how many it kept). And it never reuses a line that still carries digits when the
+source was sent to have them spelled out – a reply read back off disk earns no more trust than it
+had on the day.
+
+`script --redraw` ignores the file and pays for a clean draw; `script.reuse_previous: false` is the
+permanent version.
+
+## 5.1, and one renderer instead of two
+
+The lektor lands on the **centre channel**, where dialogue lives and where a stereo downmix folds it
+evenly into both speakers, and the ducking is spectral: the 300–4000 Hz band the voice competes for
+is pulled down hard while the rest of the spectrum barely moves, so the film keeps its weight and
+its air. Masking is a midrange problem, and treating it as a broadband one just makes the film
+quieter.
+
+That renderer used to be a 420-line script in `tools/` with its own copy of the placement loop, the
+speed planner and the mix – which is exactly how a fix lands in one and not the other, and it had
+already happened once. It is `lektor.py voice` now, chosen by `mix.channel_layout`, and
+`tools/render51.py` is a wrapper kept only because that is the command that produced six episodes.
+
+Two knobs that are corrections rather than taste: `mix.voice_channel_comp_db` (+3 dB, because one
+channel is doing what two correlated channels did in the mix these levels were tuned on) and
+`mix.level_reference: stereo_fold` (an RMS across six raw channels is a different number, and every
+level hangs off it).
 
 ## Cost
 

@@ -17,6 +17,7 @@ token prices, which would miss mandatory reasoning tokens.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -31,7 +32,8 @@ import requests
 
 from . import say
 from .config import Config, load_cps
-from .speech import load_events
+from .speech import (describe_delays, describe_leads, lead_counts, load_events, load_onsets,
+                     plan_delays)
 from .srt import clean_text, load_cues
 
 # ---------------------------------------------------------------------------
@@ -215,6 +217,13 @@ def needs_number_words(text: str) -> bool:
     return bool(HAS_DIGIT.search(text))
 
 
+# The per-cue instructions, as constants rather than inline literals: they are part of the prompt
+# the model is given, so they are part of what the reuse cache is keyed on, and a key cannot be
+# computed from a string buried in a loop.
+MARK_SHORTEN = ">>> SKROC DO {n} ZNAKOW <<<"
+MARK_NUMBERS = ">>> LICZBY SLOWAMI <<<"
+
+
 def whole_prompt(cues, target_ids: set[int]) -> str:
     """Every cue in order; the ones needing work carry markers saying which work.
 
@@ -227,9 +236,9 @@ def whole_prompt(cues, target_ids: set[int]) -> str:
     for c in cues:
         marks = []
         if c.idx in target_ids:
-            marks.append(f">>> SKROC DO {c.budget_chars} ZNAKOW <<<")
+            marks.append(MARK_SHORTEN.format(n=c.budget_chars))
         if needs_number_words(c.text):
-            marks.append(">>> LICZBY SLOWAMI <<<")
+            marks.append(MARK_NUMBERS)
         prefix = (" ".join(marks) + " ") if marks else ""
         out.append(f"[{c.idx}] {prefix}{c.text}")
     return "\n".join(out)
@@ -673,17 +682,42 @@ def condense_episode(cues, target_ids: set[int], cfg: Config, api_key: str) -> C
     s = cfg["script"]
     ratio = float(s.get("accept_fit_ratio", 0.9))
     rerolls = max(0, int(s.get("max_rerolls", 4)))
+    by_id = {c.idx: c for c in cues}
+    # A cue is worth re-rolling for if it has something to achieve: a length to get under, or
+    # digits to spell out. Scoring only the over-long ones was fine while every send was the whole
+    # episode, but with the reuse cache in front of this a send is routinely a handful of cues -
+    # and a send of nothing but number cues would have had an empty scorecard, one draw, and no
+    # re-roll at all, on exactly the lines the lektor cannot read if the draw is bad.
     budgets = {c.idx: c.budget_chars for c in cues
-               if c.idx in target_ids and len(c.text) > c.budget_chars}
+               if c.idx in target_ids
+               and (len(c.text) > c.budget_chars or needs_number_words(c.text))}
     if not budgets:
         return _condense_once(cues, target_ids, cfg, api_key)
 
     def fits(o: CondenseOutcome) -> int:
-        return sum(1 for i, t in o.texts.items() if i in budgets and len(t) <= budgets[i])
+        n = 0
+        for i, t in o.texts.items():
+            if i not in budgets:
+                continue
+            # Spelling a number out makes a line longer by design, so a digit cue is judged on
+            # whether the digits are gone, not on its length.
+            if needs_number_words(by_id[i].text):
+                n += 0 if needs_number_words(t) else 1
+            else:
+                n += 1 if len(t) <= budgets[i] else 0
+        return n
 
     best: CondenseOutcome | None = None
     spent: list[CallStats] = []
-    need = int(len(budgets) * ratio)
+    # Rounded UP, or a send of one cue would need zero of them to be good and could never be
+    # re-rolled. That floor was invisible while every send was 200 cues; the reuse cache makes
+    # small sends the normal case.
+    need = math.ceil(len(budgets) * ratio)
+    # And the ladder is shortened for a small send, because the prompt is the whole episode
+    # however few cues are marked: a draw for two cues costs nearly what a draw for two hundred
+    # costs in input tokens, while ceil() has just made its bar effectively 100 %. Four re-rolls
+    # plus an escalation over two lines is throwing money at a lottery it cannot win.
+    rerolls = min(rerolls, max(1, len(budgets)))
     attempts = 0
     for attempt in range(rerolls + 1):
         out = _condense_once(cues, target_ids, cfg, api_key)
@@ -895,12 +929,255 @@ def read_spend(cfg: Config, base: str) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Condensed-text reuse cache
+# ---------------------------------------------------------------------------
+#
+# Why this exists at all: every change upstream of this stage - a merge-gate tweak, a new cleaning
+# rule, a respelling - forces `script --force`, which today draws a NEW whole-episode condensation
+# and rewrites every line, including the hundreds the change never touched. Rewritten text misses
+# the TTS cache, and the TTS bill is 14-65x the LLM bill for the same change. Measured over the
+# season: re-running it costs $0.71 without this file and $0.09 with it.
+#
+# The key is the whole contract under which a line was produced. Get it wrong in the loose
+# direction and old text ships under a new prompt, silently, which is the one failure this cache
+# must never have.
+
+CACHE_VERSION = 1
+
+
+def prompt_fingerprint() -> str:
+    """Hash of everything the model is actually told, so an edit to any of it misses.
+
+    Automatic rather than a hand-bumped version number: the one thing certain about a manual
+    version field is that someone edits the prompt and forgets it, and the result is not a stale
+    cache - it is an episode where half the lines were written by a prompt that no longer exists.
+
+    "The prompt" is not just the system message. The per-cue instruction is carried by the markers
+    `whole_prompt` writes inline, and the reply is shaped by the JSON schema; changing either one
+    changes what comes back exactly as surely as rewriting the system message does. All three are
+    hashed. `retry_note` is deliberately not: it only ever names cues that already missed, and its
+    wording cannot change a line that came back right the first time.
+    """
+    blob = "\n".join([
+        CONDENSE_SYSTEM,
+        MARK_SHORTEN.format(n=0),
+        MARK_NUMBERS,
+        json.dumps(CUES_SCHEMA, sort_keys=True, ensure_ascii=False),
+    ])
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+def cache_key(text: str, budget_chars: int, s: dict) -> str:
+    """Everything that decides what a condensed line comes back as.
+
+    In: the cleaned source text, the budget it had to hit, the model, how hard it was told to
+    think, and the prompt. Out, deliberately: temperature and the re-roll settings (they change
+    the draw, not the contract - `--redraw` is how you ask for a different draw), the fallback
+    model (it only ever runs when the primary has already failed, and its output is judged against
+    the same budget), and the cue id (ids move when merging changes, the text does not).
+    """
+    blob = json.dumps(
+        [CACHE_VERSION, text, int(budget_chars), str(s.get("openrouter_model", "")),
+         str(s.get("reasoning_effort", "medium")), prompt_fingerprint()],
+        ensure_ascii=False, sort_keys=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
+
+
+def condensed_path(cfg: Config, base: str) -> Path:
+    return cfg.work_dir / f"{base}.condensed.json"
+
+
+def load_condensed(cfg: Config, base: str) -> dict[str, dict]:
+    """Previous condensations for this episode, or an empty book if there are none.
+
+    An unreadable file is kept aside rather than overwritten: it is worth real money, and the run
+    can continue without it at the price of a fresh draw.
+    """
+    p = condensed_path(cfg, base)
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        entries = data.get("entries")
+        if not isinstance(entries, dict):
+            raise ValueError("no 'entries' object")
+    except (OSError, ValueError) as exc:
+        keep = p.with_suffix(f".corrupt-{time.strftime('%Y%m%dT%H%M%S')}.json")
+        try:
+            p.replace(keep)
+            say(f"  !! {p.name} would not parse ({exc}) – kept as {keep.name}, drawing fresh")
+        except OSError:
+            say(f"  !! {p.name} would not parse ({exc}) – drawing fresh")
+        return {}
+    return {k: v for k, v in entries.items() if isinstance(v, dict) and v.get("text")}
+
+
+def write_condensed(cfg: Config, base: str, entries: dict[str, dict]) -> Path:
+    """Save the book. Written aside and renamed, like the spend record.
+
+    Whatever is on disk is merged back in first. Entries are content-addressed, so the union is
+    unambiguous, and it means a second run of the same episode alongside this one loses nothing
+    it paid for. There is deliberately no lock file: a duplicated draw costs about a cent, and a
+    stale lock in a stage that gets interrupted costs a wedged pipeline.
+    """
+    p = condensed_path(cfg, base)
+    entries = {**load_condensed(cfg, base), **entries}
+    payload = {
+        "base": base,
+        "version": CACHE_VERSION,
+        "prompt": prompt_fingerprint(),
+        "model": cfg["script"]["openrouter_model"],
+        "reasoning_effort": cfg["script"].get("reasoning_effort", "medium"),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "_note": ("Condensed text, keyed on (cleaned source text, budget, model, effort, prompt "
+                  "hash). A hit is reused verbatim instead of being redrawn. Delete this file, or "
+                  "run `script --redraw`, to pay for a clean whole-episode draw."),
+        "entries": entries,
+    }
+    tmp = p.with_suffix(f".{os.getpid():x}.tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(p)
+    return p
+
+
+def split_by_cache(cues, work: list[int], book: dict[str, dict], s: dict
+                   ) -> tuple[dict[int, str], list[int], int]:
+    """Which of the cues we would send are already answered, and which still have to be drawn.
+
+    Only cues that were actually condensed are ever in the book, so a cue the model failed on last
+    time gets another chance rather than a cached failure - a negative cache here would make one
+    bad draw permanent.
+
+    Returns (hits, misses, poisoned). A poisoned entry is one whose stored text still carries
+    digits for a line that was sent to have them spelled out: the module's own rule is never to
+    trust the reply, and a reply read back off disk a month later has earned no more trust than
+    it had on the day.
+    """
+    by_id = {c.idx: c for c in cues}
+    hits: dict[int, str] = {}
+    misses: list[int] = []
+    poisoned = 0
+    for idx in work:
+        c = by_id.get(idx)
+        if c is None:
+            continue
+        entry = book.get(cache_key(c.text, c.budget_chars, s))
+        text = entry.get("text") if entry else None
+        if not isinstance(text, str) or not text.strip():
+            misses.append(idx)
+        elif needs_number_words(c.text) and needs_number_words(text):
+            poisoned += 1
+            misses.append(idx)
+        else:
+            hits[idx] = text
+    return hits, misses, poisoned
+
+
+def take_condensed(cue, new: str | None, reused: bool = False) -> bool:
+    """Replace a cue's text with a condensation, if it really is one.
+
+    The one acceptance rule in the pipeline, used for a line that just came back from the model
+    and for a line read out of the book, so a cached line can never enter under laxer terms than
+    the one that produced it. Shorter is the point - but a line whose digits were spelled out is
+    supposed to grow, and is taken as long as the digits are actually gone.
+    """
+    if not new:
+        return False
+    spelled = needs_number_words(cue.text) and not needs_number_words(new)
+    if len(new) < len(cue.text) or spelled:
+        cue.text = new
+        cue.condensed = True
+        cue.reused = reused
+        return True
+    return False
+
+
+def hand_edited(cues, prev: dict | None, book: dict[str, dict], s: dict) -> dict[int, str]:
+    """Lines a human rewrote in `<base>.lektor.json`, which nothing here may overwrite.
+
+    The script stage ends by telling you to open the file and fix anything that reads badly, and
+    then every rerun quietly threw those fixes away. Two cases are unambiguous and both are
+    honoured here:
+
+      * the previous script says the line was never condensed, yet its text is not its source -
+        only a human can have done that;
+      * the line was condensed, and the book still holds what the model produced, and the file
+        says something else.
+
+    Everything else is left alone: a condensed line with no entry in the book cannot be told from
+    a redraw, and freezing it on a guess would silently stop the model ever seeing that line
+    again.
+
+    A previous line is matched to a current one by cue id with the source text agreeing, or - when
+    the ids have moved, which they do whenever the subtitles are re-extracted or the merge gate
+    changes - by a source text that occurs exactly once on both sides. Never by text alone: an
+    episode carries a dozen cards reading "Tak." or "Dzięki.", and one edit of one of them would
+    otherwise be stamped onto all the rest.
+    """
+    if not prev:
+        return {}
+    keep: dict[int, str] = {}
+    # Matched on the cue's own id AND on the source text having survived unchanged. Not on the
+    # text alone: a real episode carries ten or a dozen cards reading "Tak." or "Dzięki.", and
+    # matching by text would stamp one edit of one of them onto all the others - which is exactly
+    # the sort of short line somebody edits for how it reads.
+    by_id = {p.get("id"): p for p in prev.get("cues", []) if isinstance(p.get("id"), int)}
+    prev_counts: dict[str, int] = {}
+    for p in prev.get("cues", []):
+        src = p.get("text_original")
+        if isinstance(src, str) and src:
+            prev_counts[src] = prev_counts.get(src, 0) + 1
+    here_counts: dict[str, int] = {}
+    for c in cues:
+        here_counts[c.text] = here_counts.get(c.text, 0) + 1
+    # Ids move when the subtitle file is re-extracted or when the merge gate changes, so a source
+    # text that appears exactly once in both documents is also an identity - and a safe one.
+    unique = {p.get("text_original"): p for p in prev.get("cues", [])
+              if prev_counts.get(p.get("text_original")) == 1}
+
+    for c in cues:
+        p = by_id.get(c.idx)
+        if p is None or p.get("text_original") != c.text:
+            p = unique.get(c.text) if here_counts.get(c.text) == 1 else None
+        if p is None or p.get("text_original") != c.text:
+            continue
+        was = p.get("text")
+        if not isinstance(was, str) or not was or was == c.text:
+            continue
+        if not p.get("condensed"):
+            keep[c.idx] = was
+            continue
+        entry = book.get(cache_key(c.text, c.budget_chars, s))
+        if entry and isinstance(entry.get("text"), str) and entry["text"] != was:
+            keep[c.idx] = was
+    return keep
+
+
+def load_previous_script(cfg: Config, base: str) -> dict | None:
+    """The script from the last run, or None. Only ever read, and only for the lines it holds."""
+    p = cfg.work_dir / f"{base}.lektor.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data.get("cues"), list) else None
+
+
+# ---------------------------------------------------------------------------
 # Stage
 # ---------------------------------------------------------------------------
 
 
-def stage_script(cfg: Config, only: str | None, force: bool) -> None:
+def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = False) -> None:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if redraw and not force:
+        # "Pay for a clean draw, then skip the episode because its script already exists" cannot
+        # mean anything.
+        say("--redraw implies --force")
+        force = True
     srts = sorted(p for p in cfg.work_dir.glob("*.srt"))
     if only:
         srts = [p for p in srts if only in p.name]
@@ -943,28 +1220,51 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
             f"{len(overflow)} over budget ({100 * len(overflow) // max(1, len(cues))}%), "
             f"{len(numbers)} with digits to spell out")
 
-        if work and not api_key:
+        # The source text every cache key is computed from, snapshotted before anything rewrites
+        # it. Both the lookup and the store use this, so a line saved under its own condensation
+        # could never be found again.
+        source = {c.idx: c.text for c in cues}
+        s_tbl = cfg["script"]
+        reuse = bool(s_tbl.get("reuse_previous", True)) and not redraw
+        book = load_condensed(cfg, base) if reuse or redraw else {}
+
+        # Lines a human rewrote in the script file are not the model's to redraw, whatever the
+        # cache says, so they come out of the work list before anything else looks at it. This is
+        # deliberately NOT conditioned on `reuse`: "draw the text again" and "throw away what I
+        # typed" are two different requests, and --redraw only asks for the first.
+        edits = hand_edited(cues, load_previous_script(cfg, base), book, s_tbl)
+        for idx, text in edits.items():
+            by_id[idx].text = text
+            by_id[idx].edited = True
+        work = [i for i in work if i not in edits]
+
+        hits, todo, poisoned = (split_by_cache(cues, work, book, s_tbl) if reuse
+                                else ({}, list(work), 0))
+        if edits:
+            say(f"  {len(edits)} hand-edited line(s) kept as they are and never sent")
+        if poisoned:
+            say(f"  {poisoned} cached line(s) dropped for still carrying digits – redrawing them")
+        if hits:
+            say(f"  reusing {len(hits)} of {len(work)} condensed lines from "
+                f"{condensed_path(cfg, base).name}; {len(todo)} left to draw")
+        elif reuse and work and book:
+            say(f"  nothing in {condensed_path(cfg, base).name} matches this input – drawing all "
+                f"{len(todo)}")
+        elif redraw and work:
+            say(f"  --redraw: ignoring {condensed_path(cfg, base).name}, drawing all {len(todo)}")
+
+        drawn: dict[int, str] = {}
+        if todo and not api_key:
             say("  !! OPENROUTER_API_KEY not set – writing script without condensation")
             failed.append(f"{base}: OPENROUTER_API_KEY not set")
-            for c in overflow:
-                c.over_budget = True
-        elif work:
-            say(f"  rewriting {len(work)} cues with {cfg['script']['openrouter_model']}"
+        elif todo:
+            say(f"  rewriting {len(todo)} cues with {cfg['script']['openrouter_model']}"
                 f" (effort {cfg['script'].get('reasoning_effort', 'medium')})")
-            out = condense_episode(cues, set(work), cfg, api_key)
+            out = condense_episode(cues, set(todo), cfg, api_key)
             spent += out.usd
+            drawn = out.texts
             if out.error:
                 failed.append(f"{base}: {out.error}")
-            for c in (by_id[i] for i in work):
-                new = out.texts.get(c.idx)
-                # Shorter is the point for a condensation, but a line whose digits were spelled out
-                # is supposed to grow -- take it as long as the digits are actually gone.
-                spelled = needs_number_words(c.text) and new and not needs_number_words(new)
-                if new and (len(new) < len(c.text) or spelled):
-                    c.text = new
-                    c.condensed = True
-                c.over_budget = len(c.text) > c.budget_chars
-                c.has_digits = needs_number_words(c.text)
             say(f"  {out.response_format}, {out.returned}/{out.marked} cues back, "
                 f"{out.accepted} accepted, {len(out.rejected)} rejected, {len(out.missing)} missing")
             if out.usd:
@@ -972,9 +1272,59 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
                     f"({len(out.calls)} call(s), usage.cost)")
             say(f"  -> {write_spend(cfg, base, out).name}")
 
+        # Applied only now, and never earlier: the prompt the model just saw carries every OTHER
+        # cue as context, read from c.text. Putting a cached condensation into a cue before the
+        # call would send the model a context it has never seen for a cold run of the same
+        # episode, and make the prompt depend on how warm the cache happened to be.
+        for idx, text in hits.items():
+            take_condensed(by_id[idx], text, reused=True)
+        for idx, text in drawn.items():
+            if idx in by_id:
+                take_condensed(by_id[idx], text)
+
+        for c in cues:
+            c.over_budget = len(c.text) > c.budget_chars
+            c.has_digits = needs_number_words(c.text)
+
+        # Delays are planned on the FINAL text: condensation shortens a line, a shorter line
+        # leaves more room in its window, and the room is what decides how far a line may move.
+        onsets = load_onsets(cfg.work_dir, base, cfg)
+        if onsets is not None:
+            moved = plan_delays(cues, onsets, t, cps)
+            say(f"  onsets: {onsets.describe()}; {describe_delays(moved)}")
+            say(f"    {describe_leads(lead_counts(cues, onsets))}")
+
+        # Only lines that really were condensed go into the book, and only when the source they
+        # were condensed FROM is the one this run cleaned. A cue the model failed on is left out
+        # on purpose: caching a failure would make one bad draw permanent.
+        if reuse or redraw:
+            fresh = 0
+            for c in cues:
+                if not c.condensed or c.edited or c.idx not in source:
+                    continue
+                key = cache_key(source[c.idx], c.budget_chars, s_tbl)
+                if key not in book:
+                    fresh += 1
+                book[key] = {
+                    "text": c.text,
+                    "id": c.idx,
+                    "budget_chars": c.budget_chars,
+                    "src_chars": len(source[c.idx]),
+                    "src": source[c.idx],
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }
+            if book:
+                p = write_condensed(cfg, base, book)
+                say(f"  -> {p.name} ({len(book)} lines, {fresh} new)")
+
         still_over = sum(1 for c in cues if c.over_budget)
-        say(f"  {sum(1 for c in cues if c.condensed)} condensed, "
-            f"{still_over} still over budget (will be sped up)")
+        reused_n = sum(1 for c in cues if c.reused)
+        edited_n = sum(1 for c in cues if c.edited)
+        say(f"  {sum(1 for c in cues if c.condensed)} condensed"
+            + (f" ({reused_n} reused, {sum(1 for c in cues if c.condensed and not c.reused)} "
+               f"newly drawn)" if reused_n else "")
+            + (f", {edited_n} kept from your own edits" if edited_n else "")
+            + f", {still_over} still over budget (will be sped up)")
 
         payload = {
             "base": base,
@@ -989,10 +1339,15 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
                 {
                     "id": c.idx,
                     "start_ms": c.start_ms,
+                    # How much later than the card this line is spoken, because the actor had not
+                    # started yet. The voice stage adds it to start_ms; nothing else moves.
+                    "delay_ms": c.delay_ms,
                     "end_ms": c.end_ms,
                     "window_ms": c.window_ms,
                     "budget_chars": c.budget_chars,
                     "condensed": c.condensed,
+                    "reused": c.reused,
+                    "edited": c.edited,
                     "over_budget": c.over_budget,
                     "text": c.text,
                     "text_original": c.text_original or clean_text(c.raw, cfg),

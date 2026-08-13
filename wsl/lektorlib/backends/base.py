@@ -23,6 +23,16 @@ class Utterance:
     index: int
     text: str
     target_ms: int | None      # window the speech must fit; None = unconstrained
+    # What the lektor said just before and says just after. An engine given them reads the line
+    # as part of a continuous delivery instead of as an isolated sentence, which is what a lektor
+    # is; a backend that bills per call must also put them in its cache key, because they change
+    # the audio that comes back.
+    prev_text: str = ""
+    next_text: str = ""
+    # A speed decided for the whole episode at once rather than by this line alone. None means
+    # the backend decides for itself, which is the right answer for an engine that controls
+    # duration directly.
+    speed_hint: float | None = None
 
 
 @dataclass
@@ -39,6 +49,11 @@ class Backend(abc.ABC):
     name: str
     billable: bool
     needs_calibration: bool    # only backends that must PREDICT duration need chars/second
+    # Does this engine want to be told how fast to read, planned across the whole episode? True
+    # for anything that predicts a duration and cannot revise it for free; False for an engine
+    # that solves each line for the rate that fits, where a planned speed would only get in the
+    # way of a measurement it can make itself.
+    wants_speed_plan: bool = False
 
     def __init__(self, cfg):
         self.cfg = cfg

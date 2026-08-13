@@ -7,7 +7,8 @@
     "output_subdir": "_lektor/output",
     "ffmpeg_windows": "C:\\Programy\\ffmpeg\\bin\\ffmpeg.exe",
     "ffprobe_windows": "C:\\Programy\\ffmpeg\\bin\\ffprobe.exe",
-    "ffmpeg_wsl": "ffmpeg"
+    "ffmpeg_wsl": "ffmpeg",
+    "ffprobe_wsl": "ffprobe"
   },
   "extract": {
     "subtitle_language": "pol",
@@ -27,6 +28,8 @@
     "_accept_fit_ratio_note": "Fraction of the overflowing cues that must come back inside their budget for a whole-episode reply to be accepted. Below it the call is re-rolled up to max_rerolls times, keeping the best reply seen. At roughly 40% good rolls this averages ~2.3 calls, about $0.014 an episode -- still cheaper than any model that is steady on the first try.",
     "max_rerolls": 4,
     "_max_rerolls_note": "Hard stop on re-rolling. After this the best reply so far is used and the shortfall is reported honestly rather than hidden; whatever still overflows gets sped up instead.",
+    "reuse_previous": true,
+    "_reuse_previous_note": "Reuse condensed lines from <base>.condensed.json instead of redrawing them. The key is (cleaned source text, budget_chars, openrouter_model, reasoning_effort, hash of CONDENSE_SYSTEM), so any change to the prompt, the model, the effort, the cleaning rules or the merge gate misses on exactly the lines it really changed and on no others. Measured per episode: re-running the pipeline after an upstream change costs $0.71 without this and $0.09 with it ($4.27 a season against $0.54), and the TTS bill it also saves is 14-65x larger. Two honest caveats. First, whole-episode condensation sees the entire dialogue as context, so a reused line was written under a slightly different context than a fresh one would be -- the alternative is paying for the whole episode every time, and the line itself was accepted against the same budget. Second, a cue the model FAILED on is never stored, so it gets another chance on the next run instead of a cached failure. `script --redraw` ignores the file for one run; `reuse_previous: false` is the permanent version. Deleting the file buys exactly one clean draw, because the run that redraws also writes it again.",
     "openrouter_base": "https://openrouter.ai/api/v1",
     "reasoning_effort": "medium",
     "_reasoning_effort_note": "low is 3x cheaper but lands only 90/210 in budget; high costs 2x and adds nothing (206/210, 185 s). Send {\"effort\": ...} only -- {\"enabled\": false} is HTTP 400 on these models.",
@@ -71,6 +74,16 @@
     "_max_atempo_note": "Post-hoc time stretch, DISABLED at 1.0 by owner decision after listening: atempo resamples finished speech and the artefacts are worse than an honestly faster reading. Anything that will not fit at max_speed is simply allowed to run long into the silence that follows, which is what a real lektor does anyway. Raise it only if that lag starts to matter more than the artefacts.",
     "number_slack": 1.4,
     "_number_slack_note": "Extra budget for cues containing digits, on top of budget_slack. Spelling a number out multiplies its length - \"14\" becomes \"czternascie\" - so on an ordinary budget the model pays for the expansion by dropping a number, which defeats the point. Only a handful of cues per episode carry digits, so the lag this buys back is negligible.",
+    "max_delay_ms": 600,
+    "_max_delay_ms_note": "Ceiling on how far a line may be pushed later when the actor had not started speaking yet, and the switch for the whole feature: 0 disables it and the placement goes back to the card start. 600 ms because that is where a nudge stops being one. The score gate does not bound the lead on its own -- the worst lead passing it is +2526 ms, on a two-word cue the aligner guessed at -- so this cap is the thing that actually contains a bad anchor, and only 6 of 180 delays across the season are held by it. Re-timing every line to the acoustic onset was measured as a NET LOSS (-50.8 s of room, lines needing a speed-up 4 -> 41), so this is deliberately a nudge on a handful of lines and never a re-timing.",
+    "delay_min_lead_ms": 300,
+    "_delay_min_lead_ms_note": "Smallest lead worth correcting. Below it the lektor is heard as being on the card, not ahead of it. Measured over all six episodes: 182 of 3443 lines lead by more than 300 ms, 35 by more than 500, 8 by more than 800.",
+    "delay_keep_lead_ms": 100,
+    "_delay_keep_lead_ms_note": "How much of the lead is kept rather than eaten. A card goes up a median 73 ms before the first word and that lead is working room, not error; a lektor starting exactly on the first syllable sounds late. So the delay closes the gap to this, never to zero.",
+    "delay_min_score": 0.8,
+    "_delay_min_score_note": "Alignment confidence a card's onset must clear before anything is moved. Higher than the pause gate's 0.5 on purpose: a pause gate that acts on a bad alignment refuses a merge, a delay that acts on one moves a line that was never early. The +2003 ms leads reported by the ASR brief all sit below this.",
+    "delay_match_tol_ms": 120,
+    "_delay_match_tol_ms_note": "How far apart a Polish card and its English counterpart may start and still be treated as the same card. The aligner reads the English track and the lektor is written from the Polish one; 3130 of 3443 cues start on a byte-identical timestamp and the rest are seconds away, so widening this to 200 ms buys 10 cues in 3443 and to 400 ms buys 28. It is a safety margin, not a search.",
     "speed_smooth_s": 6.0,
     "_speed_smooth_note": "How far a speed-up bleeds into its neighbours, in seconds. A single line jumping to 1.2 while the ones around it sit at 1.0 is heard as the lektor suddenly hurrying; ramping the neighbours part of the way there makes the acceleration a gradient instead of a step. It also pays for itself: neighbours that finish earlier leave the crowded line more room, so it needs less speed-up than it did alone.",
     "speed_relax": 0.88,
@@ -123,9 +136,13 @@
       "_speed_max_note": "Hard API limit on voice_settings.speed, documented as 0.7-1.2. Anything above it is rejected, so this clamps timing.max_speed; what does not fit at 1.2 is stretched locally with atempo, which is free.",
       "max_retries": 5,
       "_max_retries_note": "Attempts per line against 429/500/502/503 only. 401, 402 and 422 mean the same thing every time and surface at once instead of sleeping five times.",
-      "_settings_note": "voice_settings sent with every call. speed is NOT here: it is computed per line from the measured chars/second and clamped by speed_max. stability 0.6 keeps the delivery even without going robotic; style above 0 makes a lektor act, which is the one thing he must not do.",
+      "_settings_note": "voice_settings sent with every call. speed is NOT here: it is computed per line from the measured chars/second and clamped by speed_max. style above 0 makes a lektor act, which is the one thing he must not do. stability was 0.6 here and 1.0 in the renderer that actually produced all six episodes -- the config was simply wrong, and every line on disk is keyed on 1.0. At 1.0 the voice stops acting, which is the whole point of the profile.",
+      "send_neighbour_text": true,
+      "_send_neighbour_text_note": "Send previous_text / next_text with every line, so the engine reads it as part of a continuous delivery instead of as an isolated sentence. Free in API cost, and part of the cache key: turning it off re-reads the whole episode.",
+      "speed_plan": "neighbour_smoothed",
+      "_speed_plan_note": "'neighbour_smoothed' plans every line's speed over the whole episode, spreading a crowded line's speed-up across its neighbours (timing.speed_smooth_s, timing.speed_relax). 'per_line' asks each line to fit its own window alone, which is heard as the lektor suddenly hurrying and then stopping. Smoothed is what shipped.",
       "settings": {
-        "stability": 0.6,
+        "stability": 1.0,
         "similarity_boost": 0.75,
         "style": 0.0,
         "use_speaker_boost": false
@@ -186,6 +203,14 @@
   },
   "mix": {
     "sample_rate": 48000,
+    "channel_layout": "5.1(side)",
+    "_channel_layout_note": "Layout of the finished track: '5.1(side)' or 'stereo'. 5.1 is what ships -- the lektor lands on the centre channel, where dialogue lives and where a stereo downmix folds it evenly into both speakers, and every other channel keeps its own material. Stereo is the fallback for a source that has no surround track; the mix then carries the voice on both channels. The layout also picks the encode profile below.",
+    "voice_channels": [2],
+    "_voice_channels_note": "Output channels the lektor is laid onto, in ffmpeg's 5.1(side) order FL FR FC LFE SL SR. [2] is FC. Ignored in stereo, where the lektor is laid on both channels at full level -- which is why voice_channel_comp_db is 0 there: two correlated channels already sum the 3 dB the centre-only case has to buy back.",
+    "voice_channel_comp_db": 3.0,
+    "_voice_channel_comp_db_note": "Level compensation for putting the voice on ONE channel instead of two. Every level in this mix was tuned against a stereo fold, where L and R sum 3 dB; the centre channel alone does not, so without this the lektor lands 3 dB quieter than the number voice_over_program_db promises. It is a correction, not a taste knob -- voice_over_program_db is the taste knob.",
+    "level_reference": "stereo_fold",
+    "_level_reference_note": "How the programme's own loudness is measured, and every level in the mix hangs off it. 'stereo_fold' downmixes the source to two channels first, which is what the mix was tuned against; 'as_is' measures whatever channels the source has, and on a 5.1 source the LFE and the surrounds move the number enough to unbalance the whole thing.",
     "_levels_note": "Every level is relative to the programme's own measured loudness, never to dBFS. The first cut used an absolute voice_target_dbfs of -18 and buried a quiet film under a lektor 25 dB above it; the same setting would have been too quiet on a loud one. All three numbers below were then set by ear on a real scene.",
     "voice_over_program_db": 7.0,
     "_voice_over_program_db_note": "Lektor RMS above the programme RMS. 8 was judged slightly too strong and 5 slightly too weak.",
@@ -231,7 +256,13 @@
     "codec": "ac3",
     "bitrate": "256k",
     "extension": "ac3",
-    "_note": "AC3 muxes into MKV and plays on everything, including dumb TVs. Set codec/extension to flac for a lossless handoff at ~3x the size."
+    "_note": "The STEREO profile. AC3 muxes into MKV and plays on everything, including dumb TVs. Set codec/extension to flac for a lossless handoff at ~3x the size.",
+    "surround": {
+      "codec": "eac3",
+      "bitrate": "768k",
+      "extension": "eac3"
+    },
+    "_surround_note": "Used when mix.channel_layout is a surround layout. E-AC-3 at 768k is what produced every episode on disk; ac3 at 256k cannot carry six channels credibly, so the profile is chosen by layout rather than shared."
   },
   "clean": {
     "skip_patterns": [

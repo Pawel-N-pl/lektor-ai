@@ -23,9 +23,18 @@ class Cue:
     window_ms: int = 0
     budget_chars: int = 0
     condensed: bool = False
+    # The condensed text came out of <base>.condensed.json rather than out of a paid draw.
+    reused: bool = False
+    # A human rewrote this line in the script file. Nothing regenerates it, and it never goes
+    # into the reuse cache - the cache records what the model produced under stated conditions,
+    # and this is not that.
+    edited: bool = False
     over_budget: bool = False
     speed: float = 1.0
     has_digits: bool = False
+    # How much later than its card this line is spoken, because the actor had not started yet.
+    # Always >= 0: subtitles lead speech on purpose and a lektor is never moved earlier.
+    delay_ms: int = 0
     # Ids of the cues folded into this one, empty when nothing was merged. Kept so the script file
     # can show what a line was assembled from.
     merged_from: list[int] = field(default_factory=list)
@@ -122,6 +131,22 @@ def respell(text: str, cfg) -> str:
 
 def should_skip(raw: str, cfg) -> bool:
     return any(re.search(p, raw) for p in cfg["clean"]["skip_patterns"])
+
+
+def predicted_ms(text: str, t: dict, cps: float | None = None) -> float:
+    """How long this line is expected to take when read.
+
+    The same fitted model the character budgets invert: a fixed cost per utterance plus a cost per
+    character. It is a prediction, not a measurement -- the voice stage measures the audio that
+    really came back -- but it is the only estimate available before anything has been spoken, and
+    the delay planner needs one to know whether pushing a line later would push it out of its own
+    window.
+    """
+    overhead = float(t.get("overhead_ms", 0.0))
+    rate = float(t.get("ms_per_char", 0.0))
+    if rate <= 0.0:
+        rate = 1000.0 / float(cps or t.get("chars_per_second", 14.5) or 14.5)
+    return overhead + rate * len(text)
 
 
 def compute_windows(cues: list[Cue], cfg) -> None:

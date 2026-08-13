@@ -46,6 +46,7 @@ from pathlib import Path
 import numpy as np
 
 from .. import say
+from ..audio import shorten_pauses
 from .base import Backend, Rendered, Utterance
 
 VOICES_URL = (
@@ -201,6 +202,16 @@ class PiperBackend(Backend):
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{key}.wav"
 
+    def _post(self, audio: np.ndarray) -> np.ndarray:
+        """Compress the pauses the model puts at commas, exactly as the paid backend does.
+
+        Applied on the way out of the cache rather than on the way in: the cache holds what the
+        model synthesised, and the pause settings are a mix decision that must be free to change
+        without throwing away a voice's worth of synthesis. Doing it here also means the duration
+        search below measures the audio that will really be laid down, not a longer draft of it.
+        """
+        return shorten_pauses(self.cfg, audio, self.sample_rate)
+
     def _speak(self, text: str, length_scale: float) -> tuple[np.ndarray, bool]:
         """One synthesis at one length_scale, through the disk cache. Returns (mono, cached)."""
         from piper import SynthesisConfig
@@ -211,7 +222,7 @@ class PiperBackend(Backend):
             with self._lock:
                 self.hits += 1
                 self.iterations += 1
-            return _read_wav(path), True
+            return self._post(_read_wav(path)), True
 
         cfg = SynthesisConfig(length_scale=float(length_scale), **syn)
         t0 = time.time()
@@ -225,7 +236,7 @@ class PiperBackend(Backend):
             self.calls += 1
             self.iterations += 1
             self.gen_s += elapsed
-        return audio, False
+        return self._post(audio), False
 
     def _ms(self, audio: np.ndarray) -> float:
         return audio.size / self.sample_rate * 1000.0
