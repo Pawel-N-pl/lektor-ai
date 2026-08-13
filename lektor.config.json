@@ -217,6 +217,12 @@
       "&": " i ",
       "@": " małpa "
     },
-    "_spoken_symbols_note": "Symbols rewritten into the words a lektor actually says, applied to EVERY cue before budgets and before the LLM. Same reasoning as the pronunciation table: a short cue never goes to the model, so a '#' left in it would be read as whatever the voice makes of the glyph. The LLM handles digits; these are the marks it has no rule for."
+    "_spoken_symbols_note": "Symbols rewritten into the words a lektor actually says, applied to EVERY cue before budgets and before the LLM. Same reasoning as the pronunciation table: a short cue never goes to the model, so a '#' left in it would be read as whatever the voice makes of the glyph. The LLM handles digits; these are the marks it has no rule for.",
+    "merge_gap_ms": 140,
+    "_merge_gap_note": "Two cards are joined only when BOTH hold: the gap is no larger than this, and the first card does not finish its sentence. The gap alone proves nothing - this release puts a fixed 82-85 ms between every card, 55% of all gaps, and the next distinct value is 417 ms. Merging on the gap alone glued two finished sentences 89% of the time, including across shot changes, across speaker turns and onto on-screen title cards. Set to 0 to switch merging off.",
+    "merge_max_cues": 4,
+    "merge_max_chars": 160,
+    "merge_max_span_ms": 9000,
+    "_merge_limits_note": "Guards on a merged utterance. Looser than the first attempt because the predicate is now narrow: with the old timestamp-only rule a 7 s cap chopped 571 of 1926 candidate joins, and 87 of those refusals landed mid-sentence - moving the hole rather than closing it."
   }
 }

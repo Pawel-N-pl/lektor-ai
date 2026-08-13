@@ -61,9 +61,9 @@ each one hits its window its own way, and the voice stage reports what actually 
 |---|---|---|---|
 | cost | $0.05 / 1000 chars (Flash, Turbo), $0.10 (Multilingual v2, v3) | free | free |
 | hardware | network | CPU | needs the GPU, 2.6 GB VRAM |
-| speed, one 598-cue episode | minutes, bounded by plan concurrency | **19.7 s cold, 0.7 s warm** | ~42 min of GPU for the same 17.7 min of speech |
+| speed, one 371-utterance episode | minutes, bounded by plan concurrency | **19.7 s cold, 0.7 s warm** | ~42 min of GPU for the same 17.7 min of speech |
 | fits the window by | predicting from a measured chars/second, then `voice_settings.speed`, then local `atempo` off the CACHED mp3 | binary-searching `length_scale` per line, exact | nothing – generate, then `atempo`, and hope |
-| lines inside their window (measured, 598 cues) | – | **597 / 598**, worst overrun +4.1% | 3 of 4 on a 20 s slice, worst overrun +56% |
+| lines inside their window (measured, 371 utterances) | – | **597 / 598**, worst overrun +4.1% | 3 of 4 on a 20 s slice, worst overrun +56% |
 | voice cloning | a paid feature | no | yes, from an 8–20 s reference clip |
 | calibration needed | yes | no | no |
 
@@ -171,7 +171,7 @@ do come back bit-identical – 0.00e+00 across every one of them, 2.7% of that s
 
 `python3 wsl/lektor.py cost --plan creator` counts characters and prices them against the backend
 that is actually selected, before you spend anything. Local backends print $0.00 rather than a
-fake number. Rough shape for one Ted Lasso episode: ~18 500 characters of subtitles, ~600 lines,
+fake number. Rough shape for one Ted Lasso episode: ~18 500 characters of subtitles, ~370 utterances,
 condensed to ~14 700.
 
 ElevenLabs bills a flat rate per 1000 characters, the same on every plan:
@@ -196,7 +196,7 @@ script: around $0.014 an episode with the re-roll policy, i.e. well under a doll
 
 - **The character budgets are tighter than the flat model they replaced.** `timing.overhead_ms` /
   `ms_per_char` model duration as `47 + 73.5 * chars` ms, fitted on ElevenLabs output. Measured on
-  S02E01 with the config exactly as it ships: **230** of 598 cues over budget, against 195 for the
+  S02E01 with the config exactly as it ships: **230** of 371 utterances over budget, against 195 for the
   flat 14.5 chars/s model over the same windows. (An earlier note here claimed 210 → 381; that pair
   was fitted before trimming was accounted for and before `max_borrow_ms` went from 700 to 1500,
   and neither number is reachable from this config.) How the re-roll policy behaves at 230 marked

@@ -7,7 +7,7 @@ long a line is allowed to run, and every later stage budgets against what it say
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -23,6 +23,13 @@ class Cue:
     condensed: bool = False
     over_budget: bool = False
     speed: float = 1.0
+    has_digits: bool = False
+    # Ids of the cues folded into this one, empty when nothing was merged. Kept so the script file
+    # can show what a line was assembled from.
+    merged_from: list[int] = field(default_factory=list)
+    # Set only for merged cues, built from the cleaned parts rather than by re-cleaning the
+    # joined raw, which would run the whitespace rules across the join.
+    text_original: str = ""
 
     @property
     def duration_ms(self) -> int:
@@ -122,11 +129,104 @@ def compute_windows(cues: list[Cue], cfg) -> None:
         c.window_ms = c.duration_ms + borrow
 
 
+SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u00bb)\]]*\s*$")
+ELLIPSIS_END = re.compile(r"(\.\.\.|\u2026)[\"'\u201d\u00bb)\]]*\s*$")
+SPEAKER_DASH = re.compile(r"^\s*[-\u2013\u2014]\s*\S")
+
+
+def is_screen_text(cue: "Cue") -> bool:
+    """A title card, chyron or sign rather than something a person says.
+
+    Subtitles set these in capitals. They are their own utterance and must never be glued to
+    dialogue: merging produced lines like a commentator's sentence running straight into the show's
+    title card, and in two cases a sentence ENDING on a screen graphic.
+    """
+    letters = [ch for ch in cue.text if ch.isalpha()]
+    if len(letters) < 4:
+        return False
+    return sum(1 for ch in letters if ch.isupper()) / len(letters) >= 0.8
+
+
+def continues_sentence(prev: "Cue", cur: "Cue") -> bool:
+    """Is `cur` the rest of a sentence that `prev` started?
+
+    This is the whole predicate, and the earlier version got it wrong: it merged on the timestamp
+    gap alone. Measured over six episodes, this release puts a fixed 82-85 ms between EVERY card,
+    so that gap says nothing about continuation - 89% of the merges it authorised glued two
+    FINISHED sentences together, including across shot changes, and only 10.7% were the
+    mid-sentence continuation the feature exists for.
+
+    A card that does not close its sentence is the real signal. An ellipsis counts as continuation;
+    a leading dash marks a change of speaker and is never joined.
+    """
+    if SENTENCE_END.search(prev.text) and not ELLIPSIS_END.search(prev.text):
+        return False
+    if SPEAKER_DASH.match(cur.raw.lstrip()):
+        return False
+    return not (is_screen_text(prev) or is_screen_text(cur))
+
+
+def merge_contiguous(cues: list[Cue], cfg) -> list[Cue]:
+    """Join the cards that carry ONE sentence, so the lektor reads it as one breath.
+
+    A sentence split across two cards is read as two utterances, each with its own onset and tail,
+    and the lektor leaves a silent hole in the middle of a thought that the picture does not have.
+
+    Both conditions must hold: the cards are contiguous in time (gap at the release's floor) AND
+    the first one does not finish its sentence. The timestamp alone is not evidence of anything.
+    """
+    m = cfg["clean"]
+    gap_ms = float(m.get("merge_gap_ms", 0.0))
+    if gap_ms <= 0 or not cues:
+        return cues
+    max_cues = int(m.get("merge_max_cues", 4))
+    max_chars = int(m.get("merge_max_chars", 160))
+    max_span_ms = int(m.get("merge_max_span_ms", 9000))
+
+    out: list[Cue] = []
+    group: list[Cue] = [cues[0]]
+
+    def flush() -> None:
+        if len(group) == 1:
+            out.append(group[0])
+            return
+        first, last = group[0], group[-1]
+        merged = Cue(idx=first.idx, start_ms=first.start_ms, end_ms=last.end_ms,
+                     raw="\n".join(c.raw for c in group))
+        # Built from the already-cleaned parts, never by re-cleaning the joined raw: the whitespace
+        # rules would then run across the join and eat the space before a card opening on "...".
+        merged.text = " ".join(c.text for c in group)
+        merged.merged_from = [c.idx for c in group]
+        merged.text_original = merged.text
+        out.append(merged)
+
+    for prev, cur in zip(cues, cues[1:]):
+        joinable = (
+            cur.start_ms - prev.end_ms <= gap_ms
+            and continues_sentence(prev, cur)
+            and len(group) < max_cues
+            and len(" ".join(c.text for c in group)) + 1 + len(cur.text) <= max_chars
+            and cur.end_ms - group[0].start_ms <= max_span_ms
+        )
+        if joinable:
+            group.append(cur)
+        else:
+            flush()
+            group = [cur]
+    flush()
+    return out
+
+
 def load_cues(path: Path, cfg) -> list[Cue]:
-    """parse -> skip -> clean -> drop empties -> windows. The order matters and is load-bearing."""
+    """parse -> skip -> clean -> drop empties -> merge -> windows. The order matters and is load-bearing.
+
+    Merging comes after cleaning (so it joins what will actually be spoken, not markup) and before
+    windows (so the merged cue gets one window spanning the whole group).
+    """
     cues = [c for c in parse_srt(path) if not should_skip(c.raw, cfg)]
     for c in cues:
         c.text = clean_text(c.raw, cfg)
     cues = [c for c in cues if c.text]
+    cues = merge_contiguous(cues, cfg)
     compute_windows(cues, cfg)
     return cues

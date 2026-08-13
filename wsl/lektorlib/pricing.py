@@ -19,7 +19,7 @@ import json
 from . import say
 from .config import Config
 from .script import read_spend
-from .srt import clean_text, parse_srt, should_skip
+from .srt import load_cues
 
 FLASH_USD_PER_1K = 0.05   # eleven_flash_*, eleven_turbo_*
 OTHER_USD_PER_1K = 0.10   # eleven_multilingual_v2, eleven_v3
@@ -79,8 +79,10 @@ def _rows(cfg: Config) -> tuple[list[tuple[str, int, int]], bool]:
         return rows, True
     rows = []
     for p in sorted(cfg.work_dir.glob("*.srt")):
-        cues = [c for c in parse_srt(p) if not should_skip(c.raw, cfg)]
-        rows.append((p.stem, len(cues), sum(len(clean_text(c.raw, cfg)) for c in cues)))
+        cues = load_cues(p, cfg)
+        # c.text is what will actually be spoken, merges included; re-cleaning c.raw here would
+        # count the pre-merge cards and overstate the line count by 62%.
+        rows.append((p.stem, len(cues), sum(len(c.text) for c in cues)))
     return rows, False
 
 

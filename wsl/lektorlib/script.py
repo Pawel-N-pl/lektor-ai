@@ -115,6 +115,21 @@ Odpowiadasz wyłącznie obiektem JSON: {"cues":[{"id":<int>,"text":"<skrócona k
 HAS_DIGIT = re.compile(r"\d")
 
 
+def digit_share(text: str) -> float:
+    """How much of a line is sentences carrying digits, 0.0 to 1.0.
+
+    A merged utterance may be one card with a number and three without. The number budget bonus is
+    for spelling a number out, so it should scale with how much of the line that actually is.
+    """
+    if not HAS_DIGIT.search(text):
+        return 0.0
+    parts = [p for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+    if not parts:
+        return 1.0
+    with_digits = sum(len(p) for p in parts if HAS_DIGIT.search(p))
+    return with_digits / max(1, sum(len(p) for p in parts))
+
+
 def needs_number_words(text: str) -> bool:
     """A digit anywhere means the line cannot be read aloud as written."""
     return bool(HAS_DIGIT.search(text))
@@ -506,10 +521,15 @@ class CondenseOutcome:
     over_budget: list[int] = field(default_factory=list)
     rejected: dict[int, str] = field(default_factory=dict)
     missing: list[int] = field(default_factory=list)
+    # Ids the model returned that no cue claims. Before merging every id in 1..N was a live cue, so
+    # this could only be a hallucination; now that merging folds ids away it can also mean the model
+    # answered the pre-merge numbering, which would otherwise read as a clean run with everything
+    # missing.
+    extra: list[int] = field(default_factory=list)
     error: str = ""
 
 
-def budget_for(window_ms: int, cps: float, t: dict, spells_numbers: bool = False) -> int:
+def budget_for(window_ms: int, cps: float, t: dict, spells_numbers: float = 0.0) -> int:
     """How many characters actually fit in a window.
 
     A single chars-per-second figure is wrong for subtitle cues, and wrong in the direction that
@@ -530,12 +550,15 @@ def budget_for(window_ms: int, cps: float, t: dict, spells_numbers: bool = False
     # in by atempo, which is free and inaudible at these factors; a line squeezed to fit by
     # abbreviating ("hiszpanski" -> "hisz.") or by dropping a clause is a defect the viewer hears.
     slack = float(t.get("budget_slack", 1.0))
-    if spells_numbers:
+    if spells_numbers > 0.0:
         # Spelling out inflates the line badly - "14" is two characters, "czternascie" is eleven -
         # and against an ordinary budget the model buys the room back by dropping a number, which
         # is the one thing it must not do. Measured on S02E04: "4 wygrane, 4 przegrane, 14 remisow"
         # came back without the remisy at all.
-        slack *= float(t.get("number_slack", 1.0))
+        # Scaled by how much of the line actually carries digits. A merged utterance can be one
+        # card with a number and three without; granting the full multiplier to all of it inflated
+        # the budget by up to 30 characters and put the reading 873 ms behind the picture.
+        slack *= 1.0 + (float(t.get("number_slack", 1.0)) - 1.0) * min(1.0, spells_numbers)
     return max(6, int(usable * slack / ms_per_char))
 
 
@@ -702,6 +725,7 @@ def _condense_once(cues, target_ids: set[int], cfg: Config, api_key: str) -> Con
     out.over_budget = final.over_budget
     out.rejected = final.rejected
     out.missing = final.missing
+    out.extra = final.extra
     out.usd = sum(c.cost for c in out.calls)
     return out
 
@@ -818,7 +842,7 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
         say(f"\n{base}")
         cues = load_cues(srt, cfg)
         for c in cues:
-            c.budget_chars = budget_for(c.window_ms, cps, t, needs_number_words(c.text))
+            c.budget_chars = budget_for(c.window_ms, cps, t, digit_share(c.text))
 
         overflow = [c for c in cues if len(c.text) > c.budget_chars]
         # Digits cannot be read aloud, and a cue that already fits is never sent for shortening,
@@ -878,7 +902,8 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
                     "condensed": c.condensed,
                     "over_budget": c.over_budget,
                     "text": c.text,
-                    "text_original": clean_text(c.raw, cfg),
+                    "text_original": c.text_original or clean_text(c.raw, cfg),
+                    "merged_from": c.merged_from,
                 }
                 for c in cues
             ],

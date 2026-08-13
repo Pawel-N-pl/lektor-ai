@@ -109,7 +109,10 @@ def scripted(*responses):
     return post
 
 
+# request_gap_ms 0: these tests are about RETRY BACKOFF, and the process-wide pacing throttle also
+# sleeps. Leaving it on made a retry test count the pacer's sleeps as backoff and fail.
 SCRIPT = {
+    "request_gap_ms": 0,
     "openrouter_model": "test/model",
     "openrouter_base": "https://example.invalid/api/v1",
     "reasoning_effort": "medium",
