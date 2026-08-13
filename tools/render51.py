@@ -28,7 +28,7 @@ ROOT = pathlib.Path("/home/pawel/projects/lektor-ai")
 sys.path.insert(0, str(SC))
 import lektor_original as L  # noqa: E402
 sys.path.insert(0, "/home/pawel/projects/lektor-ai/wsl")
-from lektorlib.audio import trim_silence as TRIM, apply_shelf  # noqa: E402
+from lektorlib.audio import trim_silence as TRIM, apply_shelf, shorten_pauses  # noqa: E402
 from lektorlib.mix import limit_block  # noqa: E402
 # Ducking comes from the package, not from the pre-refactor module: the hold that stops the
 # envelope pumping between neighbouring lines lives there.
@@ -235,11 +235,12 @@ def synthesise(C, cues, total_samples):
         w = c.window_ms / 1000.0 * C["timing"]["safety"]
         sp = speeds[i]
         mp3, n = tts(c.text, sp, prev, nxt)
-        au = TRIM(L.decode(C, mp3, SR), SR)
+        # Pause compression before trimming: it changes the length, and the trim decides the ends.
+        au = TRIM(shorten_pauses(C, L.decode(C, mp3, SR), SR), SR)
         at = 1.0
         if MAX_ATEMPO > 1.01 and len(au) / SR > w:
             at = min(MAX_ATEMPO, (len(au) / SR) / w)
-            au = TRIM(L.decode(C, mp3, SR, atempo=at), SR)
+            au = TRIM(shorten_pauses(C, L.decode(C, mp3, SR, atempo=at), SR), SR)
         done[0] += 1
         done[1] += n
         if done[0] % 50 == 0:

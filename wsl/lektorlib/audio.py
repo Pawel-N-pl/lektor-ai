@@ -140,3 +140,82 @@ def measure_lufs(cfg, audio: np.ndarray, sr: int) -> float:
     p = subprocess.run(args, input=audio.astype(np.float32).tobytes(), capture_output=True)
     hits = re.findall(r"I:\s*(-?\d+\.\d+)\s*LUFS", p.stderr.decode())
     return float(hits[-1]) if hits else float("nan")
+
+
+def find_pauses(audio: np.ndarray, sr: int, floor_db: float = -30.0,
+                min_ms: float = 60.0) -> list[tuple[int, int]]:
+    """Low-level stretches INSIDE an utterance, in samples.
+
+    Not digital silence: the engine's pauses sit around -30 dB of the clip's peak, breath and room
+    rather than nothing. A -42 dB threshold finds none of them, which is how they went unnoticed -
+    measured at the right threshold, a line with two commas spends 23% of its length not speaking.
+    """
+    if audio.size == 0:
+        return []
+    frame = max(1, int(0.01 * sr))
+    n = audio.size // frame
+    if n < 5:
+        return []
+    peaks = np.abs(audio[: n * frame].reshape(n, frame)).max(axis=1)
+    top = float(peaks.max())
+    if top <= 1e-6:
+        return []
+    quiet = peaks <= top * (10.0 ** (floor_db / 20.0))
+    out: list[tuple[int, int]] = []
+    start = None
+    for i, q in enumerate(quiet):
+        if q and start is None:
+            start = i
+        elif not q and start is not None:
+            if (i - start) * 10 >= min_ms:
+                out.append((start * frame, i * frame))
+            start = None
+    if start is not None and (n - start) * 10 >= min_ms:
+        out.append((start * frame, n * frame))
+    return out
+
+
+def shorten_pauses(cfg, audio: np.ndarray, sr: int) -> np.ndarray:
+    """Compress the excess of every internal pause above the floor where a pause stops being heard.
+
+    Scaling every pause by the same fraction would be wrong: it drags a sentence boundary down to
+    the length of a comma and the sentence stops ending. Instead each pause keeps the floor and
+    gives up a fraction of whatever it has ABOVE it, so a long pause stays longer than a short one
+    and the hierarchy the engine built survives.
+
+        new = floor + (old - floor) * ratio
+
+    Splices are crossfaded, because a cut at an arbitrary sample is a step and a step is a click -
+    the same lesson the end-trimming already learned.
+    """
+    m = cfg["mix"]
+    ratio = float(m.get("pause_ratio", 1.0))
+    if ratio >= 0.999 or audio.size == 0:
+        return audio
+    floor = int(float(m.get("pause_floor_ms", 120.0)) / 1000.0 * sr)
+    fade = max(2, int(0.006 * sr))
+    spans = find_pauses(audio, sr, float(m.get("pause_floor_db", -30.0)),
+                        float(m.get("pause_min_ms", 60.0)))
+    if not spans:
+        return audio
+
+    pieces: list[np.ndarray] = []
+    prev = 0
+    for a, b in spans:
+        keep = floor + int((b - a - floor) * ratio) if b - a > floor else b - a
+        keep = max(0, min(keep, b - a))
+        pieces.append(audio[prev:a])
+        if keep:
+            pieces.append(audio[a : a + keep])
+        prev = b
+    pieces.append(audio[prev:])
+
+    out = pieces[0]
+    ramp = (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fade))).astype(np.float32)
+    for nxt in pieces[1:]:
+        if out.size < fade or nxt.size < fade:
+            out = np.concatenate([out, nxt])
+            continue
+        head = out[-fade:] * ramp[::-1] + nxt[:fade] * ramp
+        out = np.concatenate([out[:-fade], head, nxt[fade:]])
+    return out.astype(np.float32)
