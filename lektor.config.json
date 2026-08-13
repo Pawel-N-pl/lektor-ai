@@ -189,13 +189,13 @@
     "_levels_note": "Every level is relative to the programme's own measured loudness, never to dBFS. The first cut used an absolute voice_target_dbfs of -18 and buried a quiet film under a lektor 25 dB above it; the same setting would have been too quiet on a loud one. All three numbers below were then set by ear on a real scene.",
     "voice_over_program_db": 7.0,
     "_voice_over_program_db_note": "Lektor RMS above the programme RMS. 8 was judged slightly too strong and 5 slightly too weak.",
-    "duck_to_db": -7.0,
+    "duck_to_db": -10.0,
     "_duck_to_db_note": "Where the original sits while the lektor speaks, relative to its natural level. Deeper than about -10 starts erasing the scene instead of making room in it.",
     "program_gain_db": 4.0,
     "_program_gain_db_note": "Makeup applied to the original in the gaps. The source is quiet, and a lektor track should not make the film quieter than watching it without one.",
-    "attack_ms": 180,
+    "attack_ms": 90,
     "release_ms": 600.0,
-    "pre_roll_ms": 250,
+    "pre_roll_ms": 450,
     "post_roll_ms": 350,
     "limiter_ceiling_db": -1.0,
     "limiter_release_ms": 120,
@@ -215,10 +215,12 @@
       4000
     ],
     "_duck_band_note": "The band the lektor competes for. Below it is weight and above it is air, neither of which masks speech. Split with a Linkwitz-Riley crossover (ffmpeg acrossover) because the two halves must sum back to the original when their gains are equal; band-passing the middle and calling the difference the rest does NOT work, since an IIR band-pass shifts phase and the difference still carries the midrange at full level. That shortcut measured 6.8 dB LOUDER in the speech band than broadband ducking, the opposite of the intent.",
-    "duck_mid_db": -11.0,
-    "_duck_mid_note": "How far the midrange drops under the lektor in spectral mode. Deeper than the broadband duck_to_db on purpose: it is the only band being touched, so it can afford to move more.",
-    "duck_rest_db": -1.5,
-    "_duck_rest_note": "What happens to bass and air under the lektor. Almost nothing, by design - just enough to keep a loud passage from swallowing him whole."
+    "duck_mid_db": -14.0,
+    "_duck_mid_note": "How far the speech band drops under the lektor in spectral mode. Deeper than it was: the first cut sat at -11 and the lektor still blended into the bed, and this is the only band being touched.",
+    "duck_rest_db": -3.0,
+    "_duck_rest_note": "Bass and air under the lektor. Barely moved, so the film keeps its weight - but no longer untouched, because at 1.5 dB a loud passage still crowded the voice.",
+    "_pre_roll_ms_note": "How long before the lektor speaks the duck begins. Measured at the old 250 ms with a 180 ms attack, the bed was still only 4.5 dB down when the voice arrived - 6.5 dB short of its target - and did not reach depth until half a second INTO the line. That is heard as two people talking at once, which is exactly what it was.",
+    "_attack_ms_note": "Time constant of the duck going down. Short, because the pre-roll only helps if the fall completes inside it."
   },
   "encode": {
     "codec": "ac3",
