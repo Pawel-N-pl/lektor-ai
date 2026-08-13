@@ -1,0 +1,459 @@
+{
+ "stats": {
+  "pol_files": 46,
+  "pol_cues": 26950,
+  "paired": 39
+ },
+ "frequency": [
+  {
+   "unit": "stopa (foot)",
+   "hits": 12,
+   "files": 8
+  },
+  {
+   "unit": "funt (pound)",
+   "hits": 4,
+   "files": 4
+  },
+  {
+   "unit": "kamień (stone)",
+   "hits": 3,
+   "files": 3
+  },
+  {
+   "unit": "mila (mile)",
+   "hits": 2,
+   "files": 2
+  },
+  {
+   "unit": "cal (inch)",
+   "hits": 1,
+   "files": 1
+  }
+ ],
+ "zero_units": [
+  "jard (yard)",
+  "uncja (ounce)",
+  "galon (gallon)",
+  "pinta (pint)",
+  "kwarta (quart)",
+  "Fahrenheit",
+  "akr (acre)",
+  "mph",
+  "węzeł (knot)",
+  "PSI",
+  "mila kwadratowa",
+  "stopa kwadratowa",
+  "cal kwadratowy",
+  "jard sześcienny",
+  "uncja płynu"
+ ],
+ "hits": [
+  {
+   "source": "Abelard.Giza-Samertajm.2024.PL.1080p.WEB-DL.HEVC-Arbsom",
+   "pl": "możecie się wymajonezować od stóp do głów",
+   "en": null,
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 689280,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "idiom \"od stóp do głów\" = head to toe"
+  },
+  {
+   "source": "Abelard.Giza-Samertajm.2024.PL.1080p.WEB-DL.HEVC-Arbsom",
+   "pl": "żeby dopaść do stóp dziadków i: \"O, dziękuję!",
+   "en": null,
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 796040,
+   "verdict": "UNCLEAR",
+   "verdict_note": ""
+  },
+  {
+   "source": "Abelard.Giza-Samertajm.2024.PL.1080p.WEB-DL.HEVC-Arbsom",
+   "pl": "\"Wszystkie stopy w górę!\". :))",
+   "en": null,
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 3526600,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "Abelard.Giza-Zaodrze.2023.PL.720p.WEB-DL.H.264-Arbsom",
+   "pl": "że mówię: \"Jezu, ja tu mam stopy!\".",
+   "en": null,
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 4158319,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "Hellfire.2026.MULTi.1080p.WEB-DL.H264-TV4TG",
+   "pl": "- Dokąd? - Z 50 mil na północ.",
+   "en": "- About 50 miles north.",
+   "units": [
+    "mila (mile)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": true,
+   "t": 2754480,
+   "verdict": "TRUE_MEASUREMENT",
+   "verdict_note": "real distance, EN confirms miles"
+  },
+  {
+   "source": "Shelter.2026.MULTi.1080p.AMZN.WEB-DL.H264.DDP5.1-inTGrity",
+   "pl": "Trafiła kosa na kamień.",
+   "en": null,
+   "units": [
+    "kamień (stone)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 1482880,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"kamień\" = literal stone / idiom, not the stone unit"
+  },
+  {
+   "source": "Shelter.2026.MULTi.1080p.AMZN.WEB-DL.H264.DDP5.1-inTGrity",
+   "pl": "każdy agent MI6 w promilu 25 mil",
+   "en": null,
+   "units": [
+    "mila (mile)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 4773040,
+   "verdict": "LIKELY_MEASUREMENT",
+   "verdict_note": "numeric \"mil\" but line garbled / no EN confirmation"
+  },
+  {
+   "source": "Slepnac.od.swiatel.S01E01.PL.1080p.AMZN.WEB-DL.DDP5.1.HEVC-SLiM",
+   "pl": "Skanują nas od stóp do głów.",
+   "en": "They're scanning us, head to toe. Fucking protests. Fuck...",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 423080,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "idiom \"od stóp do głów\" = head to toe"
+  },
+  {
+   "source": "Slepnac.od.swiatel.S01E08.PL.1080p.AMZN.WEB-DL.DDP5.1.HEVC-SLiM",
+   "pl": "SYK POLEWANYCH KAMIENI",
+   "en": null,
+   "units": [
+    "kamień (stone)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": null,
+   "t": 2610880,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"kamień\" = literal stone / idiom, not the stone unit"
+  },
+  {
+   "source": "Slepnac.od.swiatel.S01E08.PL.1080p.AMZN.WEB-DL.DDP5.1.HEVC-SLiM",
+   "pl": "I wszystko zrobić? U stóp cały świat mieć?",
+   "en": "And have it all? The whole world at your feet?",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": true,
+   "t": 2971440,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "Ted.Lasso.S02E01.Goodbye.Earl.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+   "pl": "1236 funtów.",
+   "en": "£1,236.",
+   "units": [
+    "funt (pound)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 812062,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"funt\" = GBP currency, not mass"
+  },
+  {
+   "source": "Ted.Lasso.S02E03.Do.the.Right-est.Thing.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+   "pl": "Dotykamy palców u stóp!",
+   "en": "Now start touching your toes!",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1203537,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "Ted.Lasso.S02E03.Do.the.Right-est.Thing.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+   "pl": "Ręce na stopach. Czyichś stopach, nie własnych.",
+   "en": "Hands on toes. Someone else's toes besides your own.",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [
+    "\"stopa\" = body part / gait"
+   ],
+   "en_has_imperial": false,
+   "t": 1217134,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "Ted.Lasso.S02E04.Carol.of.the.Bells.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+   "pl": "Daj im funta i powiedz, żeby spadali.",
+   "en": "Just give 'em a quid and tell 'em to bugger off.",
+   "units": [
+    "funt (pound)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1585419,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"funt\" = GBP currency, not mass"
+  },
+  {
+   "source": "Ted.Lasso.S02E06.The.Signal.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+   "pl": "Położę się u jego stóp, żebyś spadł na mnie.",
+   "en": "And I'd lay down at the bottom so you could land on me.",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 875000,
+   "verdict": "UNCLEAR",
+   "verdict_note": ""
+  },
+  {
+   "source": "TedLasso.S02E01",
+   "pl": "1236 funtów.",
+   "en": "£1,236.",
+   "units": [
+    "funt (pound)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 812062,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"funt\" = GBP currency, not mass"
+  },
+  {
+   "source": "TedLasso.S02E03",
+   "pl": "Dotykamy palców u stóp!",
+   "en": "Now start touching your toes!",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1203537,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "TedLasso.S02E03",
+   "pl": "Ręce na stopach. Czyichś stopach, nie własnych.",
+   "en": "Hands on toes. Someone else's toes besides your own.",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": true,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [
+    "\"stopa\" = body part / gait"
+   ],
+   "en_has_imperial": false,
+   "t": 1217134,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"stopa\" = body part (foot), not the unit"
+  },
+  {
+   "source": "TedLasso.S02E04",
+   "pl": "Daj im funta i powiedz, żeby spadali.",
+   "en": "[man] Just give 'em a quid and tell 'em to bugger off.",
+   "units": [
+    "funt (pound)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1585419,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"funt\" = GBP currency, not mass"
+  },
+  {
+   "source": "TedLasso.S02E06",
+   "pl": "Położę się u jego stóp, żebyś spadł na mnie.",
+   "en": "And I'd lay down at the bottom so you could land on me.",
+   "units": [
+    "stopa (foot)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 875000,
+   "verdict": "UNCLEAR",
+   "verdict_note": ""
+  },
+  {
+   "source": "The.Shadows.Edge.2025.MULTi.1080p.BDRip.X265.DDP7.1-inTGrity",
+   "pl": "Wolę to niż gliniarza z epoki kamienia.",
+   "en": "That doesn't mean bringing in a fossil",
+   "units": [
+    "kamień (stone)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1201708,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"kamień\" = literal stone / idiom, not the stone unit"
+  },
+  {
+   "source": "The.Shadows.Edge.2025.MULTi.1080p.BDRip.X265.DDP7.1-inTGrity",
+   "pl": "Wszyscy cali i zdrowi, ojcze. Niezła jazda, co?",
+   "en": "Godfather... We all made it back safely.",
+   "units": [
+    "cal (inch)"
+   ],
+   "has_number": false,
+   "fractional": false,
+   "compound": false,
+   "idiom_flags": [],
+   "en_has_imperial": false,
+   "t": 1647500,
+   "verdict": "FALSE_POSITIVE",
+   "verdict_note": "\"cali\" here is adj. \"cały\" (unharmed), not \"cal\"=inch"
+  }
+ ],
+ "idioms": {
+  "\"stopa\" = body part / gait": [
+   {
+    "source": "Ted.Lasso.S02E03.Do.the.Right-est.Thing.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb",
+    "pl": "Ręce na stopach. Czyichś stopach, nie własnych.",
+    "en": "Hands on toes. Someone else's toes besides your own.",
+    "units": [
+     "stopa (foot)"
+    ],
+    "has_number": true,
+    "fractional": false,
+    "compound": false,
+    "idiom_flags": [
+     "\"stopa\" = body part / gait"
+    ],
+    "en_has_imperial": false,
+    "t": 1217134
+   },
+   {
+    "source": "TedLasso.S02E03",
+    "pl": "Ręce na stopach. Czyichś stopach, nie własnych.",
+    "en": "Hands on toes. Someone else's toes besides your own.",
+    "units": [
+     "stopa (foot)"
+    ],
+    "has_number": true,
+    "fractional": false,
+    "compound": false,
+    "idiom_flags": [
+     "\"stopa\" = body part / gait"
+    ],
+    "en_has_imperial": false,
+    "t": 1217134
+   }
+  ]
+ },
+ "already_converted_by_translator": [],
+ "adjudication": {
+  "raw_regex_hits": 22,
+  "true_or_likely_measurements": 2,
+  "false_positives": 20,
+  "false_positive_rate": 0.909,
+  "note": "Every non-measurement match is a homonym or fixed idiom, not a unit."
+ },
+ "library_composition": {
+  "why_so_few": "Library is dominated by Polish-language originals (stand-up, Slepnac od swiatel), 2025-2026 generic action/drama, and Korean/Chinese titles. Almost no classic American unit-heavy material (no cars/cooking/sport/nature-doc content).",
+  "unit_heavy_title_present_but_unusable": "Three Billboards Outside Ebbing Missouri - Polish track is PGS (image), needs OCR",
+  "english_side_imperial_mentions_total": 37,
+  "english_side_lines_total": 142722
+ }
+}
