@@ -26,6 +26,7 @@ and both sides meet in a shared `_lektor` work dir that is the same folder seen 
 |---|-------|---------|------|
 | 1 | Windows | `.\windows\lektor.ps1 -Stage extract` | Polish `.srt` + stereo FLAC downmix of the original audio |
 | 2 | WSL | `python3 wsl/lektor.py calibrate` | measures how fast your voice really speaks (6 calls, once per voice; backends that set duration directly say so and do nothing) |
+| – | WSL | `python3 wsl/lektor.py speech` | optional, free, local: forced-aligned word times, the silences between them and the shot cuts → `_lektor/*.speech.json`. ~2 min of GPU+CPU per episode, no API of any kind. Run it before `script` and the merge gate uses it |
 | 3 | WSL | `python3 wsl/lektor.py script` | subtitles → lektor script, condensing what will not fit |
 | – | you | open `_lektor/*.lektor.json` | fix anything that reads badly, before spending TTS credits |
 | 4 | WSL | `python3 wsl/lektor.py voice` | TTS, time-fitting, ducking, mix, encode |
@@ -166,6 +167,40 @@ attack/release, and applied under the voice. Measured on the 60 s smoke slice: t
 they are 4 dB above the source, and the one-pole release needs 7.4 s to come all the way back,
 longer than most gaps between cues. With `program_gain_db` at 0 the stretches where it has settled
 do come back bit-identical – 0.00e+00 across every one of them, 2.7% of that slice.
+
+## The merge gate: what the subtitle grid cannot tell you
+
+`merge_contiguous` joins two cards into one lektor breath when the first does not close its
+sentence and the cards are contiguous. "Contiguous" is where it was flying blind: every subtitle
+stream in this release is one authored display grid – 3191 of 3396 Polish cues start and end on
+byte-identical timestamps to the English track, the minimum gap between any two cards is 82 ms, and
+55 % of all gaps are 83–84 ms. So contiguity is a fact about the authoring tool, not about the
+actors.
+
+`lektor.py speech` goes and gets the missing evidence, free and locally: the 5.1 centre channel is
+band-passed to 16 kHz mono, CTC forced alignment (`WAV2VEC2_ASR_LARGE_LV60K_960H`, 30 s windows)
+puts word times on the verbatim English subtitle text inside the `asr` container that is already
+running, and ffmpeg scene detection finds the shot cuts. Whisper is deliberately **not** called: its
+raw word timestamps measured 316 ms early at utterance starts, and skipping it takes the episode
+from ~3.5 min of GPU to ~10 s. One episode is ~18 s of audio extraction, ~9 s of alignment at 230x
+realtime, and ~50 s of scene detection.
+
+What that buys, measured over all six episodes – of the 231 seams the text rules join into 211
+merged utterances, **105 sit on a ≥ 300 ms silence in the delivery and 33 on a shot cut, 117 (51 %)
+on either.** Half of every merge the pipeline makes glues together two things the actors said with a
+real pause between them. The gate refuses those, which is Woźniak 2012:216 in code: the lektor
+delivers *into* the pauses of the original instead of over them.
+
+| | gate off | gate `both` |
+|---|---|---|
+| cues | 3241 | 3356 |
+| merged utterances | 211 | 111 |
+| over budget | 1333 | 1407 |
+| characters of deficit | 11 833 | 12 249 |
+
+Recurring cost: **$0**. One-off cost: 229 lines change text, 9610 characters, **$0.48** to re-read
+the season on ElevenLabs flash, $0.00 on piper. Without a `.speech.json` the key does nothing and
+the pipeline is byte-identical to the version before the gate existed.
 
 ## Cost
 

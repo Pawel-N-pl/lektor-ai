@@ -27,12 +27,14 @@ from .mix import (Clip, assemble_voice, build_duck_envelope, db_to_lin, measure_
                   normalize_voice, write_mix)
 from .pricing import stage_cost, tts_usd, usd_per_1k
 from .script import CONDENSE_SYSTEM, condense_episode, stage_script, whole_prompt
+from .speech import stage_speech
 
 __all__ = [
     "CONDENSE_SYSTEM",
     "condense_episode",
     "whole_prompt",
     "stage_script",
+    "stage_speech",
     "stage_cost",
     "stage_calibrate",
     "stage_voice",

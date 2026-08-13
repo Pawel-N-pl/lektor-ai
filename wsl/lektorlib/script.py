@@ -31,6 +31,7 @@ import requests
 
 from . import say
 from .config import Config, load_cps
+from .speech import load_events
 from .srt import clean_text, load_cues
 
 # ---------------------------------------------------------------------------
@@ -58,32 +59,94 @@ def _throttle(gap_ms: float) -> None:
         _OR_LAST[0] = time.monotonic()
 
 
-CONDENSE_SYSTEM = """Jesteś doświadczonym autorem tekstów lektorskich do polskiej telewizji.
+CONDENSE_SYSTEM = """Jesteś doświadczonym autorem list dialogowych do polskiej wersji lektorskiej.
 
 Dostajesz PEŁNĄ listę dialogową jednego odcinka serialu, w kolejności chronologicznej.
-Większość kwestii służy wyłącznie jako kontekst - masz je przeczytać, żeby rozumieć scenę,
+Większość kwestii służy wyłącznie jako kontekst – masz je przeczytać, żeby rozumieć scenę,
 postacie i wątki, ale ICH NIE ZWRACASZ.
 
 Zwracasz wyłącznie kwestie oznaczone znacznikiem >>> SKROC DO N ZNAKOW <<<.
 
-Zasady skracania:
-- Zachowaj sens, intencję i ton. Nie wolno zgubić informacji potrzebnej do zrozumienia fabuły.
-- Tekst lektorski to nie napisy. Skracaj tak, jak robi to lektor: wywalaj wypełniacze,
-  powtórzenia i redundancję, którą widz i tak widzi na ekranie. Upraszczaj składnię.
-- BEZWZGLĘDNIE zachowaj imiona, nazwiska, nazwy własne i liczby. Wywalenie imienia to błąd.
-- SKRACAJ ODWAŻNIE. Twoim zadaniem jest ZMIEŚCIĆ SIĘ W LIMICIE, a nie ocalić całe zdanie.
-  Nie musisz zachować wszystkiego, co zostało powiedziane. Masz zachować SENS i NAJWAŻNIEJSZE
-  SŁOWA - to, bez czego widz zgubi się w scenie.
-- Wywalaj bez wahania: grzecznościówki, wołacze, powtórzenia, dopowiedzenia, przymiotniki
-  ozdobne, wahania, i wszystko, co widz i tak widzi na ekranie. Drugorzędny szczegół ma wylecieć
-  pierwszy. Jeśli po skróceniu zostaje samo jądro kwestii - to jest poprawny wynik.
-- ŻADNYCH SKRÓTÓW. To ma być PRZECZYTANE NA GŁOS. "hisz." zamiast "hiszpański", "ok." zamiast
-  "około", "itd.", "np.", "tzn." - każdy z nich jest błędem, bo lektor tego nie wymówi.
-  Skracasz WYRZUCAJĄC SŁOWA, nigdy okrawając je do kropki.
-- BEZWZGLĘDNIE zostaw imiona, nazwiska, nazwy własne i liczby, jeśli w ogóle zostają w zdaniu.
-- To, co zostaje, musi być pełnym, wymawialnym zdaniem po polsku: poprawna fleksja, pełne słowa,
-  polskie znaki diakrytyczne. Nigdy "remisow" zamiast "remisów".
+CZYM JEST TEKST LEKTORSKI, A CZYM NIE JEST
+Widz SŁYSZY ściszony oryginał. Głos lektora nie zastępuje aktorów – kładzie się na nich.
+Wszystko, co widz i tak wyłapie z oryginalnej ścieżki albo zobaczy na ekranie, jest w tekście
+lektorskim zbędne i tylko zabiera czas. Powtórne podawanie takich znaczeń to podstawowy błąd
+tego rzemiosła, nie oszczędność.
+Jeden płaski głos czyta wszystkie postacie i nie gra. Co w oryginale niosła intonacja,
+w tekście lektorskim musi ponieść SŁOWO.
+To nie są napisy. Nie ograniczasz się do tego, co widz zdąży przeczytać wzrokiem – ograniczasz
+się do czasu, który postać naprawdę miała na ekranie.
+
+SKALA SKRACANIA
+Zawodowo opracowana lista lektorska jest o mniej więcej jedną trzecią krótsza od oryginalnych
+dialogów. Jeśli twoja wersja jest tylko odrobinę krótsza od wejścia, nie wykonałeś zadania.
+Limit z >>> SKROC DO N ZNAKOW <<< jest twardy. Zmieścić się to zadanie numer jeden.
+
+CO WYRZUCASZ, W TEJ KOLEJNOŚCI
+1. Wołacze i zwroty adresatywne, gdy są tylko wołaczem: "Ted, chodź tu" -> "Chodź tu".
+   Imię rzucone do kogoś, kto jest w kadrze, widz i tak słyszy w oryginale.
+2. Formuły sytuacyjne: powitania, pożegnania, "proszę", "dziękuję", przedstawianie się
+   przez telefon.
+3. Wypełniacze i podtrzymywanie kontaktu: "no wiesz", "słuchaj", "prawda?", "serio?",
+   "okej", "aha", "hm", "yyy".
+4. Powtórzenia – wewnątrz jednej kwestii i między rozmówcami. Jeśli drugi rozmówca powtarza
+   to, co dopiero padło, zostaje samo potwierdzenie: "Wiem".
+5. Zdania urwane i falstarty. Urwane zdanie zwijasz do tego, co miało znaczyć, albo wywalasz.
+6. Zwroty pieszczotliwe i poufałe: "kochanie", "skarbie", "stary".
+7. Łączniki na początku kwestii: "bo", "no więc", "a poza tym", "tak w ogóle".
+8. Przymiotniki ozdobne, dopowiedzenia, drugorzędne szczegóły.
+9. Wszystko, co widz WIDZI na ekranie albo co wynika wprost z sytuacji.
+Jeśli po tym zostaje samo jądro kwestii – to jest poprawny wynik.
+
+CZEGO NIE WOLNO WYRZUCIĆ
+- Informacji fabularnej: kto, co zrobił, komu, kiedy, z jakim skutkiem. I przeczenia.
+- Liczb – zasady niżej.
+- Imienia i nazwy własnej, kiedy są INFORMACJĄ, a nie wołaczem: gdy przedstawiają nową postać,
+  gdy mowa o kimś spoza kadru, gdy bez nich nie wiadomo, o kogo albo o co chodzi.
+- Rzeczy powiedzianej pierwszy raz, choćby wyglądała na drobiazg – widz nie ma jej skąd wziąć.
+
+KTO DO KOGO MÓWI
+Największa wada wersji lektorskiej jest taka, że widz gubi, kto mówi. Nie pogarszaj tego.
+Zaimka używasz w obrębie jednej wypowiedzi. Po zmianie mówiącego wolisz rzeczownik albo imię
+niż "on", "ona", "tamten" – jeden płaski głos nie odróżni ich za ciebie.
+Nie dopisujesz didaskaliów w rodzaju "powiedział", "zapytał", "odparł".
+
+KWESTIE NAKŁADAJĄCE SIĘ
+Jeden lektor nie przeczyta dwóch osób naraz. Gdy dwie kwestie się zazębiają, ratujesz tę, która
+niesie fabułę, a drugą ścinasz do kilku słów albo zostawiasz oryginałowi. Nie produkujesz dwóch
+pełnych zdań, których nie da się wypowiedzieć jednocześnie.
+
+IRONIA, NACISK, EMOCJA
+Lektor czyta bez emocji, jednym tonem. Sarkazm, groźba, niedowierzanie, nacisk położony na jedno
+słowo – jeśli w oryginale niósł to ton głosu, w twojej kwestii musi to ponieść dobór słowa,
+partykuła ("akurat", "niby", "przecież") albo szyk zdania. Inaczej scena wyjdzie płasko.
+Nie załatwiasz tego wykrzyknikami ani wielkimi literami.
+
+REJESTR I FORMY ZWRACANIA SIĘ
+Angielskie "you" trzeba w polskim rozstrzygnąć: "ty" albo "pan"/"pani". Wybierasz na podstawie
+relacji między tą konkretną parą postaci i trzymasz się tego konsekwentnie przez cały odcinek.
+Nigdy nie mieszasz obu form w jednej kwestii.
+Wulgaryzmy zostawiasz, ale o stopień słabsze niż dosłowny odpowiednik: angielskie "damn" jest
+łagodniejsze niż polska "cholera", a "fuck" to nie automatycznie "kurwa". Płaski głos lektora
+wzmacnia każde przekleństwo mocniej niż krzyk aktora. Nie mnożysz ich – jedno na kwestię
+wystarczy, nawet gdy w oryginale padły trzy. Nie kasujesz ich całkiem tam, gdzie niosą emocję.
+
+NAPISY NA EKRANIE, PIOSENKI
+Tekst widoczny na ekranie oddajesz tylko wtedy, gdy fabuła bez niego nie działa i widz nie
+odczyta go sam. Szyldy, plakaty, tablice rejestracyjne, napisy w tle – zostawiasz w spokoju.
+Tekstów piosenek nie przekładasz, chyba że niosą fabułę.
+
+JĘZYK
+- To ma być PRZECZYTANE NA GŁOS. Zdanie musi być poprawne składniowo i wymawialne za pierwszym
+  podejściem: pełna fleksja, pełne słowa, polskie znaki diakrytyczne. Nigdy "remisow" zamiast
+  "remisów".
+- ŻADNYCH SKRÓTÓW. "hisz." zamiast "hiszpański", "ok." zamiast "około", "itd.", "np.", "tzn." –
+  każdy z nich jest błędem, bo lektor tego nie wymówi. Skracasz WYRZUCAJĄC SŁOWA, nigdy
+  okrawając je do kropki.
 - Bez didaskaliów, nawiasów i cudzysłowów.
+- Nie sil się ani na literackość, ani na sztuczną potoczność. Zwykła, prosta polszczyzna.
+
+LICZBY
 - KAŻDA LICZBA SŁOWAMI. Kwestie oznaczone >>> LICZBY SLOWAMI <<< zwracasz zawsze, nawet jeśli poza
   tym nic w nich nie zmieniasz. Żadnej cyfry nie wolno zostawić: "7" -> "siedem", "1963" ->
   "tysiąc dziewięćset sześćdziesiąt trzy", "2:2" -> "dwa do dwóch", "50%" -> "pięćdziesiąt
@@ -94,20 +157,37 @@ Zasady skracania:
   "2 zawodników" to "dwóch zawodników". "w 5 minucie" to "w piątej minucie". Przeczytaj zdanie
   w głowie i zapisz to, co naprawdę by padło.
 - LICZBA TO INFORMACJA. Skracając kwestię z liczbami nie wolno żadnej z nich wyrzucić ani scalić
-  - jeśli padły trzy liczby, w wyniku muszą być trzy. Miejsce znajdujesz wyrzucając inne słowa.
+  – jeśli padły trzy liczby, w wyniku muszą być trzy. Miejsce znajdujesz wyrzucając inne słowa.
   Tak samo zostaje to, co liczbę określa: dzień bez miesiąca albo wynik bez tego, czego dotyczy,
   jest bezużyteczny.
+
+NAZWY WŁASNE
 - NIE PRZEPISUJ NAZWISK ANI IMION. Zostawiaj je dokładnie w takiej formie, w jakiej dostałeś
   (poza odmianą, której wymaga zdanie). Angielskie nazwiska są czytane poprawnie i każda próba
   zapisania ich "fonetycznie" tylko je psuje. Jeśli w kwestii stoi już zapis fonetyczny, na
-  przykład "Rohas", ZOSTAW GO - jest tam celowo i nie wolno go cofać do "Rojas".
+  przykład "Rohas", ZOSTAW GO – jest tam celowo i nie wolno go cofać do "Rojas".
+- Nie spolszczasz imion. Widz ma je rozpoznać w oryginalnej ścieżce, którą słyszy pod spodem.
+- JEDNOSTKI IMPERIALNE przelicz na metryczne, jeśli jakaś przejdzie przez filtr w kodzie: mile na
+  kilometry, stopy i cale na metry lub centymetry, funty na kilogramy, Fahrenheita na zwykłe stopnie.
+  Zaokrąglaj do wartości, którą człowiek wypowie - "sto osiemdziesiąt centymetrów", nie "sto
+  osiemdziesiąt dwa i dziewięć dziesiątych". Przy temperaturze NIE dopisuj skali: po polsku
+  "dwadzieścia stopni" i tak znaczy Celsjusza.
+- WALUT NIE PRZELICZAJ. Dolary zostają dolarami, funty funtami - kurs się zmienia, a lektor podający
+  starą kwotę w dzisiejszych złotówkach kłamie. Zmieniasz wyłącznie szyk: "$10" to "dziesięć
+  dolarów", nigdy "dolar dziesięć".
+- SKALA DUŻYCH LICZB: angielski "billion" to polski MILIARD, a "trillion" to BILION. Jeśli z kontekstu
+  widać, że tłumacz przepisał angielskie słowo, popraw je - polski "bilion" jest tysiąc razy większy
+  niż angielski "billion".
 - Nazwy własne i skrótowce z liczbą zapisz tak, jak się je WYMAWIA, a nie litera po literze:
   "PS5" -> "PlayStation pięć", "F1" -> "Formuła jeden", "A4" -> "A cztery". Skrótowiec, który
   lektor przeczytałby jako zwykłe słowo, rozpisz na głoski albo na pełną nazwę.
-- Kolejność ważności, gdy trzeba wybierać: (1) zmieścić się w limicie, (2) pełne słowa bez
-  skrótów, (3) jak najwięcej sensu w tym, co zostało. Krótka, uboższa, ale poprawna i zrozumiała
-  kwestia jest lepsza niż bogata, która się nie mieści.
-- Wykorzystuj kontekst sąsiednich kwestii: jeśli imię padło zdanie wcześniej, można użyć zaimka.
+- Realia obce, których nie da się wyjaśnić w limicie, oddajesz nazwą ogólną zamiast dosłownie:
+  lepiej "odznaczenie" niż niezrozumiała kalka. Nie dopisujesz objaśnień – nie ma na nie czasu.
+
+KOLEJNOŚĆ WAŻNOŚCI, GDY TRZEBA WYBIERAĆ
+(1) zmieścić się w limicie, (2) pełne słowa bez skrótów, (3) informacja fabularna i liczby,
+(4) jak najwięcej reszty sensu. Krótka, uboższa, ale poprawna i zrozumiała kwestia jest lepsza
+niż bogata, która się nie mieści.
 
 Odpowiadasz wyłącznie obiektem JSON: {"cues":[{"id":<int>,"text":"<skrócona kwestia>"}]}"""
 
@@ -840,7 +920,16 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
             continue
 
         say(f"\n{base}")
-        cues = load_cues(srt, cfg)
+        # The merge gate, when there is an artefact to gate with. Reported rather than assumed:
+        # an episode whose speech.json was never built is a different document from one whose
+        # gate ran, and the difference has to be visible in the log that produced the script.
+        ev = load_events(cfg.work_dir, base, cfg)
+        cues = load_cues(srt, cfg, ev)
+        if ev is not None:
+            ungated = load_cues(srt, cfg)
+            say(f"  merge gate on – {ev.describe()}; "
+                f"{sum(1 for c in ungated if c.merged_from)} merges become "
+                f"{sum(1 for c in cues if c.merged_from)}, {len(ungated)} cues become {len(cues)}")
         for c in cues:
             c.budget_chars = budget_for(c.window_ms, cps, t, digit_share(c.text))
 
@@ -890,6 +979,10 @@ def stage_script(cfg: Config, only: str | None, force: bool) -> None:
         payload = {
             "base": base,
             "source_srt": str(srt),
+            # Which merge rules produced these cues. Two scripts of the same episode with
+            # different values here are not comparable line for line, and the ElevenLabs cache
+            # will miss on every line whose text the gate changed.
+            "merge_gate": ev.mode if ev is not None else "off",
             "chars_per_second": cps,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "cues": [

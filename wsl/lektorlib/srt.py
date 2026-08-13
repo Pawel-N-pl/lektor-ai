@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+
+from .units import convert_imperial
 from pathlib import Path
 
 
@@ -87,7 +89,9 @@ def clean_text(raw: str, cfg) -> str:
     out = out.replace(" ", " ")
     out = re.sub(r"\s+", " ", out).strip()
     out = re.sub(r"\s+([,.!?;:])", r"\1", out)
-    return respell(say_symbols(out, cfg), cfg)
+    # Units before symbols and names: it rewrites numbers, and the later stages take the text
+    # as it will be spoken.
+    return respell(say_symbols(convert_imperial(out, cfg), cfg), cfg)
 
 
 def say_symbols(text: str, cfg) -> str:
@@ -147,7 +151,7 @@ def is_screen_text(cue: "Cue") -> bool:
     return sum(1 for ch in letters if ch.isupper()) / len(letters) >= 0.8
 
 
-def continues_sentence(prev: "Cue", cur: "Cue") -> bool:
+def continues_sentence(prev: "Cue", cur: "Cue", ev=None) -> bool:
     """Is `cur` the rest of a sentence that `prev` started?
 
     This is the whole predicate, and the earlier version got it wrong: it merged on the timestamp
@@ -158,15 +162,32 @@ def continues_sentence(prev: "Cue", cur: "Cue") -> bool:
 
     A card that does not close its sentence is the real signal. An ellipsis counts as continuation;
     a leading dash marks a change of speaker and is never joined.
+
+    The text rules above are everything the subtitles can tell us, and they cannot tell us what
+    the actors or the editor did at the seam. `ev` is that evidence, from `speech.json`, and it can
+    only ever REFUSE a merge the text rules already allowed - it never authorises one. Passing None
+    (no artefact, or the gate switched off in config) leaves the predicate exactly as it shipped.
     """
     if SENTENCE_END.search(prev.text) and not ELLIPSIS_END.search(prev.text):
         return False
     if SPEAKER_DASH.match(cur.raw.lstrip()):
         return False
-    return not (is_screen_text(prev) or is_screen_text(cur))
+    if is_screen_text(prev) or is_screen_text(cur):
+        return False
+    if ev is not None:
+        # A cut in the seam means the edit says these are two shots, and a lektor breath crossing
+        # it asserts one continuous delivery over a discontinuous picture. A real silence in the
+        # seam means the actors paused there themselves, and merging talks OVER that pause instead
+        # of into it - which is the one thing the craft literature is unanimous about
+        # (Wozniak 2012:216: deliver into the gaps of the original).
+        if ev.cut_in(prev.end_ms, cur.start_ms):
+            return False
+        if ev.pause_at(prev.end_ms, cur.start_ms):
+            return False
+    return True
 
 
-def merge_contiguous(cues: list[Cue], cfg) -> list[Cue]:
+def merge_contiguous(cues: list[Cue], cfg, ev=None) -> list[Cue]:
     """Join the cards that carry ONE sentence, so the lektor reads it as one breath.
 
     A sentence split across two cards is read as two utterances, each with its own onset and tail,
@@ -203,7 +224,7 @@ def merge_contiguous(cues: list[Cue], cfg) -> list[Cue]:
     for prev, cur in zip(cues, cues[1:]):
         joinable = (
             cur.start_ms - prev.end_ms <= gap_ms
-            and continues_sentence(prev, cur)
+            and continues_sentence(prev, cur, ev)
             and len(group) < max_cues
             and len(" ".join(c.text for c in group)) + 1 + len(cur.text) <= max_chars
             and cur.end_ms - group[0].start_ms <= max_span_ms
@@ -217,16 +238,19 @@ def merge_contiguous(cues: list[Cue], cfg) -> list[Cue]:
     return out
 
 
-def load_cues(path: Path, cfg) -> list[Cue]:
+def load_cues(path: Path, cfg, ev=None) -> list[Cue]:
     """parse -> skip -> clean -> drop empties -> merge -> windows. The order matters and is load-bearing.
 
     Merging comes after cleaning (so it joins what will actually be spoken, not markup) and before
     windows (so the merged cue gets one window spanning the whole group).
+
+    `ev` is the optional speech evidence for the merge gate. It is threaded through rather than
+    loaded here so this module keeps knowing nothing about docker, ffmpeg or the work dir.
     """
     cues = [c for c in parse_srt(path) if not should_skip(c.raw, cfg)]
     for c in cues:
         c.text = clean_text(c.raw, cfg)
     cues = [c for c in cues if c.text]
-    cues = merge_contiguous(cues, cfg)
+    cues = merge_contiguous(cues, cfg, ev)
     compute_windows(cues, cfg)
     return cues

@@ -76,6 +76,37 @@
     "speed_relax": 0.88,
     "_speed_relax_note": "Fraction of the computed excess speed actually applied, once the neighbours are sharing the load. 0.88 gives back about a fifth of a typical speed-up."
   },
+  "speech": {
+    "_comment": "The `speech` stage: what the actors and the editor did, measured off the video, written to <base>.speech.json. Costs nothing and calls nothing paid. Everything it produces is optional - the merge gate degrades to today's text-only rules whenever a signal is missing.",
+    "reference_srt_patterns": [
+      "subs/{tag}.eng3.srt",
+      "subs/{tag}.eng2.srt",
+      "subs/{base}.eng.srt"
+    ],
+    "_reference_srt_patterns_note": "Where to find the English text the aligner is given, tried in order; {tag} is the S02E06 part of the filename, {base} the whole stem. English, because the acoustic model is English - WAV2VEC2_ASR_LARGE_LV60K_960H, which beat MMS_FA on this material 88 to 57 of 97 cues and is MIT rather than CC-BY-NC. Stream 3 first because it is the near-verbatim transcript: it keeps the 'Ooh', the stutters and the reaction sounds, so it transcribes what is uttered, while stream 2 is the cleaned reading version (3054 of ~3670 cue texts identical, 589 only in stream 3). The Polish track is never a candidate.",
+    "audio_stream": "a:0",
+    "centre_filter": "pan=mono|c0=FC,highpass=120,lowpass=7500,dynaudnorm",
+    "_centre_filter_note": "The dialogue stem for free: on a 5.1 track the centre channel is where the voices are, so no source separation is needed - and none should be added, because the sibling yt-translator project MEASURED Demucs making alignment worse and dropped it, keeping exactly this band-pass. 120-7500 Hz is speech; dynaudnorm evens out the level so a whispered line aligns as well as a shouted one.",
+    "downmix_filter": "highpass=120,lowpass=7500,dynaudnorm",
+    "_downmix_filter_note": "Fallback for a track that is not 5.1, where pan=mono|c0=FC has no centre channel to take. ffmpeg's own downmix is used instead and the artefact records which of the two ran, because a downmix carries the music and effects that the centre channel does not.",
+    "min_score": 0.5,
+    "_min_score_note": "Aligner confidence below which a cue contributes no word times at all. Not decoration: cues scoring under 0.35 were measured at 0.314 mean ASR token recall against 0.901 for cues at 0.7 and above, i.e. the low scorers are shouts over crowd noise where the times are guesses - and a guessed word time invents a silence that never happened, which is precisely what the pause gate would then act on. At 0.5, 475 of 616 cues on S02E06 qualify.",
+    "fa_window_s": 30,
+    "_fa_window_s_note": "How much contiguous cue text is aligned in one pass. Measured against 120 s windows on a real episode: better scores (475 vs 393 of 616 cues), 2.6x less VRAM, 1.9x faster, and the two agree to 10 ms at the median. Do NOT drop to per-cue windows with a short pad: without a <star> token the aligner drags a cue's first word backwards onto whatever speech sits in the pad, fabricating the exact statistic this artefact exists to measure.",
+    "store_min_gap_ms": 150,
+    "_store_min_gap_note": "Shortest silence written into the artefact. Half of merge_min_pause_ms, so the threshold can be lowered in config and re-measured without re-running the GPU; below that it is inter-word coarticulation, not a pause, and it would double the file for nothing.",
+    "detect_cuts": true,
+    "scene_threshold": 0.35,
+    "_scene_threshold_note": "ffmpeg's own scene score above which a frame is a new shot. 0.35 yields 433 cuts on S02E06 at a median shot of 2.59 s, which is normal for single-camera comedy; it costs about 60 s of CPU for a 35-minute 1080p episode and reads the video without writing anything back.",
+    "asr_container": "asr",
+    "_asr_container_note": "The container forced alignment runs INSIDE, by name. It is borrowed, not owned: it belongs to ~/projects/yt-translator, it holds a resident faster-whisper large-v3, and this stage neither calls its HTTP API nor writes into its source tree. It uses only the torchaudio 2.6 that is already installed there, which is why nothing has to be installed anywhere and why the torch pin must not be disturbed. One scratch directory under the container's /tmp is created and removed again. If the container is down, the stage says so and writes an artefact with shot cuts only.",
+    "tmp_dir": "",
+    "_tmp_dir_note": "Where the 16 kHz mono extract lands, about 67 MB per episode, deleted when the stage finishes. Empty means the system temp. Point it at fast local disk if the work dir is on a network or 9p mount, where writing that file is far slower than reading the video it came from.",
+    "ffmpeg_timeout_s": 3600,
+    "docker_timeout_s": 600,
+    "fa_timeout_s": 1800,
+    "_timeouts_note": "Ceilings, not expectations. Measured on S02E06: 18 s to extract the audio, 9 s to align 616 cues (234x realtime), 58 s for the shot cuts. These exist so a wedged container or an unreadable file becomes an error instead of a hang."
+  },
   "voice": {
     "backend": "elevenlabs",
     "_backend_note": "elevenlabs | piper | chatterbox. elevenlabs costs money and sounds like broadcast; piper is free, runs on CPU and hits its time windows exactly, measured on a real 598-cue episode at 19.7 s cold and 0.7 s once the cache is warm, 597 of the 598 lines inside their window; chatterbox is free and can clone a voice from a reference clip, but it needs the GPU and runs at RTF ~1.6 against piper's 0.064, so an episode takes hours instead of minutes. Override for a single run with `--backend`.",
@@ -220,9 +251,52 @@
     "_spoken_symbols_note": "Symbols rewritten into the words a lektor actually says, applied to EVERY cue before budgets and before the LLM. Same reasoning as the pronunciation table: a short cue never goes to the model, so a '#' left in it would be read as whatever the voice makes of the glyph. The LLM handles digits; these are the marks it has no rule for.",
     "merge_gap_ms": 140,
     "_merge_gap_note": "Two cards are joined only when BOTH hold: the gap is no larger than this, and the first card does not finish its sentence. The gap alone proves nothing - this release puts a fixed 82-85 ms between every card, 55% of all gaps, and the next distinct value is 417 ms. Merging on the gap alone glued two finished sentences 89% of the time, including across shot changes, across speaker turns and onto on-screen title cards. Set to 0 to switch merging off.",
+    "merge_gate": "both",
+    "_merge_gate_note": "What the MEASURED delivery is allowed to veto, once <base>.speech.json exists: off | cut | pause | both. The text rules decide what MAY be merged; this only ever refuses, never authorises. It exists because the subtitle grid carries no evidence about the delivery at all - across six episodes 3191 of 3396 Polish cues are byte-identical in time to the English track and 55% of all gaps are the same 83-84 ms - so 'the cards are contiguous' is a fact about the authoring tool, not about the actors. Measured over all six episodes, against the 231 seams the text rules join into 211 merged utterances: 105 (45%) sit on a >= 300 ms real silence in the aligned speech, 33 (14%) on a shot cut, 117 (51%) on either. Merged utterances span a cut more often than unmerged cues in five episodes of six (48.5% vs 27.6%, 58.3% vs 24.4%, 46.2% vs 19.9%, 41.9% vs 19.1%, 33.3% vs 21.3%; S02E04 is the exception at 21.4% vs 25.1%). Refusing those is Wozniak 2012:216 in code - the lektor delivers INTO the pauses of the original instead of over them. Price of switching it on, measured across the six: 3241 cues become 3356, 211 merges become 111, 1333 over-budget cues become 1407 (+5.6%) and 11833 characters of deficit become 12249 (+3.5%), all of it absorbed by the existing condensation re-roll policy. Without a speech.json this key does nothing at all and the pipeline is byte-identical to the version before the gate.",
+    "merge_min_pause_ms": 300,
+    "_merge_min_pause_note": "Shortest silence in the delivery that counts as the actors having paused. 300 ms is the threshold the effect was measured at, not one derived from a distribution, and it is the single knob that matters: across six episodes it takes the 211 text-rule merges to 95 at 200 ms, 124 at 300, 162 at 500 and 190 at 800. It is the honest place for a second opinion by ear, which is the only test that can settle it - the median silence sitting on a merge seam is 520 ms, comfortably above the threshold either way.",
+    "merge_max_pause_ms": 5000,
+    "_merge_max_pause_note": "Longest silence still read as a pause. Past this it is a stretch the aligner never covered - a scene with no subtitled speech in it - not a breath inside one sentence, and a hole in the evidence must not masquerade as evidence. MEASURED over six episodes: 118 merge seams have a silence of at least 300 ms on them, and 13 of those silences run 5.2, 6.4, 6.4, 11.2, 11.8, 11.8, 13.8, 25.9, 25.9, 25.9, 26.3, 27.0 and 51.0 SECONDS. A 51-second pause between two cards that are 83 ms apart and both carry dialogue is not something an actor did. The other 105 have a median of 520 ms. This cap is the only place this implementation is deliberately more conservative than the simulation the feature was designed from: uncapped, S02E06 reproduces that simulation almost exactly (570 cues, 22 merges, 246 over budget, 2148 chars of deficit against a predicted 571 / 21 / 247 / 2145); capped it keeps 7 more merges an episode that the simulation threw away on missing evidence.",
+    "merge_pause_tol_ms": 250,
+    "_merge_pause_tol_note": "How far outside the 83 ms seam that silence may sit and still be about the seam. The alignment's own onset error against the card is p50 90 ms and p90 293 ms, so a tolerance below about 150 ms would start missing real pauses through timing noise alone, and one much larger would start catching the pause after the NEXT word. It is a weak knob and that is reassuring: over six episodes the merges land at 134 with no tolerance at all, 130 at 100 ms, 124 at 250 and 118 at 500, i.e. the signal is not an artefact of where the window is drawn.",
+    "merge_cut_pad_ms": 0,
+    "_merge_cut_pad_note": "Widen the seam before looking for a shot cut. Zero because the seam is already the whole interval between the two cards and a cut inside it is unambiguous; padding trades a rare missed cut for refusing merges over cuts that happen mid-card, which is a different question.",
     "merge_max_cues": 4,
     "merge_max_chars": 160,
     "merge_max_span_ms": 9000,
-    "_merge_limits_note": "Guards on a merged utterance. Looser than the first attempt because the predicate is now narrow: with the old timestamp-only rule a 7 s cap chopped 571 of 1926 candidate joins, and 87 of those refusals landed mid-sentence - moving the hole rather than closing it."
+    "_merge_limits_note": "Guards on a merged utterance. Looser than the first attempt because the predicate is now narrow: with the old timestamp-only rule a 7 s cap chopped 571 of 1926 candidate joins, and 87 of those refusals landed mid-sentence - moving the hole rather than closing it.",
+    "units": {
+      "enabled": true,
+      "convert": [
+        "mile",
+        "foot",
+        "inch",
+        "yard",
+        "fahrenheit"
+      ],
+      "tolerance": 0.035,
+      "idioms": [
+        "od stóp do głów",
+        "u stóp",
+        "palców u stóp",
+        "na stopach",
+        "stopy w górę",
+        "cal po calu",
+        "mila morska",
+        "mile morskie",
+        "zielona mila",
+        "ostatnia mila",
+        "sześć stóp pod ziemią",
+        "kosa na kamień",
+        "epoki kamienia",
+        "stopa procentowa",
+        "stopa bezrobocia",
+        "stopa zwrotu",
+        "stopa życiowa"
+      ],
+      "currency": true,
+      "_currency_note": "Amounts written the English way are said the Polish way: the symbol comes first on the page and the number comes first in the mouth, so $10 is dziesiec dolarow and never dolar dziesiec. The VALUE is never converted - exchange rates move and a lektor quoting an old sum in todays zloty would be stating a falsehood. A three-digit group after the separator is read as thousands, one or two digits as cents."
+    },
+    "_units_note": "Imperial measurements rewritten as metric. Deliberately narrow: mined over 26950 Polish subtitle lines from 44 films, a plain unit-name regex found 22 matches of which TWO were measurements. 'stopa' was a body part 12 times out of 12, 'funt' was pounds sterling 4 out of 4, and 'cali' was the adjective 'cały' - 'Wszyscy cali i zdrowi' would have become 'Wszyscy 2,54 cm i zdrowi'. So a unit converts ONLY when a numeral stands immediately in front of it and the line matches no idiom. 'pound' and 'ounce' are OFF by default because in British material a pound is money; enable them per show if the English track confirms mass. tolerance is how far a value may be moved to land on something a person would say - six feet becomes 1,8 m rather than 1,8288. A source written with decimals is treated as deliberate precision and is not snapped."
   }
 }

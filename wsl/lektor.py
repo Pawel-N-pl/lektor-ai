@@ -9,6 +9,10 @@ Stages
 ------
   calibrate  Measure how fast the chosen voice actually speaks. Only backends that have to
              predict a duration need it; the rest say so and do nothing.
+  speech     Measure what the actors and the editor actually did: forced-aligned word times off
+             the centre channel, the silences between them, and the shot cuts. Free, local, and
+             the only evidence the subtitle grid does not carry. Optional - without it the script
+             stage merges on the text rules alone, exactly as before.
   script     Turn subtitles into a lektor script: clean, then condense the cues that will not
              fit their time window, in one whole-episode call to an LLM that sees the entire
              dialogue. Cheap, and the output is a plain JSON you are meant to open and edit
@@ -59,7 +63,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("stage", choices=["calibrate", "script", "voice", "all", "sample", "cost", "status"])
+    ap.add_argument("stage", choices=["calibrate", "speech", "script", "voice", "all", "sample",
+                                      "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")
@@ -78,6 +83,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.stage == "calibrate":
         stages.stage_calibrate(cfg)
+    elif args.stage == "speech":
+        stages.stage_speech(cfg, args.only, args.force)
     elif args.stage == "script":
         stages.stage_script(cfg, args.only, args.force)
     elif args.stage == "voice":
