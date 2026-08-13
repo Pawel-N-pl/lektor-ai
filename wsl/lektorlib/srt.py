@@ -80,7 +80,15 @@ def clean_text(raw: str, cfg) -> str:
     out = out.replace(" ", " ")
     out = re.sub(r"\s+", " ", out).strip()
     out = re.sub(r"\s+([,.!?;:])", r"\1", out)
-    return respell(out, cfg)
+    return respell(say_symbols(out, cfg), cfg)
+
+
+def say_symbols(text: str, cfg) -> str:
+    """Turn marks into the words they are read as. Longest key first, so '##' cannot half-match."""
+    table = cfg["clean"].get("spoken_symbols") or {}
+    for src in sorted(table, key=len, reverse=True):
+        text = text.replace(src, table[src])
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def respell(text: str, cfg) -> str:

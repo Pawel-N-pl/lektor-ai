@@ -70,7 +70,11 @@
     "_budget_slack_note": "Multiplier on the character budget handed to the LLM. 1.0 means the budget is exactly what fits at the voice's natural rate. It was briefly 1.18 to stop the model abbreviating, and that was the wrong lever: the extra room came back as fuller lines that overran their windows, 168 of them by 423 ms on average, and with atempo disabled that turns straight into the lektor lagging the picture. Abbreviations are a prompt problem and are fixed in the prompt; the budget stays honest.",
     "_max_atempo_note": "Post-hoc time stretch, DISABLED at 1.0 by owner decision after listening: atempo resamples finished speech and the artefacts are worse than an honestly faster reading. Anything that will not fit at max_speed is simply allowed to run long into the silence that follows, which is what a real lektor does anyway. Raise it only if that lag starts to matter more than the artefacts.",
     "number_slack": 1.4,
-    "_number_slack_note": "Extra budget for cues containing digits, on top of budget_slack. Spelling a number out multiplies its length - \"14\" becomes \"czternascie\" - so on an ordinary budget the model pays for the expansion by dropping a number, which defeats the point. Only a handful of cues per episode carry digits, so the lag this buys back is negligible."
+    "_number_slack_note": "Extra budget for cues containing digits, on top of budget_slack. Spelling a number out multiplies its length - \"14\" becomes \"czternascie\" - so on an ordinary budget the model pays for the expansion by dropping a number, which defeats the point. Only a handful of cues per episode carry digits, so the lag this buys back is negligible.",
+    "speed_smooth_s": 6.0,
+    "_speed_smooth_note": "How far a speed-up bleeds into its neighbours, in seconds. A single line jumping to 1.2 while the ones around it sit at 1.0 is heard as the lektor suddenly hurrying; ramping the neighbours part of the way there makes the acceleration a gradient instead of a step. It also pays for itself: neighbours that finish earlier leave the crowded line more room, so it needs less speed-up than it did alone.",
+    "speed_relax": 0.88,
+    "_speed_relax_note": "Fraction of the computed excess speed actually applied, once the neighbours are sharing the load. 0.88 gives back about a fifth of a typical speed-up."
   },
   "voice": {
     "backend": "elevenlabs",
@@ -193,7 +197,7 @@
   },
   "clean": {
     "skip_patterns": [
-      "^\\s*[♪♫].*[♪♫]\\s*$",
+      "[♪♫]",
       "^\\s*$"
     ],
     "strip_patterns": [
@@ -206,6 +210,13 @@
     "pronunciation": {
       "Rojas": "Rohas"
     },
-    "_pronunciation_note": "Foreign names respelled the way a Polish voice must say them. Keep this list SHORT: the multilingual voice already reads English names correctly, and respelling those only breaks them. It is for names whose language is neither Polish nor English, where the voice falls back on Polish letter rules - Spanish 'Rojas' comes out 'royas' instead of 'Rohas'. Keys match on the STEM and the case ending follows automatically (Rojasa -> Rohasa, Rojasowi -> Rohasowi), so add the nominative only. This runs on EVERY cue, before budgets and before the LLM, unlike condensation which only touches cues that do not fit. Extend it by ear, per show."
+    "_pronunciation_note": "Foreign names respelled the way a Polish voice must say them. Keep this list SHORT: the multilingual voice already reads English names correctly, and respelling those only breaks them. It is for names whose language is neither Polish nor English, where the voice falls back on Polish letter rules - Spanish 'Rojas' comes out 'royas' instead of 'Rohas'. Keys match on the STEM and the case ending follows automatically (Rojasa -> Rohasa, Rojasowi -> Rohasowi), so add the nominative only. This runs on EVERY cue, before budgets and before the LLM, unlike condensation which only touches cues that do not fit. Extend it by ear, per show.",
+    "_skip_patterns_note": "A cue matching any of these never reaches the lektor at all. The note characters mark sung lyrics, which a lektor does not read over - the song is the scene. The pattern deliberately matches a note ANYWHERE, not the opening-and-closing pair it used to: '♪TRENERNATE - #AFCRICHMOND #WONDERKID' opens with one and never closes it, and slipped through to be read aloud.",
+    "spoken_symbols": {
+      "#": "hasztag ",
+      "&": " i ",
+      "@": " małpa "
+    },
+    "_spoken_symbols_note": "Symbols rewritten into the words a lektor actually says, applied to EVERY cue before budgets and before the LLM. Same reasoning as the pronunciation table: a short cue never goes to the model, so a '#' left in it would be read as whatever the voice makes of the glyph. The LLM handles digits; these are the marks it has no rule for."
   }
 }
