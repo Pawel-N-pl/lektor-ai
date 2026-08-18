@@ -146,7 +146,67 @@ def predicted_ms(text: str, t: dict, cps: float | None = None) -> float:
     rate = float(t.get("ms_per_char", 0.0))
     if rate <= 0.0:
         rate = 1000.0 / float(cps or t.get("chars_per_second", 14.5) or 14.5)
-    return overhead + rate * len(text)
+    return (overhead + rate * len(text)) * numeral_drag(text, t)
+
+
+# Polish number words, as the condensation stage is required to write them - digits never survive
+# into a lektor line, so this is the only form they appear in.
+_NUMERAL_RE = re.compile(
+    r"\b(?:"
+    # Explicit stems only. An earlier version used st\\w* for "sto" and matched "staje",
+    # "starej" and "strumykiem" - 50 cues of 810 were being called numerals and quietly given a
+    # tighter slot than they needed.
+    r"zer[oa]|jeden|jedn[aeoy]\w*|dwa|dwie|dwóch|dwoma|dwu"
+    r"|trzy|trzech|trzema|cztery|czterech|czterema"
+    r"|pię[ćc]\w*|sze[śs][ćc]\w*|siedem|siedmi\w+|osiem|o[śs]mi\w+|dziewię[ćc]\w*"
+    r"|dziesię[ćc]\w*|dziesiąt\w*"
+    r"|jedena[śs]ci\w*|dwana[śs]ci\w*|trzyna[śs]ci\w*|czterna[śs]ci\w*|pi[ęe]tna[śs]ci\w*"
+    r"|szesna[śs]ci\w*|siedemna[śs]ci\w*|osiemna[śs]ci\w*|dziewiętna[śs]ci\w*"
+    r"|dwadzieścia|dwudziest\w+|trzydzie[śs]ci\w*|trzydziest\w+"
+    r"|czterdzie[śs]ci\w*|czterdziest\w+|pię[ćc]dziesiąt\w*|sze[śs][ćc]dziesiąt\w*"
+    r"|siedemdziesiąt\w*|osiemdziesiąt\w*|dziewię[ćc]dziesiąt\w*"
+    r"|st[oau]|stem|dwie[śs]ci\w*|trzyst\w+|czteryst\w+|pię[ćc]set|sze[śs][ćc]set"
+    r"|siedemset|osiemset|dziewię[ćc]set|setn\w+"
+    r"|tysią\w+|tysię\w+|milion\w*|miliard\w*|bilion\w*"
+    r"|pierwsz\w+|drug\w+|trzeci\w*|czwart\w+|piąt\w+|szóst\w+|siódm\w+|ósm\w+"
+    r"|dziewiąt\w+|setn\w+|tysięczn\w+"
+    r")\b", re.IGNORECASE)
+
+
+def numeral_drag(text: str, t: dict) -> float:
+    """How much slower than the fitted average a line reads because it is mostly numbers.
+
+    Measured on the engine, not assumed. A written-out year - "Rok pański tysiąc dwieście
+    czterdziesty siódmy" - came back at 87.6 ms per character against the model's 73.5, and three
+    rewrites of the same line landed between 86 and 91: hyphenating the numeral saved 70 ms of
+    4030, closing the spaces saved 120. So it is not the spelling, it is that the engine enunciates
+    numbers deliberately and pauses between them, and no way of writing them down changes that.
+
+    Left uncorrected this is not a cosmetic error. The planner sees a line that fits, asks for no
+    speed-up, and the line then runs past the end of its slot - in the case that prompted this, 270
+    ms past a shot cut and into a scene that had already gone silent.
+
+    The factor is applied on the share of the line that is numerals, so an ordinary sentence with
+    one number in it is barely touched and a line that is nothing but a number gets the whole of
+    it.
+    """
+    peak = float(t.get("numeral_drag", 1.0))
+    if peak <= 1.0 or not text:
+        return 1.0
+    tail = text.rstrip()
+    # Only where it was actually measured: a line that ENDS on a number and gives the engine no
+    # terminal punctuation. Everything else was tested and found not to need it - numerals in the
+    # MIDDLE of a sentence read at 62.7 ms per character against 62.5 for the same sentences with
+    # the numbers swapped out, i.e. no difference at all. Applied more widely it was inflating the
+    # predicted duration of 50 cues of 810 and hurrying lines that had all the time they needed.
+    if not tail or tail[-1] in ".!?…":
+        return 1.0
+    last = _NUMERAL_RE.search(tail.rstrip(",;:-\u2013\u2014"))
+    if not last or last.end() < len(tail.rstrip(",;:-\u2013\u2014")) - 1:
+        return 1.0
+    hit = sum(len(m.group(0)) for m in _NUMERAL_RE.finditer(text))
+    share = min(1.0, hit / max(1, len(text.replace(" ", ""))))
+    return 1.0 + (peak - 1.0) * share
 
 
 def compute_windows(cues: list[Cue], cfg) -> None:

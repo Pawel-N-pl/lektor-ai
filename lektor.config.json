@@ -1,8 +1,8 @@
 {
   "_comment": "Shared config for both halves of the pipeline. Secrets live in env vars or in the project .env, never here: ELEVENLABS_API_KEY, OPENROUTER_API_KEY.",
   "paths": {
-    "input_dir_windows": "E:\\Filmy\\Ted.Lasso.S02.PLSUB.1080p.ATVP.WEB-DL.DDPA5.1.H.264-NTb",
-    "input_dir_wsl": "/mnt/e/Filmy/Ted.Lasso.S02.PLSUB.1080p.ATVP.WEB-DL.DDPA5.1.H.264-NTb",
+    "input_dir_windows": "E:\\Filmy\\The.Death.of.Robin.Hood.2026.PLSUB.1080p.AMZN.WEB-DL.DDP5.1.Atmos.H264-NGFiNDER",
+    "input_dir_wsl": "/mnt/e/Filmy/The.Death.of.Robin.Hood.2026.PLSUB.1080p.AMZN.WEB-DL.DDP5.1.Atmos.H264-NGFiNDER",
     "work_subdir": "_lektor",
     "output_subdir": "_lektor/output",
     "ffmpeg_windows": "C:\\Programy\\ffmpeg\\bin\\ffmpeg.exe",
@@ -57,9 +57,9 @@
     "_request_gap_ms_note": "Minimum spacing between the starts of two OpenRouter calls, enforced process-wide alongside a hard cap of 3 concurrent calls. A single episode is already one call per draw, so this is not for the pipeline: it is for everything around it - benchmarks fanning several models out at once, or two runs of the same episode briefly overlapping - which from the provider's side is one account hammering it and shows up as requests queueing behind each other."
   },
   "timing": {
-    "overhead_ms": 80.0,
-    "ms_per_char": 73.5,
-    "_duration_model_note": "Fitted per voice by generating cues of every length and regressing duration on character count. Mateusz measures ms = 80 + 73.4 * chars, Bill measured 47 + 73.5, so the speaking rate is a property of the model rather than the voice and only the fixed cost moves. A flat chars_per_second misses that fixed part, and it dominates the short cues that make up half an episode. Most of it used to be dead air the engine pads on, which backends now trim. Re-fit when changing voice_id; set ms_per_char to 0 to fall back to the flat model.",
+    "overhead_ms": 0.0,
+    "ms_per_char": 67.0,
+    "_duration_model_note": "Fitted per VOICE. Bill measures ms = 47 + 73.5 * chars (13.6 chars/s); Mateusz measured 80 + 73.4 and Janski 216 + 44.8 (22.3 chars/s). Those first two agreeing was a coincidence of two samples, not a property of the engine - Janski proved it by speaking 60% faster, which took the episode from 241 cues over budget to 29. Re-fit whenever voice_id changes or every budget in the episode is wrong. Do not fit on short lines alone: the fixed overhead dominates there and drags the slope.",
     "chars_per_second": 14.5,
     "_chars_per_second_note": "Speaking rate of the chosen voice at speed=1.0. Run `lektor.py calibrate` to measure it for real; the measured value is cached per backend+voice+model in the work dir. What it actually drives is the ElevenLabs backend's per-line speed prediction. It reaches the character budgets ONLY through budget_for's 1000/cps fallback, i.e. with ms_per_char at 0; with ms_per_char set, calibrating changes no budget at all. Backends that control duration directly (piper) ignore it entirely.",
     "max_borrow_ms": 1500,
@@ -87,7 +87,17 @@
     "speed_smooth_s": 6.0,
     "_speed_smooth_note": "How far a speed-up bleeds into its neighbours, in seconds. A single line jumping to 1.2 while the ones around it sit at 1.0 is heard as the lektor suddenly hurrying; ramping the neighbours part of the way there makes the acceleration a gradient instead of a step. It also pays for itself: neighbours that finish earlier leave the crowded line more room, so it needs less speed-up than it did alone.",
     "speed_relax": 0.88,
-    "_speed_relax_note": "Fraction of the computed excess speed actually applied, once the neighbours are sharing the load. 0.88 gives back about a fifth of a typical speed-up."
+    "_speed_relax_note": "Fraction of the computed excess speed actually applied, once the neighbours are sharing the load. 0.88 gives back about a fifth of a typical speed-up.",
+    "lead_in_ms": 550,
+    "_lead_in_ms_note": "How long after its subtitle card the lektor starts, so the original actor is heard first. That is the convention, not a preference: the viewer needs to register whose voice it is before the translation covers it, and subtitle cards are habitually set a little AHEAD of the speech. `retime` does this properly from forced-aligned word onsets and should win wherever it has them; this is the fallback for material where the English reference does not pair with the Polish grid - on The Death of Robin Hood it matched 13 cues of 921, so nothing moved at all. Cost, measured on 810 cues: at 300 ms, 33 lines no longer fit naturally and get read faster, against a median slack of 1316 ms. Cards with under 400 ms of room left are exempted.",
+    "cut_guard_ms": 500,
+    "_cut_guard_ms_note": "How long before a shot change a line must be finished. A lektor who runs out exactly as the picture cuts sounds as though the cut chopped him off - the ear pairs the two events even when nothing was truncated. The slot is shortened to end this far before the next cut and the speed planner is left to fit the words into what remains; a card that would be left under 400 ms keeps its own end instead, because landing on a cut beats being squeezed past what a voice can say. Measured on 810 cues against 541 scdet cuts: 500 ms shortens 189 lines and puts 136 of them over their natural pace, against 33 with no guard. Useless without trustworthy cut data - the previous detector found 187 cuts where scdet finds 541, and at that density this rule would do nothing.",
+    "numeral_drag": 1.2,
+    "_numeral_drag_note": "Multiplier on the fitted duration model for lines made of number words, applied in proportion to how much of the line is numerals. What it really guards against, measured after the fact: an engine reading a RUN OF NUMERALS WITH NO TERMINAL PUNCTUATION drifts - it treats the line as a list going nowhere, slows on every item and falls in pitch, and the owner described the result as sounding like the reader was about to die. A written-out year came back at 87.6 ms per character against the model's 73.5; the same line with a full stop came back at 73.8, i.e. exactly the model. Rewriting the numeral does nothing: hyphens saved 70 ms of 4030, closing the spaces 120.\n\nA GLOBAL 'add a full stop to every unterminated line' was measured and REJECTED. On ordinary sentences the effect is noise - -4.3%, -2.7%, and one line got 4.2% LONGER - so it would have invalidated the TTS cache of 55 lines to buy nothing on 53 of them. It is also wrong on the merits, which matters more than the cost: a cue ending in a comma is usually one sentence split across two cards, and closing it with a full stop puts a false ending inside a thought. In this film those cues are verse, where the comma carries the metre. A broken-up sentence is the merge stage's problem, not punctuation's.\n\nSo the factor stays as a SAFE-DIRECTION error: it over-predicts duration, which costs at worst a 1% speed-up nobody hears, while under-predicting puts the lektor across a shot cut. Set to 1.0 to switch it off. The voice stage also re-fetches anything that overran its slot once the audio has been measured, which catches whatever this misses.",
+    "_overhead_ms_note": "Fitted by tools/fit_duration.py on 36 lines spanning 6 to 170 characters, measured AFTER trim_silence at speed 1.0 - the same thing the pipeline consumes. Free fit wanted -131 + 68.17, and a negative fixed cost is not something an engine can do: it is a straight line paying for curvature. Forcing the intercept to zero costs almost nothing (R^2 0.9919 -> 0.9914), so that is what ships.\\n\\nThe previous values, 47 + 73.5, were not wrong because anything changed at ElevenLabs - the voice and model are the same and neighbour context moves duration by -9% to +6%, i.e. noise. They were fitted on the six CALIBRATION_LINES, which span 43 to 63 characters. Two parameters cannot be separated over a twenty-character window: the data cannot tell a fixed cost from a per-character one, so the split is decided by noise and every extrapolation inherits it. On the proper benchmark that model scores R^2 0.9625 with a worst case of 1668 ms and over-predicts by +436 to +892 ms across most length bands - which is why lines were being hurried that had all the time they needed.\\n\\nResidual spread is 333 ms whatever the model's shape, including one with curvature. That is the engine's own line-to-line variation and no formula will predict past it, which is the argument for the voice stage re-fetching whatever overran once the audio has been measured. Refit with tools/fit_duration.py after any change of voice or model.",
+    "_ms_per_char_note": "Fitted by tools/fit_duration.py on 36 lines spanning 6 to 170 characters, measured AFTER trim_silence at speed 1.0 - the same thing the pipeline consumes. Free fit wanted -131 + 68.17, and a negative fixed cost is not something an engine can do: it is a straight line paying for curvature. Forcing the intercept to zero costs almost nothing (R^2 0.9919 -> 0.9914), so that is what ships.\\n\\nThe previous values, 47 + 73.5, were not wrong because anything changed at ElevenLabs - the voice and model are the same and neighbour context moves duration by -9% to +6%, i.e. noise. They were fitted on the six CALIBRATION_LINES, which span 43 to 63 characters. Two parameters cannot be separated over a twenty-character window: the data cannot tell a fixed cost from a per-character one, so the split is decided by noise and every extrapolation inherits it. On the proper benchmark that model scores R^2 0.9625 with a worst case of 1668 ms and over-predicts by +436 to +892 ms across most length bands - which is why lines were being hurried that had all the time they needed.\\n\\nResidual spread is 333 ms whatever the model's shape, including one with curvature. That is the engine's own line-to-line variation and no formula will predict past it, which is the argument for the voice stage re-fetching whatever overran once the audio has been measured. Refit with tools/fit_duration.py after any change of voice or model.",
+    "duration_sd_ms": 333.0,
+    "_duration_sd_ms_note": "Line-to-line spread the duration model cannot predict, measured by tools/fit_duration.py as the residual standard deviation of the best fit - 333 ms, and it stays 333 ms whatever shape the model is given, including one with curvature. It is the engine's own variation, not a modelling failure. Used as a margin wherever a decision would otherwise treat the prediction as exact: the shot-cut guard only shortens a slot when the line fits with this much to spare. Refit it alongside overhead_ms and ms_per_char."
   },
   "speech": {
     "_comment": "The `speech` stage: what the actors and the editor did, measured off the video, written to <base>.speech.json. Costs nothing and calls nothing paid. Everything it produces is optional - the merge gate degrades to today's text-only rules whenever a signal is missing.",
@@ -109,8 +119,10 @@
     "store_min_gap_ms": 150,
     "_store_min_gap_note": "Shortest silence written into the artefact. Half of merge_min_pause_ms, so the threshold can be lowered in config and re-measured without re-running the GPU; below that it is inter-word coarticulation, not a pause, and it would double the file for nothing.",
     "detect_cuts": true,
+    "ffmpeg_threads": 14,
+    "_ffmpeg_threads_note": "Cores ffmpeg may use for shot detection, the only stage that decodes a whole episode of 1080p at full tilt. Capped at 14 of this machine's 16 by owner rule: other projects' containers share this WSL instance and must not be starved. Raising it to 16 buys a few seconds on a stage that already runs in about 70.",
     "scene_threshold": 0.35,
-    "_scene_threshold_note": "ffmpeg's own scene score above which a frame is a new shot. 0.35 yields 433 cuts on S02E06 at a median shot of 2.59 s, which is normal for single-camera comedy; it costs about 60 s of CPU for a 35-minute 1080p episode and reads the video without writing anything back.",
+    "_scene_threshold_note": "Legacy, for select='gt(scene,...)'. Kept so the old measurements in this file remain interpretable; the detector now used is scdet and its knob is scene_threshold_scdet.",
     "asr_container": "asr",
     "_asr_container_note": "The container forced alignment runs INSIDE, by name. It is borrowed, not owned: it belongs to ~/projects/yt-translator, it holds a resident faster-whisper large-v3, and this stage neither calls its HTTP API nor writes into its source tree. It uses only the torchaudio 2.6 that is already installed there, which is why nothing has to be installed anywhere and why the torch pin must not be disturbed. One scratch directory under the container's /tmp is created and removed again. If the container is down, the stage says so and writes an artefact with shot cuts only.",
     "tmp_dir": "",
@@ -118,7 +130,9 @@
     "ffmpeg_timeout_s": 3600,
     "docker_timeout_s": 600,
     "fa_timeout_s": 1800,
-    "_timeouts_note": "Ceilings, not expectations. Measured on S02E06: 18 s to extract the audio, 9 s to align 616 cues (234x realtime), 58 s for the shot cuts. These exist so a wedged container or an unreadable file becomes an error instead of a hang."
+    "_timeouts_note": "Ceilings, not expectations. Measured on S02E06: 18 s to extract the audio, 9 s to align 616 cues (234x realtime), 58 s for the shot cuts. These exist so a wedged container or an unreadable file becomes an error instead of a hang.",
+    "scene_threshold_scdet": 5,
+    "_scene_threshold_scdet_note": "Threshold for ffmpeg's scdet, 0-100. Its default of 10 found ZERO cuts in ten minutes of this film; 5 found 44, against 29 for the old select='gt(scene,0.2)' on the same footage. Lower it further only against a measured count - a detector that fires on camera movement is worse than one that misses cuts, because the merge gate then refuses seams for no reason."
   },
   "voice": {
     "backend": "elevenlabs",
@@ -126,8 +140,8 @@
     "concurrency": 8,
     "_concurrency_note": "Default parallel TTS calls. ElevenLabs caps this per plan. Flash/Turbo: Free 4, Starter 6, Creator 10, Pro 20, Scale/Business 30. Other models: Free 2, Starter 3, Creator 5, Pro 10, Scale/Business 15. 8 leaves headroom under the Creator/Flash cap of 10. A backend may override it in its own sub-table.",
     "elevenlabs": {
-      "voice_id": "MM9TwXLP67IpAXY0UOGg",
-      "_voice_id_note": "Mateusz - Polish Legend Narrator, a low calm baritone from the shared library. Chosen by ear from ten candidates read over the same 150 s of S02E03, a window picked for English names and lines that invite acting. Replaced Bill pqHfZKP75CvOlQylNhV4, which was fine at first and wore thin: a lektor has to be transparent, and the test is whether you stop noticing him. Comparison clips are in <input_dir>/_lektor/glosy/.",
+      "voice_id": "pqHfZKP75CvOlQylNhV4",
+      "_voice_id_note": "Bill - Wise, Mature, Balanced. Back after a trial of Janski eQFIuH2hmjAMzpf75y69, which was rejected by ear for loudness artefacts: its delivery spreads 4.7 LU between the 10th and 90th percentile line against 2.7 for Mateusz, and per-cue levelling bounded at 4 dB could not hide it. Also valid: Mateusz MM9TwXLP67IpAXY0UOGg.",
       "model_id": "eleven_flash_v2_5",
       "_model_id_note": "eleven_flash_v2_5 is flat, cheap ($0.05/1000 chars) and gets 2x the concurrency; eleven_multilingual_v2 and eleven_v3 are warmer at $0.10/1000 chars. Compare them with `lektor.py sample`.",
       "output_format": "mp3_44100_128",
@@ -173,8 +187,8 @@
       "_tolerance_ms_note": "How far under the window counts as landed. It cannot be met exactly on short cues - phoneme lengths are rounded to whole decoder frames, so a 30-character cue moves in 20-80 ms steps - and the search stops on its own once the bracket is finer than the steps. Undershoot is harmless anyway: the leftover is silence between lines, and the search always returns the SLOWEST rate that still fits.",
       "threads": 1,
       "_threads_note": "onnxruntime intra-op threads PER UTTERANCE, deliberately 1. Measured over 150 real cues: auto (16) threads x 1 worker = 9.9 cues/s, 1 thread x 16 workers = 35.2 cues/s. These clips are 1-4 s long, so onnxruntime's pool spends its time synchronising. CPU only: CUDA renders an episode in 136.5 s against CPU's 138.4 s and has already failed once with an onnxruntime EP error, so there is no GPU switch here. Do not add onnxruntime-gpu.",
-      "concurrency": 16,
-      "_concurrency_note": "Worker threads over one shared session, measured: 4 -> 20.6 cues/s, 8 -> 30.1, 12 -> 34.7, 16 -> 35.2, 20 -> 32.6. It plateaus at the core count and degrades past it. Parallel output was verified bit-for-bit identical to serial."
+      "concurrency": 14,
+      "_concurrency_note": "Worker threads over one shared session, measured: 4 -> 20.6 cues/s, 8 -> 30.1, 12 -> 34.7, 14 -> ~35, 16 -> 35.2, 20 -> 32.6. It plateaus at the core count and degrades past it. Capped at 14 of the machine's 16 by owner rule - other containers share this WSL instance and must keep a core - which costs about 1% against the 16 the curve peaks at. Parallel output was verified bit-for-bit identical to serial."
     },
     "chatterbox": {
       "venv": "/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox",
@@ -205,19 +219,21 @@
     "sample_rate": 48000,
     "channel_layout": "5.1(side)",
     "_channel_layout_note": "Layout of the finished track: '5.1(side)' or 'stereo'. 5.1 is what ships -- the lektor lands on the centre channel, where dialogue lives and where a stereo downmix folds it evenly into both speakers, and every other channel keeps its own material. Stereo is the fallback for a source that has no surround track; the mix then carries the voice on both channels. The layout also picks the encode profile below.",
-    "voice_channels": [2],
+    "voice_channels": [
+      2
+    ],
     "_voice_channels_note": "Output channels the lektor is laid onto, in ffmpeg's 5.1(side) order FL FR FC LFE SL SR. [2] is FC. Ignored in stereo, where the lektor is laid on both channels at full level -- which is why voice_channel_comp_db is 0 there: two correlated channels already sum the 3 dB the centre-only case has to buy back.",
     "voice_channel_comp_db": 3.0,
     "_voice_channel_comp_db_note": "Level compensation for putting the voice on ONE channel instead of two. Every level in this mix was tuned against a stereo fold, where L and R sum 3 dB; the centre channel alone does not, so without this the lektor lands 3 dB quieter than the number voice_over_program_db promises. It is a correction, not a taste knob -- voice_over_program_db is the taste knob.",
     "level_reference": "stereo_fold",
     "_level_reference_note": "How the programme's own loudness is measured, and every level in the mix hangs off it. 'stereo_fold' downmixes the source to two channels first, which is what the mix was tuned against; 'as_is' measures whatever channels the source has, and on a 5.1 source the LFE and the surrounds move the number enough to unbalance the whole thing.",
     "_levels_note": "Every level is relative to the programme's own measured loudness, never to dBFS. The first cut used an absolute voice_target_dbfs of -18 and buried a quiet film under a lektor 25 dB above it; the same setting would have been too quiet on a loud one. All three numbers below were then set by ear on a real scene.",
-    "voice_over_program_db": 7.0,
-    "_voice_over_program_db_note": "Lektor RMS above the programme RMS. 8 was judged slightly too strong and 5 slightly too weak.",
-    "duck_to_db": -10.0,
-    "_duck_to_db_note": "Where the original sits while the lektor speaks, relative to its natural level. Deeper than about -10 starts erasing the scene instead of making room in it.",
-    "program_gain_db": 4.0,
-    "_program_gain_db_note": "Makeup applied to the original in the gaps. The source is quiet, and a lektor track should not make the film quieter than watching it without one.",
+    "voice_over_program_db": 9.5,
+    "_voice_over_program_db_note": "Lektor RMS above the programme RMS. Raised for this voice on request, and then raised again by a further 1.0: the target is set in RMS but a listener hears LUFS, and a change of voice changes the relationship between them - the first 1.5 dB of RMS came out as 0.5 LU on the centre channel. Verify by measurement after any voice change.",
+    "duck_to_db": -3.0,
+    "_duck_to_db_note": "Where the original sits while the lektor speaks, relative to its own level. -4.5 by the owner's ear, after -10, -6 and -4 were compared on the same film. Deeper than about -10 stops making room in the scene and starts erasing it.",
+    "program_gain_db": 0.0,
+    "_program_gain_db_note": "What happens to the film where the lektor is NOT speaking, relative to its own level. 0.0 means the film is left exactly as it was, which is the default a lektor track should have: it is not our business to re-master the film. It was 4.0 for Ted Lasso, whose mix ran quiet; for a film that is already at a sensible level, lifting it costs headroom for nothing - the stereo downmix of the boosted track peaked at +1.20 dBFS against the original's -2.74, i.e. it clipped where the source never did.",
     "attack_ms": 90,
     "release_ms": 600.0,
     "pre_roll_ms": 450,
@@ -233,8 +249,8 @@
     "_voice_presence_note": "High shelf on the lektor, matched by measurement rather than taste. Two voices at the same loudness are not equally present: band by band at equal RMS, Mateusz had 3.6 dB less above 4 kHz than Bill, where consonants live, and that reads as further away and quieter. A shelf of 6 dB at 4 kHz puts his 4-8 kHz band at 57.6 against Bill's 57.5, so the two are interchangeable in tone. Re-measure when changing voice_id; turning the fader up instead only makes the mud louder.",
     "voice_trim_db": 1.5,
     "_voice_trim_note": "Per-voice level nudge on top of voice_over_program_db, for when the tone is right and the balance still is not. Cheap to retune: the speech is cached, so only the mix is rebuilt.",
-    "duck_mode": "spectral",
-    "_duck_mode_note": "broadband turns the whole programme down under the lektor; spectral turns down only the band the voice actually occupies and leaves the bass and the air alone. The second is what a multiband sidechain does in a studio (FabFilter Pro-MB, sonible smart:comp, TrackSpacer): music keeps its weight and sparkle, the midrange makes room, and because the whole spectrum is not moving there is far less to hear as pumping. Masking happens in the midrange, so ducking the rest was paying with impact for nothing.",
+    "duck_mode": "broadband",
+    "_duck_mode_note": "broadband | spectral. Switched back to broadband after the owner reported a phaser-like colouration that survived the crossover fix. Spectral ducking is not a bug here - the mix was measured against an independent reference and nulls at the E-AC-3 coding floor (-48 dB), static and time-varying alike - but by construction it sweeps an 11 dB dip through 300-4000 Hz on every line, attack 90 ms and release 600 ms, and a moving midrange notch is what a phaser is. Broadband simply turns the film down, which is what a lektor mix has always done. S02E10 is kept as the spectral reference for an A/B.",
     "duck_band_hz": [
       300,
       4000
@@ -246,11 +262,30 @@
     "_duck_rest_note": "Bass and air under the lektor. Barely moved, so the film keeps its weight - but no longer untouched, because at 1.5 dB a loud passage still crowded the voice.",
     "_pre_roll_ms_note": "How long before the lektor speaks the duck begins. Measured at the old 250 ms with a 180 ms attack, the bed was still only 4.5 dB down when the voice arrived - 6.5 dB short of its target - and did not reach depth until half a second INTO the line. That is heard as two people talking at once, which is exactly what it was.",
     "_attack_ms_note": "Time constant of the duck going down. Short, because the pre-roll only helps if the fall completes inside it.",
-    "pause_ratio": 1.0,
+    "pause_ratio": 0.35,
     "pause_floor_ms": 120.0,
     "pause_floor_db": -30.0,
     "pause_min_ms": 60.0,
-    "_pause_note": "Internal pauses the engine inserts, mostly at commas. Measured over 476 of them: median 180 ms, p75 320, p90 510, max 700, and a line with two commas spends 23% of its length not speaking. pause_ratio is how much of each pause ABOVE pause_floor_ms survives - 1.0 leaves them alone. The floor is where a gap stops being heard as a pause and reads as articulation, so it is never taken; only the excess is compressed, which keeps a sentence boundary longer than a comma instead of flattening both to the same length the way a flat scaling would."
+    "_pause_note": "Internal pauses the engine inserts, mostly at commas. Measured over 476 of them: median 180 ms, p75 320, p90 510, max 700, and a line with two commas spends 23% of its length not speaking. pause_ratio is how much of each pause ABOVE pause_floor_ms survives - 1.0 leaves them alone. The floor is where a gap stops being heard as a pause and reads as articulation, so it is never taken; only the excess is compressed, which keeps a sentence boundary longer than a comma instead of flattening both to the same length the way a flat scaling would.",
+    "per_cue_level": true,
+    "per_cue_level_max_db": 4.0,
+    "_per_cue_level_note": "Level every line to the median before placing it. The track-wide normalisation sets one gain for the whole episode, so a voice that wanders takes the listener with it. Bounded at per_cue_level_max_db so a whisper stays a whisper and only the drift is removed.",
+    "dialogue_reference": true,
+    "_dialogue_reference_note": "Set the lektor against the loudness of the film's DIALOGUE instead of the RMS of the whole film. The old reference averaged silence, music and action together, so on a sparsely-talking film it sat far below the scenes the lektor has to be heard over: +9.5 dB 'over programme' measured as roughly 18 dB over the dialogue itself. Dialogue windows come from the Polish cue timings, gated by the centre channel so title cards and song lyrics do not count.",
+    "voice_over_dialogue_lu": 6.0,
+    "_voice_over_dialogue_lu_note": "How far the lektor sits above the film's dialogue. The unit is LU, not dB and not LUFS: it is the DIFFERENCE between two BS.1770 measurements, the way dB is a difference on the dBFS scale. Anything that merely multiplies a signal - duck_to_db, voice_trim_db, limiter_ceiling_db - stays in dB. 6.0 is the owner's starting figure and the only number here not yet confirmed by measurement.",
+    "dialogue_window_s": 20.0,
+    "_dialogue_window_s_note": "Window the local dialogue average is taken over for the fader ride. Short enough to follow a scene, long enough not to follow a sentence.",
+    "ride_tracking": 0.5,
+    "_ride_tracking_note": "How much of the scene's loudness the lektor follows. Deliberately below 1.0: at 1.0 the voice would copy the film's dynamics exactly and the whole point of having a fixed reference would be gone. At 0.5 a scene 6 LU louder lifts the voice 3 dB.",
+    "ride_max_db": 3.0,
+    "_ride_max_db_note": "Ceiling on the ride, in dB, either way. A hand on a fader, not a compressor.",
+    "ride_smooth_s": 2.0,
+    "_ride_smooth_s_note": "Time constant of the zero-phase easing, applied forward and backward so the ride neither anticipates the picture nor lags it.",
+    "ride_within_cue": false,
+    "_ride_within_cue_note": "false holds one level across each cue and eases between cues, which is what a lektor and a mixer actually do - the reader keeps a sentence level, the mixer rides between them. true follows the film continuously inside a line too; useful when a long line sits under a swell, but it modulates the voice's own dynamics and can read as breathing. Same cap and easing either way.",
+    "dialogue_speech_gate_lu": 12.0,
+    "_dialogue_speech_gate_lu_note": "A cue whose centre channel is this far below the typical cue's centre has nobody speaking under it - screen text, a sign, a lyric - and is excluded from the dialogue reference."
   },
   "encode": {
     "codec": "ac3",
@@ -260,9 +295,12 @@
     "surround": {
       "codec": "eac3",
       "bitrate": "768k",
-      "extension": "eac3"
+      "extension": "eac3",
+      "delay_samples": 256
     },
-    "_surround_note": "Used when mix.channel_layout is a surround layout. E-AC-3 at 768k is what produced every episode on disk; ac3 at 256k cannot carry six channels credibly, so the profile is chosen by layout rather than shared."
+    "_surround_note": "Used when mix.channel_layout is a surround layout; ac3 at 256k cannot carry six channels credibly, so the profile is chosen by layout rather than shared. The codec was blamed for the artefacts reported on music and then cleared BY EAR, which is the only test that counts here. It does leave real error - measured on a 25 s music passage with the lektor silent, where the mix does nothing but apply a gain, the null against the source is -29.9 dB at 768k against -84.4 dB for flac, and the source is already Dolby Digital Plus with Atmos so this is second-generation lossy coding. But the owner compared that exact passage encoded both ways and rated them equal, so the measurable error is not the audible complaint. Lossless costs ~950 MB an episode against ~230. If the codec is ever suspected again, re-run that A/B rather than trusting the null figure: it is real and it is not what is being heard.",
+    "delay_samples": 256,
+    "_delay_samples_note": "Samples the encoder adds before its first output sample, compensated by advancing the source read by the same amount so the finished track is sample-exact against the film. Measured, do not guess: null the encoder's own output against its input and read off the best offset (tools/ab_mix.py --verify does this). ffmpeg's eac3 and ac3 both delay by 256; flac is lossless and delays by 0. It matters because any player that renders the internal track AND this one at the same time sums the film with a delayed copy of itself - a comb filter, notches every 188 Hz at 12.9 dB, which is audible as flanging on loud music."
   },
   "clean": {
     "skip_patterns": [
@@ -289,7 +327,7 @@
     "_spoken_symbols_note": "Symbols rewritten into the words a lektor actually says, applied to EVERY cue before budgets and before the LLM. Same reasoning as the pronunciation table: a short cue never goes to the model, so a '#' left in it would be read as whatever the voice makes of the glyph. The LLM handles digits; these are the marks it has no rule for.",
     "merge_gap_ms": 140,
     "_merge_gap_note": "Two cards are joined only when BOTH hold: the gap is no larger than this, and the first card does not finish its sentence. The gap alone proves nothing - this release puts a fixed 82-85 ms between every card, 55% of all gaps, and the next distinct value is 417 ms. Merging on the gap alone glued two finished sentences 89% of the time, including across shot changes, across speaker turns and onto on-screen title cards. Set to 0 to switch merging off.",
-    "merge_gate": "off",
+    "merge_gate": "both",
     "_merge_gate_note": "OFF, by listening, against the measurement that motivated it. The evidence was solid: half of all merges join across a pause the actors really took or a shot cut, 117 of 231 seams over six episodes. The conclusion drawn from it was wrong. Judged on 22 A/B pairs rendered both ways over the real audio with everything else held identical, merging won decisively - splitting a sentence at its comma, which is exactly where actors pause, made the lektor sound like it was reading word by word. A lektor is a narrator reading a text, not a performer imitating a delivery: he reads the sentence, and the pause in the picture is not his to copy. Set to 'pause', 'cut' or 'both' to re-enable; the speech.json artefact stays useful regardless, since the per-line delay job needs its onsets.",
     "merge_min_pause_ms": 300,
     "_merge_min_pause_note": "Shortest silence in the delivery that counts as the actors having paused. 300 ms is the threshold the effect was measured at, not one derived from a distribution, and it is the single knob that matters: across six episodes it takes the 211 text-rule merges to 95 at 200 ms, 124 at 300, 162 at 500 and 190 at 800. It is the honest place for a second opinion by ear, which is the only test that can settle it - the median silence sitting on a merge seam is 520 ms, comfortably above the threshold either way.",

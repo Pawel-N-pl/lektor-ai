@@ -40,7 +40,8 @@ def decode_mono(cfg, data: bytes, sr: int, atempo: float | None = None) -> np.nd
 
 
 def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
-                 keep_ms: float = 40.0, fade_ms: float = 8.0) -> np.ndarray:
+                 keep_ms: float = 40.0, fade_ms: float = 8.0,
+                 blip_ms: float = 150.0, blip_gap_ms: float = 100.0) -> np.ndarray:
     """Cut the dead air a TTS engine pads around an utterance.
 
     Measured over 180 real lines: 44 ms of silence before the speech and 323 ms after it. That
@@ -64,19 +65,63 @@ def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
     voiced = np.where(peaks > top * (10.0 ** (floor_db / 20.0)))[0]
     if voiced.size == 0:
         return audio
+    # A trailing blip is not the end of the line. Measured on a real clip: speech decayed to
+    # -60 dB by 2660 ms, sat in true silence for 200 ms, and then the engine appended 60 ms at
+    # -14 dB right at the end. Taking the last frame above the threshold keeps that burst, so the
+    # clip finishes at full level and stops dead - which is heard as a hiss cut off mid-way, and
+    # no fade can rescue it because the burst is longer than the fade.
+    #
+    # So a final run of voiced frames is dropped when it is SHORT and SEPARATED from the speech by
+    # real silence. Both conditions matter: a short run right after the speech is the end of a
+    # word, and a long run after a gap is a second sentence.
+    runs: list[tuple[int, int]] = []
+    for f in voiced:
+        if runs and f == runs[-1][1] + 1:
+            runs[-1] = (runs[-1][0], f)
+        else:
+            runs.append((f, f))
+    blip = max(1, int(blip_ms / 1000.0 / (frame / sr)))
+    gap = max(1, int(blip_gap_ms / 1000.0 / (frame / sr)))
+    while len(runs) > 1:
+        s0, e0 = runs[-1]
+        if (e0 - s0 + 1) <= blip and (s0 - runs[-2][1]) >= gap:
+            runs.pop()
+        else:
+            break
+
     pad = int(keep_ms / 1000.0 * sr)
-    start = max(0, voiced[0] * frame - pad)
-    end = min(audio.size, (voiced[-1] + 1) * frame + pad)
+    start = max(0, runs[0][0] * frame - pad)
+    end = min(audio.size, (runs[-1][1] + 1) * frame + pad)
     out = audio[start:end].copy()
 
     # Trimming lands on an arbitrary sample, not a zero crossing: measured over 60 real clips, 4 of
     # them ended on an amplitude up to 0.138. Dropped into the silence between lines that is a step,
-    # and a step is a click. A few ms of cosine taper costs nothing audible and removes it.
-    fade = min(int(fade_ms / 1000.0 * sr), out.size // 2)
-    if fade > 1:
-        ramp = (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, fade))).astype(np.float32)
-        out[:fade] *= ramp
-        out[-fade:] *= ramp[::-1]
+    # and a step is a click. A cosine taper costs nothing audible and removes it.
+    #
+    # The taper is as long as the edge needs rather than a fixed 8 ms. Measured over 60 cached
+    # clips: the outer 40 ms sits a median 63 dB below the clip's peak, where 8 ms is ample - but
+    # the worst is only 15.9 dB down, about -22 dBFS, and ramping that away in 8 ms is itself a
+    # tick. Those are the same clips whose background sits above the trim threshold (5 of 60), so
+    # the trim stops inside a breath instead of in silence and leaves a loud edge behind.
+    #
+    # Length only ever grows into the keep_ms padding, so no speech is touched and, more to the
+    # point, the clip's DURATION does not change - the fitted duration model and every cached TTS
+    # line stay valid, which a change to the trim POINT would not.
+    def taper(seg: np.ndarray) -> int:
+        if seg.size == 0:
+            return 0
+        rel = float(np.sqrt(np.mean(np.square(seg, dtype=np.float64)))) / max(top, 1e-9)
+        loud_db = 20.0 * np.log10(max(rel, 1e-9))
+        # -60 dB and quieter: the 8 ms that has always been here. -20 dB: 25 ms. Linear between.
+        want = np.interp(loud_db, [-60.0, -20.0], [fade_ms, 25.0])
+        return int(min(want, keep_ms) / 1000.0 * sr)
+
+    head = min(taper(out[: int(keep_ms / 1000.0 * sr)]), out.size // 2)
+    tail = min(taper(out[-int(keep_ms / 1000.0 * sr):]), out.size // 2)
+    if head > 1:
+        out[:head] *= (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, head))).astype(np.float32)
+    if tail > 1:
+        out[-tail:] *= (0.5 - 0.5 * np.cos(np.linspace(np.pi, 0.0, tail))).astype(np.float32)
     return out
 
 

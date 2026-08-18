@@ -20,18 +20,22 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import say
-from .audio import apply_shelf, resample_linear
+import numpy as np
+
+from . import loudness as LD
+from .audio import apply_shelf, measure_lufs, resample_linear
 from .config import Config, cps_path
 from .backends import get_backend
 from .backends.base import Backend, Utterance
-from .mix import (Clip, assemble_voice, build_duck_envelopes, db_to_lin, encode_profile,
+from .mix import (Clip, assemble_voice, level_clips, build_duck_envelopes, db_to_lin, encode_profile,
                   is_surround, measure_program_level, normalize_voice, source_channels,
                   voice_channels, voice_comp_db, write_mix)
 from .pricing import stage_cost, tts_usd, usd_per_1k
 from .script import CONDENSE_SYSTEM, condense_episode, stage_script, whole_prompt
-from .speech import (describe_delays, describe_leads, find_video, lead_counts, load_onsets,
+from .speech import (describe_delays, describe_leads, find_video, lead_counts, load_events,
+                     load_onsets,
                      plan_delays, stage_speech)
-from .srt import Cue
+from .srt import Cue, predicted_ms
 
 __all__ = [
     "CONDENSE_SYSTEM",
@@ -195,6 +199,61 @@ def generate_clips(cfg: Config, cues: list[dict], backend: Backend,
     workers = max(1, backend.max_concurrency)
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(work, enumerate(clips)))
+
+    # Second pass, on what the engine DID rather than on what the model predicted it would do.
+    #
+    # The speed plan is built from `overhead_ms + ms_per_char * chars`, an average fitted over
+    # ordinary dialogue. Some lines are not ordinary: a year written out in words - "tysiąc
+    # dwieście czterdziesty siódmy" - measured 86-91 ms per character against the model's 73.5,
+    # about 20% slow, so the planner saw a line that fits and asked for no speed-up at all. The
+    # line then ran 270 ms past a shot cut, into a scene that had gone silent, and hung there.
+    #
+    # Rewriting the text does not fix it: hyphenating the numeral saved 70 ms of 4030, and
+    # removing the spaces altogether saved 120. The reading rate is the reading rate.
+    #
+    # So anything measured over its slot is asked for again, faster by exactly the ratio it
+    # missed by. Only the lines that actually overran are re-fetched; the rest stay cached.
+    tm = cfg["timing"]
+    ceiling = float(tm.get("max_speed", 1.2))
+    late = [(i, c) for i, c in enumerate(clips)
+            if c.target_ms and c.achieved_ms > c.target_ms and (c.speed or 1.0) < ceiling - 0.005]
+    if late:
+        say(f"    {len(late)} kwestii przekroczylo okno po syntezie – poprawka po pomiarze")
+
+        def redo(item) -> None:
+            i, clip = item
+            want = min(ceiling, (clip.speed or 1.0) * clip.achieved_ms / clip.target_ms)
+            r = backend.render(Utterance(
+                index=i, text=clip.cue["text"], target_ms=clip.target_ms or None,
+                prev_text=clip.cue.get("prev_text", ""),
+                next_text=clip.cue.get("next_text", ""),
+                speed_hint=round(want, 2)))
+            audio = resample_linear(r.audio, r.sample_rate, sr)
+            got = audio.size / sr * 1000.0
+            # Keep it only if it really is closer to the slot; a faster read that came back longer
+            # is the engine disagreeing, and the original is then the better of the two.
+            if got < clip.achieved_ms:
+                clip.audio, clip.speed, clip.atempo = audio, r.speed, r.atempo
+                clip.achieved_ms = got
+                clip.billable_chars += r.billable_chars
+                clip.cached = clip.cached and r.cached
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(redo, late))
+    # A per-line record of what the engine actually did, so the duration model can be refitted
+    # from real material instead of from invented sentences. Free: it is written from clips that
+    # are already in hand, cached or not.
+    try:
+        import csv
+        with open(cfg.work_dir / "clip_timing.csv", "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["id", "chars", "speed", "achieved_ms", "target_ms", "text"])
+            for c in clips:
+                if c.audio.size:
+                    w.writerow([c.cue.get("id"), len(c.cue["text"]), round(c.speed or 1.0, 3),
+                                round(c.achieved_ms, 1), c.target_ms, c.cue["text"]])
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never break a render
+        say(f"    (nie zapisano clip_timing.csv: {exc})")
     return clips
 
 
@@ -237,7 +296,7 @@ def report_clips(cfg: Config, backend: Backend, clips: list[Clip], seconds: floa
     else:
         say(f"    0 billable characters, $0.00 -- {backend.name} is local; "
             f"{cached} line(s) came from cache")
-    say(f"    {seconds:.1f} s wall clock for {spoken[-1].cue['end_ms'] / 60000.0:.1f} min "
+    say(f"    {seconds:.1f} s of speech synthesis for {spoken[-1].cue['end_ms'] / 60000.0:.1f} min "
         f"of programme")
 
 
@@ -267,14 +326,41 @@ def pick_source(cfg: Config, base: str) -> Path | None:
     small local file beats decoding the film for a mix that only needs two channels.
     """
     flac = cfg.work_dir / f"{base}.orig.flac"
+    local = cfg.work_dir / f"{base}.orig.mka"
     video = find_video(cfg, base)
-    order = [video, flac] if is_surround(cfg) else [flac, video]
+    # The local copy first, in either layout. Every stage that touches the programme - the loudness
+    # profile, the level measurement, the mix itself - reads it end to end, and reading it out of
+    # the mkv means dragging the video past the demuxer each time: 8 GB a pass against 0.7 GB for
+    # the audio track alone. Neither the eac3 decoder nor its encoder threads at all, so passes are
+    # the only thing there is to save.
+    order = [local, flac, video] if is_surround(cfg) else [flac, local, video]
     for path in order:
         if path is None or not path.exists():
             continue
         if not is_surround(cfg) or source_channels(cfg, path) >= 6:
             return path
     return None
+
+
+def ensure_local_audio(cfg: Config, base: str) -> Path | None:
+    """Stream-copy the film's audio into the work dir once, so later passes never touch the mkv.
+
+    A copy, not a re-encode: identical bits, no second generation of lossy coding, and it costs one
+    pass to make and pays that back on the first re-render.
+    """
+    out = cfg.work_dir / f"{base}.orig.mka"
+    if out.exists() and source_channels(cfg, out) >= 6:
+        return out
+    video = find_video(cfg, base)
+    if video is None:
+        return None
+    say(f"  wyciagam audio raz do {out.name} (kopia strumienia, bez rekompresji)")
+    r = subprocess.run([cfg.ffmpeg, "-v", "error", "-y", "-i", str(video),
+                        "-map", "0:a:0", "-c:a", "copy", str(out)], capture_output=True)
+    if r.returncode != 0 or not out.exists():
+        say(f"  !! nie udalo sie wyciagnac audio: {r.stderr.decode(errors='replace')[-200:]}")
+        return None
+    return out
 
 
 def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | None = None,
@@ -301,6 +387,8 @@ def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | Non
             if out_path.exists() and not force:
                 say(f"{base}: {out_path.name} exists, skipping (--force to redo)")
                 continue
+            if is_surround(cfg):
+                ensure_local_audio(cfg, base)
             source = pick_source(cfg, base)
             if source is None:
                 say(f"{base}: !! no source audio with {'6 channels' if is_surround(cfg) else 'a track'} "
@@ -313,6 +401,16 @@ def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | Non
             if limit_s:
                 total_samples = min(total_samples, int(limit_s * sr))
 
+            # Let the actor start first. A lektor who opens before the original line steals its
+            # entrance, and the convention is the other way round: the viewer hears whose voice it
+            # is, then the translation arrives over the top. `retime` already does this precisely
+            # where forced alignment found the actor's first word, but that needs an English
+            # reference that matches the Polish cue grid - on this film it paired 13 cues of 921 -
+            # so this is the blunt version that works with no onsets at all.
+            #
+            # The window shrinks by the same amount, so the speed planner sees the shorter slot
+            # rather than discovering it at the end. Measured on 810 cues: at 300 ms, 33 lines stop
+            # fitting naturally and have to be read faster, against a median slack of 1316 ms.
             # The budgets in this file were computed against this rate; a predicting backend has
             # to speak to the same number or its speed factors will not match them.
             cps = float(data["chars_per_second"])
@@ -325,10 +423,81 @@ def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | Non
             # lines in a full render, and a rendered sample would quietly buy audio the episode had
             # already paid for.
             everything = data["cues"]
+
+            # Applied here, before the speed plan is built, so the planner sees the slot the line
+            # will really get. Doing it later would hand every shortened line to the clamp instead.
+            lead = int(cfg["timing"].get("lead_in_ms", 0) or 0)
+            if lead > 0:
+                moved = 0
+                for c in everything:
+                    room = int(c["window_ms"]) - lead
+                    if room >= 400:                 # never squeeze a short card down to nothing
+                        c["delay_ms"] = int(c.get("delay_ms", 0) or 0) + lead
+                        c["window_ms"] = room
+                        moved += 1
+                say(f"  wejscie lektora o {lead} ms po karcie napisow, "
+                    f"{moved}/{len(everything)} kwestii (reszta za krotka)")
+
+            # Finish clear of the edit. A line that runs out exactly as the picture cuts sounds
+            # like the cut chopped it off, even when it did not - the ear pairs the two events.
+            # So the slot is shortened to end `cut_guard_ms` before the next shot change, and the
+            # speed planner is left to find the words the room it now has.
+            #
+            # The rule yields where it cannot be met. A cut landing just after a line begins would
+            # otherwise leave it a sliver: measured with a flat 400 ms floor, cue 306 went from
+            # 6131 ms to 405 ms for text needing 5339, i.e. thirteen times over, and across the
+            # film 153 lines of 810 ended up outside their slot against 57 without the rule.
+            # Better a line that lands on a cut than one squeezed past what a voice can say - so
+            # the slot is only shortened when the words still fit inside it at the fastest pace
+            # the engine is allowed.
+            guard = int(cfg["timing"].get("cut_guard_ms", 0) or 0)
+            ev = load_events(cfg.work_dir, base, cfg) if guard > 0 else None
+            if guard > 0 and ev is not None and ev.cuts:
+                import bisect
+                tm = cfg["timing"]
+                fastest = float(tm.get("max_speed", 1.2)) or 1.0
+                trimmed = skipped = 0
+                for c in everything:
+                    start = int(c["start_ms"]) + int(c.get("delay_ms", 0) or 0)
+                    end = start + int(c["window_ms"])
+                    i = bisect.bisect_right(ev.cuts, start)
+                    if i >= len(ev.cuts):
+                        continue
+                    limit = ev.cuts[i] - guard
+                    if limit >= end:
+                        continue
+                    # Plus a margin, because the model is an average and the benchmark that
+                    # fitted it measured 333 ms of line-to-line spread the formula cannot see.
+                    # Without it the guard shortens a window the line then overruns: dropping
+                    # the margin took lines-outside-their-slot from 51 to 64 of 810.
+                    need = predicted_ms(c["text"], tm) + float(tm.get("duration_sd_ms", 0.0))
+                    if (limit - start) >= need / fastest:
+                        c["window_ms"] = limit - start
+                        trimmed += 1
+                    else:
+                        skipped += 1
+                say(f"  odstep {guard} ms przed cieciem: skrocono {trimmed} kwestii, "
+                    f"{skipped} zostawiono (nie zmiescilyby sie), {len(ev.cuts)} ciec")
             all_speeds = None
             if backend.wants_speed_plan and \
                     cfg.backend_cfg().get("speed_plan", "neighbour_smoothed") != "per_line":
                 all_speeds = plan_speeds(cfg, everything, cps)
+            # A `speed` written into a cue in <base>.lektor.json wins over the plan. The planner
+            # only ever speeds a line up to make it FIT, so a line with room to spare is read at
+            # whatever pace the engine chose - and on a spelled-out numeral that pace can be a
+            # crawl with a pause between every word. This is the hand override for those.
+            #
+            # ElevenLabs' `speed` re-synthesises at a different rate; it does not resample, so the
+            # pitch does not move. That is why it is used here rather than atempo, which is
+            # disabled in this project anyway on the owner's ear.
+            if all_speeds is not None:
+                forced = 0
+                for i, c in enumerate(everything):
+                    if c.get("speed"):
+                        all_speeds[i] = float(c["speed"])
+                        forced += 1
+                if forced:
+                    say(f"  {forced} kwestii z recznie ustawiona predkoscia")
             for i, c in enumerate(everything):
                 c["prev_text"] = everything[i - 1]["text"] if i > 0 else ""
                 c["next_text"] = everything[i + 1]["text"] if i + 1 < len(everything) else ""
@@ -353,29 +522,95 @@ def stage_voice(cfg: Config, only: str | None, force: bool, limit_s: float | Non
                     f"a crowded neighbour")
 
             say("  generating speech")
+            t_stage = time.time()
             t0 = time.time()
             clips = generate_clips(cfg, cues, backend, speeds)
             gen_s = time.time() - t0
 
             say("  assembling")
+            moved = level_clips(cfg, clips)
+            if moved:
+                say(f"    levelled {moved} line(s) toward the median before placing them")
             voice, spans = assemble_voice(cfg, clips, total_samples)
             # Tone first, level second: the shelf changes what the voice sounds like, so the
             # normalisation that follows has to see the finished sound.
             voice = apply_shelf(cfg, voice, sr, float(m.get("voice_presence_db", 0.0)),
                                 float(m.get("voice_presence_hz", 4000.0)))
-            program_db = measure_program_level(cfg, source)
-            voice *= normalize_voice(cfg, voice, spans, program_db)
+            # Only the RMS path needs this, and it is a whole extra pass over the film.
+            program_db = (float("nan") if m.get("dialogue_reference", False)
+                          else measure_program_level(cfg, source))
+            if m.get("dialogue_reference", False):
+                # Referenced to the dialogue rather than to the whole film. See loudness.py for
+                # why, and for why the knob below is in LU while the duck stays in dB.
+                prof_mix, prof_fc = LD.profiles(cfg, source, cache_dir=cfg.work_dir)
+                anchor, per_cue, counted = LD.dialogue_anchor(
+                    prof_mix, prof_fc, cues, float(m.get("dialogue_speech_gate_lu", 12.0)))
+                chunks = [voice[s:e] for s, e in spans if e > s]
+                voice_lufs = measure_lufs(cfg, np.concatenate(chunks) if chunks else voice, sr)
+                # NO voice_comp_db here. It belongs to the RMS path, where an RMS taken across six
+                # channels does not know that two correlated ones sum 3 dB while one does not. In
+                # BS.1770 the centre carries weight 1.0, so a mono measurement of the voice is
+                # already comparable with a measurement of the whole mix. Adding it anyway put the
+                # lektor 3 dB high: asked for +6 LU over dialogue, the verification below measured
+                # +8.5, and the difference was exactly this constant.
+                want = anchor + float(m.get("voice_over_dialogue_lu", 6.0))
+                voice *= db_to_lin(want - voice_lufs)
+                say(f"  loudness: dialog {anchor:.1f} LUFS z {counted} kwestii, lektor "
+                    f"{voice_lufs:.1f} -> {want:.1f} LUFS ({want - voice_lufs:+.1f} dB)")
+                ride = LD.ride_curve(prof_mix, cues, anchor, sr, total_samples,
+                                     float(m.get("dialogue_window_s", 20.0)),
+                                     float(m.get("ride_tracking", 0.5)),
+                                     float(m.get("ride_max_db", 3.0)),
+                                     float(m.get("ride_smooth_s", 2.0)),
+                                     bool(m.get("ride_within_cue", False)))
+                k = min(ride.size, voice.size)
+                voice[:k] *= np.power(10.0, ride[:k] / 20.0).astype(np.float32)
+                say(f"    jazda fadera {ride.min():+.1f} do {ride.max():+.1f} dB")
+            else:
+                voice *= normalize_voice(cfg, voice, spans, program_db)
             voice *= db_to_lin(float(m.get("voice_trim_db", 0.0)))
 
             envelopes = build_duck_envelopes(cfg, spans, total_samples)
-            lektor_db = program_db + m["voice_over_program_db"] + voice_comp_db(cfg)
-            under = (f"speech band {m['duck_mid_db']:.0f} dB, the rest {m['duck_rest_db']:.0f} dB"
-                     if "mid" in envelopes else f"under it {m['duck_to_db']:.0f} dB")
-            say(f"  ducking + mixing (programme {program_db:.1f} dB, lektor {lektor_db:.1f} dB on "
+            # On the dialogue path program_db is unused and NaN, so the reported lektor level
+            # has to be built from the anchor that actually set it.
+            lektor_db = ((anchor + float(m.get("voice_over_dialogue_lu", 6.0)))
+                         if m.get("dialogue_reference", False)
+                         else program_db + m["voice_over_program_db"] + voice_comp_db(cfg))
+            under = (f"speech band {m['duck_mid_db']:.1f} dB, the rest {m['duck_rest_db']:.1f} dB"
+                     if "mid" in envelopes else f"under it {m['duck_to_db']:.1f} dB")
+            # program_db is deliberately NaN on the dialogue path - nothing there needs it -
+            # so the line reports the anchor that IS in use rather than printing "nan dB".
+            ref = (f"dialog {anchor:.1f} LUFS" if m.get("dialogue_reference", False)
+                   else f"programme {program_db:.1f} dB")
+            say(f"  ducking + mixing ({ref}, lektor {lektor_db:.1f} dB on "
                 f"{'/'.join(str(c) for c in voice_channels(cfg))}, {under})")
+            if m.get("dialogue_reference", False):
+                # The check that the feature actually did what it claims, measured on the finished
+                # voice rather than on the number that was asked for. Four metrics in this project
+                # have turned out to measure something other than their label; this one exists so
+                # the fifth is caught here instead of by ear three renders later.
+                # Both sides measured over the SAME spans - where the lektor actually speaks - so
+                # the comparison is like with like and no silence is averaged into either.
+                vprof = LD.profile_of(cfg, voice, sr)
+                spoken_lu = LD.span_loudness(vprof, spans, sr)
+                film_lu = LD.window_loudness(prof_mix, spans, sr)
+                good = np.isfinite(spoken_lu) & np.isfinite(film_lu)
+                if good.sum():
+                    over = spoken_lu[good] - film_lu[good]
+                    say(f"    kontrola na {int(good.sum())}/{len(spans)} kwestiach: lektor nad "
+                        f"filmem mediana {np.median(over):+.1f} LU, 10-90 centyl "
+                        f"{np.percentile(over, 10):+.1f} do {np.percentile(over, 90):+.1f} LU")
+
             limited = write_mix(cfg, source, voice, envelopes, out_path, total_samples)
 
             report_clips(cfg, backend, clips, gen_s)
+            # Two numbers, because they measure different things and the first one on its own reads
+            # as if the whole render took seconds. It does not: everything after synthesis - the
+            # loudness pass over the source, then the decode, mix, encode and write of a multi-
+            # hundred-megabyte track onto a 9p mount - is where the minutes go, and on a warm TTS
+            # cache that is ALL of them.
+            say(f"    {time.time() - t_stage:.0f} s for the whole stage, of which {gen_s:.1f} s "
+                f"was speech; the rest is reading the film and writing the mix")
             if limited:
                 say(f"    {limited} block(s) the limiter had to pull down")
             say(f"  -> {out_path}")

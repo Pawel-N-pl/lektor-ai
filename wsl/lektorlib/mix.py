@@ -255,18 +255,116 @@ def reap(proc: subprocess.Popen, what: str) -> None:
 
 
 def crossover_graphs(band: list[int]) -> tuple[tuple[str, str], tuple[str, str]]:
-    """Filtergraphs for the speech band and for everything else.
+    """DEPRECATED - ffmpeg's `acrossover` does not sum back to its input. Use `BandSplitter`.
 
-    A Linkwitz-Riley crossover, because the two halves have to sum back to the original when their
-    gains are equal. The obvious shortcut - band-pass the middle and call the difference "the rest"
-    - does not: an IIR band-pass shifts phase, so the difference still carries the midrange at full
-    level and the dip vanishes the moment the two are given different gains. Measured, that
-    shortcut left the speech band 6.8 dB LOUDER than broadband ducking instead of quieter.
+    The theory says a Linkwitz-Riley crossover sums to allpass, so the two halves recombine to the
+    original whenever their gains are equal. Measured on real film audio, this filtergraph does
+    not: summing the bands leaves a residue 4.4 dB LOUDER than the signal itself, at identical
+    RMS - the signature of a phase rotation, not of a level error. Summing all three bands inside
+    one ffmpeg process gives the same 4.4 dB, so it is `acrossover` itself and not the two-decode
+    split. Optimally time-aligned, the sum still only nulls 5.5 dB against the input.
+
+    Audibly that is comb filtering over the entire programme, ducked or not, and it is what this
+    pipeline shipped until it was measured. Kept only so the measurement above can be reproduced.
     """
     split = f"acrossover=split={band[0]} {band[1]}"
     mid = f"[0:a]{split}[a][b][c];[a]anullsink;[c]anullsink"
     rest = f"[0:a]{split}[a][b][c];[b]anullsink;[a][c]amix=inputs=2:normalize=0[r]"
     return (mid, "[b]"), (rest, "[r]")
+
+
+def design_bandpass(band: list[int], sr: int, taps: int = 1025) -> np.ndarray:
+    """A linear-phase FIR band-pass: windowed sinc, odd length, so the delay is an integer.
+
+    Built here rather than pulled from scipy, which is not a dependency of this project and would
+    be a large one to add for thirty lines of arithmetic.
+    """
+    if taps % 2 == 0:                      # an even length delays by half a sample, which cannot
+        taps += 1                          # be cancelled by shifting an integer number of samples
+    n = np.arange(taps) - (taps - 1) / 2.0
+    lo, hi = float(band[0]) / sr, float(band[1]) / sr
+    # sinc(0) is 1 in numpy's normalised sinc, so the centre tap needs no special case.
+    lp_hi = 2.0 * hi * np.sinc(2.0 * hi * n)
+    lp_lo = 2.0 * lo * np.sinc(2.0 * lo * n)
+    h = (lp_hi - lp_lo) * np.blackman(taps)
+    return h.astype(np.float64)
+
+
+class BandSplitter:
+    """Split a stream into the speech band and everything else, so that the two sum back exactly.
+
+    `mid + rest` is the input, sample for sample, to floating-point rounding - not "flat in
+    magnitude", not "allpass", but the same signal. That is the property the duck needs and the
+    property `acrossover` turned out not to have (see `crossover_graphs`).
+
+    It is guaranteed by construction rather than by the filter's theory: the band-pass is linear
+    phase, so its only effect on timing is a delay of exactly `(taps - 1) / 2` samples, and `rest`
+    is defined as the input delayed by that much MINUS the band. Whatever the band-pass does to
+    the midrange, the difference undoes. With unequal gains the result is a clean spectral dip:
+
+        mid * gm + rest * gr  ==  x * gr + mid * (gm - gr)
+
+    The earlier code warned that band-passing the middle and calling the difference "the rest"
+    does not work. That warning was right about an IIR band-pass, which shifts phase by a
+    different amount at every frequency, and wrong to conclude that a crossover was the fix. With
+    linear phase the difference trick is not a shortcut; it is the only construction that makes
+    the reconstruction exact.
+
+    The delay is paid up front by priming with the first `delay` samples, so the output timeline
+    matches the input and nothing downstream has to know this class exists.
+    """
+
+    # Overlap-save on a fixed transform, sized once. Sizing it to the caller's block instead would
+    # mean a millionpoint FFT per ten-second block and a fresh transform of the kernel each time;
+    # on a machine with 2 GB free that was enough to make the encoder downstream fail to allocate.
+    NFFT = 4096
+
+    def __init__(self, band: list[int], sr: int, channels: int, taps: int = 1025):
+        self.h = design_bandpass(band, sr, taps)
+        self.taps = self.h.size
+        self.delay = (self.taps - 1) // 2
+        self.channels = channels
+        self.step = self.NFFT - self.taps + 1
+        self.H = np.fft.rfft(self.h, self.NFFT)
+        # Overlap-save history: the last taps-1 input samples, so block boundaries are seamless.
+        self.hist = np.zeros((self.taps - 1, channels), dtype=np.float32)
+        # The dry path has to come out as delayed as the filtered one.
+        self.dry = np.zeros((self.delay, channels), dtype=np.float32)
+
+    def process(self, x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """One block in, (mid, rest) out, both the same length as the block."""
+        L = int(x.shape[0])
+        if L == 0:
+            e = np.zeros((0, self.channels), dtype=np.float32)
+            return e, e
+        x = x.astype(np.float32, copy=False)
+        buf = np.concatenate([self.hist, x])
+        self.hist = buf[-(self.taps - 1):].copy()
+
+        mid = np.empty((L, self.channels), dtype=np.float32)
+        done = 0
+        while done < L:
+            n = min(self.step, L - done)
+            # 'valid' part of a linear convolution: the first taps-1 outputs of each transform are
+            # wrap-around and get thrown away, which is exactly what the history is there to feed.
+            chunk = buf[done : done + self.taps - 1 + n]
+            for c in range(self.channels):
+                y = np.fft.irfft(np.fft.rfft(chunk[:, c], self.NFFT) * self.H, self.NFFT)
+                mid[done : done + n, c] = y[self.taps - 1 : self.taps - 1 + n]
+            done += n
+
+        # The dry signal, delayed by the same amount the band-pass delays.
+        delayed = np.concatenate([self.dry, x])
+        self.dry = (delayed[L:] if L < self.delay else delayed[-self.delay:]).copy()
+        return mid, delayed[:L] - mid
+
+    def prime(self, read) -> None:
+        """Swallow the filter's own delay so the output lines up with the source.
+
+        `read(frames)` must deliver from the same stream the mix will go on reading.
+        """
+        if self.delay:
+            self.process(read(self.delay))
 
 
 def measure_program_level(cfg, source: Path) -> float:
@@ -302,6 +400,41 @@ def measure_program_level(cfg, source: Path) -> float:
     if n == 0:
         raise RuntimeError(f"{source.name} decoded to no audio at all")
     return 20.0 * math.log10(max(1e-9, math.sqrt(acc / n)))
+
+
+def level_clips(cfg, clips) -> int:
+    """Bring every line to the same loudness before any of them is placed.
+
+    The track-wide normalisation that follows sets ONE gain from the RMS of all speech together, so
+    a voice whose delivery wanders takes the listener with it. Measured over a sample of each: the
+    voice this was written for spreads 4.7 LU between its 10th and 90th percentile line against
+    2.7 LU for the previous one, and 10.8 LU end to end - loud enough to be heard as the lektor
+    drifting rather than as the film changing.
+
+    The correction is bounded. A line that is quiet because it is a whisper should stay a whisper;
+    only the drift is taken out, so the gain is clamped and a near-silent clip is left alone.
+    """
+    m = cfg["mix"]
+    if not bool(m.get("per_cue_level", False)):
+        return 0
+    limit = db_to_lin(float(m.get("per_cue_level_max_db", 4.0)))
+    spoken = [c for c in clips if c.audio.size]
+    if len(spoken) < 4:
+        return 0
+    rms = np.array([float(np.sqrt(np.mean(np.square(c.audio, dtype=np.float64)))) for c in spoken])
+    ok = rms > 1e-5
+    if ok.sum() < 4:
+        return 0
+    target = float(np.median(rms[ok]))
+    moved = 0
+    for clip, r in zip(spoken, rms):
+        if r <= 1e-5:
+            continue
+        g = min(limit, max(1.0 / limit, target / r))
+        if abs(20.0 * math.log10(g)) >= 0.5:
+            moved += 1
+        clip.audio = (clip.audio * g).astype(np.float32)
+    return moved
 
 
 def normalize_voice(cfg, track: np.ndarray, spans: list[tuple[int, int]],
@@ -395,19 +528,25 @@ def write_mix(cfg, source: Path, voice: np.ndarray, envelopes: dict[str, np.ndar
     prof = encode_profile(cfg)
     spectral = "mid" in envelopes
 
-    if spectral:
-        (fg_mid, lab_mid), (fg_rest, lab_rest) = crossover_graphs(m.get("duck_band_hz", [300, 4000]))
-        decoders = {"mid": decode_stream(cfg, source, sr, ch, fg_mid, lab_mid),
-                    "rest": decode_stream(cfg, source, sr, ch, fg_rest, lab_rest)}
-    else:
-        decoders = {"all": decode_stream(cfg, source, sr, ch)}
+    # One decode either way. The bands are split here, in linear phase, because they have to sum
+    # back to the film exactly - ffmpeg's crossover does not, and the difference is audible as
+    # comb filtering across the whole programme, including every stretch the lektor is silent for.
+    decoders = {"all": decode_stream(cfg, source, sr, ch)}
+    splitter = BandSplitter(m.get("duck_band_hz", [300, 4000]), sr, ch) if spectral else None
 
     args = [
         cfg.ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
         "-f", "f32le", "-ar", str(sr), "-channel_layout", layout, "-i", "pipe:0",
-        "-c:a", prof["codec"], "-b:a", prof["bitrate"],
-        str(out_path),
+        "-c:a", prof["codec"],
     ]
+    # A lossless profile has no bitrate to set, and passing one makes ffmpeg fail rather than
+    # ignore it. sample_fmt matters for flac, which cannot store float and would otherwise be
+    # given 16 bits by default - enough to hear on a quiet passage.
+    if prof.get("bitrate"):
+        args += ["-b:a", prof["bitrate"]]
+    if prof.get("sample_fmt"):
+        args += ["-sample_fmt", prof["sample_fmt"]]
+    args.append(str(out_path))
     proc = subprocess.Popen(args, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
     assert proc.stdin is not None
 
@@ -434,6 +573,23 @@ def write_mix(cfg, source: Path, voice: np.ndarray, envelopes: dict[str, np.ndar
             got = np.pad(got, ((0, frames - got.shape[0]), (0, 0)))
         return got
 
+    if splitter is not None:
+        # Pay the filter's delay before the first block, so `pos` still means the same instant in
+        # the film that it means everywhere else in this pipeline.
+        splitter.prime(lambda n: read_block("all", n))
+        padded["all"] = 0        # those frames were consumed on purpose, not missing from the file
+
+    # Encoder delay compensation. A lossy encoder emits its first frame late - measured at 256
+    # samples for ffmpeg's eac3 - so without this the finished track carries the film 5.3 ms behind
+    # the source. On its own that is inaudible, but it stops the track being a sample-exact copy of
+    # the film, and any player that renders BOTH the internal track and this one sums the film with
+    # a delayed copy of itself: a comb filter with notches every 188 Hz, 12.9 dB deep, measured. So
+    # the source is advanced by exactly the delay the encoder will add, and the two cancel.
+    delay = int(prof.get("delay_samples", 0))
+    if delay > 0:
+        read_block("all", delay)
+        padded["all"] = 0
+
     try:
         while pos < total_samples:
             want = min(block, total_samples - pos)
@@ -444,8 +600,8 @@ def write_mix(cfg, source: Path, voice: np.ndarray, envelopes: dict[str, np.ndar
                 return np.interp(ctrl_idx, np.arange(env.size), env).astype(np.float32)
 
             if spectral:
-                mixed = (read_block("rest", want) * gain_of("rest")[:, None]
-                         + read_block("mid", want) * gain_of("mid")[:, None])
+                mid, rest = splitter.process(read_block("all", want))
+                mixed = (rest * gain_of("rest")[:, None] + mid * gain_of("mid")[:, None])
             else:
                 mixed = read_block("all", want) * gain_of("all")[:, None]
 
