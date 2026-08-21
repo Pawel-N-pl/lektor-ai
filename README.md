@@ -106,35 +106,17 @@ input_dir = '/home/ty/Filmy/Serial.S01'
 
 ### Windows, bez WSL-a
 
-Cały pipeline to zwykły Python plus wywołania ffmpega – działa natywnie.
-
-```powershell
-winget install Gyan.FFmpeg
-winget install astral-sh.uv
-
-uv venv --python 3.13 .venv
-uv pip install --python .venv\Scripts\python.exe numpy soundfile requests
-
-copy .env.example .env
-```
-
-W `lektor.toml` ustaw **jeden** klucz:
+Działa – cały pipeline to zwykły Python plus wywołania ffmpega, a katalog `wsl/` nazywa się tak
+wyłącznie z powodów historycznych. Potrzebujesz Pythona, ffmpega i jednego klucza w configu:
 
 ```toml
 [paths]
 input_dir = 'E:\Filmy\Serial.S01'
 ```
 
-```powershell
-.venv\Scripts\python.exe wsl\lektor.py run --only S01E01
-```
-
-Katalog nazywa się `wsl/` z powodów historycznych – nie ma w nim nic, co wymagałoby WSL-a. Ścieżki
-do ffmpega bierze z `paths.ffmpeg` i `paths.ffprobe`, a jeśli ich nie ma, z `PATH`.
-
-> **Uwaga o Dockerze.** Docker Desktop uruchamia kontenery linuksowe na backendzie WSL2, więc na
-> maszynie, która ma być zupełnie bez WSL-a, użyj lokalnego alignera (niżej) albo pogódź się z
-> utratą dosuwania lektora do aktora.
+Komendy krok po kroku: **[docs/install.md](docs/install.md)**. Jedyna decyzja do podjęcia dotyczy
+forced alignmentu – Docker Desktop stoi na WSL2, więc na maszynie, która ma być go pozbawiona,
+wskaż lokalny aligner w `speech.aligner_venv` albo pogódź się z utratą dosuwania lektora do aktora.
 
 ### Windows + WSL, źródła na dysku windowsowym
 

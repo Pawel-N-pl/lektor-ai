@@ -60,12 +60,17 @@ ffmpeg, and HTTPS. Three things used to stand in the way and all three are gone 
 
 ```powershell
 winget install Gyan.FFmpeg
-winget install astral-sh.uv
 
-uv venv --python 3.13 .venv
-uv pip install --python .venv\Scripts\python.exe numpy soundfile requests
+py -3.13 -m venv .venv
+.venv\Scripts\python.exe -m pip install numpy soundfile requests
 copy .env.example .env
 ```
+
+`venv` and `pip` ship with Python, so that is the whole list. `uv` does the same two steps faster
+if you already have it - `uv venv --python 3.13 .venv` then `uv pip install --python
+.venv\Scripts\python.exe numpy soundfile requests` - but it is a convenience and nothing here
+needs it. Reaching for a package manager that is not installed yet, on the machine you are trying
+to set up, is how a five-minute install becomes an afternoon.
 
 Set one path key and nothing else:
 
