@@ -1,7 +1,7 @@
 # Measured constants. Each one carries what was measured to land on it - change them by
 # measuring again, not by taste. Overridden by anything set in lektor.toml.
-# Secrets never live in this file. They come from the environment or from the project
-# .env: ELEVENLABS_API_KEY, OPENROUTER_API_KEY.
+# Secrets never live here. They come from the environment or from the project .env:
+# ELEVENLABS_API_KEY, OPENROUTER_API_KEY.
 
 [paths]
 # Set this on a single-platform install - Linux, macOS, or Windows without WSL - and it wins over
