@@ -2,7 +2,7 @@
 
 Zamienia polskie napisy w **ścieżkę lektorską**: jeden płaski głos czytający skróconą listę
 dialogową na tle oryginału, który schodzi pod niego i wraca między kwestiami. To nie jest druga,
-cicha ścieżka TTS z dziurami — to **miks**.
+cicha ścieżka TTS z dziurami – to **miks**.
 
 ```bash
 python3 wsl/lektor.py run --only S01E01
@@ -21,7 +21,7 @@ przed startem, a na końcu mówi co zrobił, co pominął, ile kosztowało i gdz
 11 dB pod poziomem swojego dialogu, kiedy lektor mówi.
 
 **Poziom liczony względem dialogu, nie całego filmu.** BS.1770 (LUFS), nie RMS. Na filmie z rzadkim
-dialogiem średnia całości leży daleko pod samym dialogiem — „9.5 dB nad programem" wychodziło wtedy
+dialogiem średnia całości leży daleko pod samym dialogiem – „9.5 dB nad programem" wychodziło wtedy
 około 18 dB nad scenami, które naprawdę trzeba przekryć. Zmierzone na siedmiu odcinkach: **+6.8 do
 +7.2 LU** nad dialogiem, rozrzut 0.4 LU.
 
@@ -31,18 +31,28 @@ kwestia jest skracana w kontekście całego dialogu, a nie trzech sąsiadów.
 
 **Napisy kłamią o tym, gdzie kończy się zdanie.** W jednym wydaniu 55% przerw między kartami to te
 same 83 ms; w innym karty stykają się co do milisekundy. To fakt o narzędziu autorskim, nie o
-aktorach. Forced alignment — lokalnie, za darmo, około 2 min GPU na odcinek — pokazuje, gdzie
+aktorach. Forced alignment – lokalnie, za darmo, około 2 min GPU na odcinek – pokazuje, gdzie
 aktorzy naprawdę zrobili pauzę i gdzie montażysta ciął.
 
 **Lektor czeka na aktora** i nie kończy zdania na cięciu montażowym. Jedno i drugie za darmo, bez
 zmiany tekstu.
 
 **Ścieżki wybierane po tagu języka, nigdy po numerze.** Te wydania mają ponad czterdzieści ścieżek
-napisów, a polski leży pod innym indeksem w różnych plikach tego samego sezonu — 30 w pięciu
+napisów, a polski leży pod innym indeksem w różnych plikach tego samego sezonu – 30 w pięciu
 odcinkach, 31 w szóstym, bo doszła ścieżka Forced.
 
+**Jednostki imperialne przeliczane, ale z odwróconą logiką ryzyka.** Na 26 950 polskich linii
+napisów z 44 filmów zwykłe wyrażenie na nazwy jednostek znalazło 22 trafienia, z czego **dwa** były
+miarą. „Stopa" była częścią ciała 12 razy na 12, „funt" walutą 4 na 4, a „cali" przymiotnikiem –
+naiwny konwerter przeczytałby „Wszyscy cali i zdrowi" jako „Wszyscy 2,54 cm i zdrowi". Ryzykiem nie
+jest więc przeoczona konwersja, tylko zepsute poprawne zdanie, i stąd reguła: jednostka przelicza
+się wyłącznie wtedy, gdy stoi tuż za liczebnikiem i zdanie nie pasuje do żadnego idiomu. Wynik jest
+zaokrąglany tak, jak człowiek to wypowie – sześć stóp to „metr osiemdziesiąt", nie „1,8288 metra".
+**Walut nie przelicza wcale**: kurs się zmienia, a lektor podający starą kwotę w dzisiejszych
+złotówkach po prostu kłamie.
+
 **Płacisz raz.** Każda kwestia TTS jest adresowana treścią na dysku, a skrócony tekst cache'owany
-pod kluczem zawierającym hash samego promptu — zmienisz prompt, wszystko unieważnia się samo.
+pod kluczem zawierającym hash samego promptu – zmienisz prompt, wszystko unieważnia się samo.
 
 Szczegóły, liczby i przypadki brzegowe: **[docs/](docs/)**.
 
@@ -73,7 +83,7 @@ W `lektor.config.json` ustaw **jeden** klucz:
 
 ### Windows, bez WSL-a
 
-Cały pipeline to zwykły Python plus wywołania ffmpega — działa natywnie.
+Cały pipeline to zwykły Python plus wywołania ffmpega – działa natywnie.
 
 ```powershell
 winget install Gyan.FFmpeg
@@ -85,6 +95,8 @@ uv pip install --python .venv\Scripts\python.exe numpy soundfile requests
 copy .env.example .env
 ```
 
+W `lektor.config.json` ustaw **jeden** klucz:
+
 ```json
 "paths": { "input_dir": "E:\\Filmy\\Serial.S01" }
 ```
@@ -93,7 +105,7 @@ copy .env.example .env
 .venv\Scripts\python.exe wsl\lektor.py run --only S01E01
 ```
 
-Katalog nazywa się `wsl/` z powodów historycznych — nie ma w nim nic, co wymagałoby WSL-a. Ścieżki
+Katalog nazywa się `wsl/` z powodów historycznych – nie ma w nim nic, co wymagałoby WSL-a. Ścieżki
 do ffmpega bierze z `paths.ffmpeg` i `paths.ffprobe`, a jeśli ich nie ma, z `PATH`.
 
 > **Uwaga o Dockerze.** Docker Desktop uruchamia kontenery linuksowe na backendzie WSL2, więc na
@@ -105,6 +117,8 @@ do ffmpega bierze z `paths.ffmpeg` i `paths.ffprobe`, a jeśli ich nie ma, z `PA
 Układ, w którym ten projekt wyrósł: gigabajty zostają po stronie Windowsa, myślenie dzieje się w
 WSL-u, obie połowy czytają ten sam config i spotykają się w katalogu `_lektor`.
 
+W `lektor.config.json` ustaw **parę** kluczy, po jednym na stronę:
+
 ```json
 "paths": {
   "input_dir_windows": "E:\\Filmy\\Serial.S01",
@@ -112,17 +126,17 @@ WSL-u, obie połowy czytają ten sam config i spotykają się w katalogu `_lekto
 }
 ```
 
-`paths.input_dir` zostaw pusty — wtedy każda strona weźmie swój klucz. Skrypty w `windows/` nadal
+`paths.input_dir` zostaw pusty – wtedy każda strona weźmie swój klucz. Skrypty w `windows/` nadal
 działają, ale nie są już potrzebne: `lektor.py extract` i `mux` robią to samo natywnie.
 
 ### Elementy opcjonalne
 
 | co | jak | bez tego |
 |---|---|---|
-| **Piper** — domyślny silnik, darmowy, offline | `uv pip install --python .venv/bin/python piper-tts` | brak darmowej syntezy |
+| **Piper** – domyślny silnik, darmowy, offline | `uv pip install --python .venv/bin/python piper-tts` | brak darmowej syntezy |
 | **ElevenLabs** | `ELEVENLABS_API_KEY` w `.env` | ten backend nie wystartuje |
 | **Skracanie tekstu** (OpenRouter) | `OPENROUTER_API_KEY` w `.env` | kwestie nie są skracane i lektor nie mieści się w oknach |
-| **OmniVoice** — klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice`, ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
+| **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice`, ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
 | **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` | jak wyżej |
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
 | **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv`, **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
@@ -131,7 +145,7 @@ działają, ale nie są już potrzebne: `lektor.py extract` i `mux` robią to sa
 
 ## Silniki
 
-Pięć, za jednym interfejsem. Dopasowanie do okna czasowego jest wiedzą silnika, nie pipeline'u —
+Pięć, za jednym interfejsem. Dopasowanie do okna czasowego jest wiedzą silnika, nie pipeline'u –
 każdy trafia w nie po swojemu, a etap `voice` raportuje, co naprawdę wyszło.
 
 | | koszt | sprzęt | jak trafia w okno |
@@ -139,7 +153,7 @@ każdy trafia w nie po swojemu, a etap `voice` raportuje, co naprawdę wyszło.
 | **Piper** | darmowy | CPU, 20 s na odcinek | binarnie szuka `length_scale`; 597 z 598 kwestii w oknie |
 | **OmniVoice** | darmowy | GPU, około 3 GiB, około 5 min na odcinek batchem | dostaje **długość w sekundach**; klonuje głos z próbki 3–10 s |
 | **ElevenLabs** | $0.05–0.10 za 1000 znaków | sieć | przewiduje ze zmierzonego tempa, potem `voice_settings.speed` |
-| **Chatterbox** | darmowy | GPU, około 42 min na odcinek | nijak — generuje i rozciąga |
+| **Chatterbox** | darmowy | GPU, około 42 min na odcinek | nijak – generuje i rozciąga |
 | **kikivoice** | kredyty tygodniowe | sieć plus człowiek do CAPTCHA | okno domykane lokalnie, kwestia kupowana raz |
 
 Porównanie uchem, a nie z tabelki:
@@ -157,7 +171,7 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 | etap | robi |
 |---|---|
 | `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą |
-| `speech` | forced alignment, ciszę między słowami, cięcia montażowe — lokalnie, za darmo |
+| `speech` | forced alignment, ciszę między słowami, cięcia montażowe – lokalnie, za darmo |
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |
 | `retime` | dosuwa wczesne kwestie na pierwsze słowo aktora; nic nie kosztuje |
 | `voice` | synteza, dopasowanie do okien, ducking, miks 5.1, enkodowanie |
@@ -172,8 +186,8 @@ Podgląd bez skutków ubocznych: `run --dry-run`. Zakres: `--from`, `--to`, `--s
 ## Koszt
 
 Około **$1.20–1.45 za odcinek** na ElevenLabs plus $0.15–0.20 za skracanie tekstu, albo **$0.00**
-na Piperze i OmniVoice. Wszystko, co lokalne — alignment, detekcja cięć, bramka scalania,
-retiming — kosztuje zero.
+na Piperze i OmniVoice. Wszystko, co lokalne – alignment, detekcja cięć, bramka scalania,
+retiming – kosztuje zero.
 
 Szczegóły: [docs/cost.md](docs/cost.md).
 
