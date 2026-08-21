@@ -3,7 +3,7 @@
 State of play after the session that built jobs 1 to 4 of the previous handoff. The four jobs are
 done; what is left is two decisions that only a listener can make, and one experiment.
 
-Read `docs/timing-and-translation.md` for the reasoning behind the ranking, and its Corrections
+Read `timing-and-translation.md` for the reasoning behind the ranking, and its Corrections
 section for the figures that have since moved.
 
 ---
