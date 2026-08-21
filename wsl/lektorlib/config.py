@@ -107,9 +107,31 @@ class Config:
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def binary(self, name: str) -> str:
+        """ffmpeg or ffprobe: the canonical key, then the legacy `_wsl` one, then bare PATH.
+
+        Three spellings exist because this config grew up split across two operating systems. A
+        single-platform install should set `paths.ffmpeg` and `paths.ffprobe`, or set neither and
+        let PATH answer - which is what a package manager gives you on every platform anyway.
+
+        `paths.ffmpeg_windows` is deliberately NOT consulted here. It exists for the PowerShell
+        half, and a Windows binary cannot open the POSIX paths this package hands it, so falling
+        back to it would fail at the first file instead of at the first missing key.
+        """
+        paths = self.raw.get("paths", {})
+        for key in (name, f"{name}_wsl"):
+            value = paths.get(key)
+            if value:
+                return str(value)
+        return name
+
     @property
     def ffmpeg(self) -> str:
-        return self.raw["paths"]["ffmpeg_wsl"]
+        return self.binary("ffmpeg")
+
+    @property
+    def ffprobe(self) -> str:
+        return self.binary("ffprobe")
 
 
 # ---------------------------------------------------------------------------

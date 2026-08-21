@@ -476,6 +476,16 @@ class TestWindowsPath(unittest.TestCase):
 
 class TestBinaryResolution(unittest.TestCase):
     class Cfg:
+        """A stub that borrows the REAL resolver rather than restating it.
+
+        The lookup lives on Config, because three modules had re-derived it and that is where a
+        rename goes wrong. Binding the real method here keeps this a test of the shipped logic
+        instead of a test of a copy that can drift away from it.
+        """
+
+        from lektorlib.config import Config as _C
+        binary = _C.binary
+
         def __init__(self, paths):
             self.raw = {"paths": paths}
 

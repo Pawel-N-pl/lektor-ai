@@ -55,12 +55,7 @@ def _binary(cfg, name: str) -> str:
     paths every stage in this package hands it, so reaching for it would fail at the first file
     rather than at the first missing key.
     """
-    paths = cfg.raw.get("paths", {})
-    for key in (name, f"{name}_wsl"):
-        value = paths.get(key)
-        if value:
-            return str(value)
-    return name
+    return cfg.binary(name)
 
 
 def ffmpeg_bin(cfg) -> str:
