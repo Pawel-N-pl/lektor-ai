@@ -9,9 +9,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tomllib
 from pathlib import Path
 
-DEFAULT_CONFIG = Path(__file__).resolve().parent.parent.parent / "lektor.config.json"
+DEFAULT_CONFIG = Path(__file__).resolve().parent.parent.parent / "lektor.toml"
 
 # Keys the pipeline is allowed to pick up from a .env file. Anything else in there is ignored,
 # so a shared .env cannot quietly inject PATH or PYTHONPATH into a subprocess.
@@ -54,10 +55,47 @@ def load_dotenv(path: Path) -> list[str]:
     return loaded
 
 
+def _merge(base: dict, over: dict) -> dict:
+    """`over` wins, key by key, all the way down."""
+    out = dict(base)
+    for k, v in over.items():
+        out[k] = _merge(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
+    return out
+
+
+def _read(path: Path) -> dict:
+    """The config, from a TOML pair or from a single legacy JSON.
+
+    Two files, because they answer different questions and are edited at different rates. The one
+    you name holds what changes per show and by ear - paths, which engine, whose voice, how loud -
+    and it is 33 keys. Beside it, `<name>.tuning.toml` holds the 200 measured constants, each with
+    what was measured to land on it, and it is meant to be read far more often than written.
+    Anything set in the first wins over the second.
+
+    Why TOML at all: the JSON this replaced was 86 900 bytes of which 84 % was prose, kept in
+    `_<key>_note` strings that no code has ever read. They were comments all along, and JSON has no
+    comments - so a 2361-character explanation lived on one unbroken line and a stray quote inside
+    one broke the file twice in an afternoon. tomllib is in the standard library, so this costs no
+    dependency, which is the same reason this project does its own SRT parsing.
+
+    A path ending in .json is still read as one flat legacy file, so an old checkout or an explicit
+    `-c old.json` keeps working.
+    """
+    if path.suffix == ".json":
+        return json.loads(path.read_text(encoding="utf-8"))
+    with path.open("rb") as fh:
+        user = tomllib.load(fh)
+    tuning = path.with_name(f"{path.stem}.tuning{path.suffix}")
+    if not tuning.is_file():
+        return user
+    with tuning.open("rb") as fh:
+        return _merge(tomllib.load(fh), user)
+
+
 class Config:
     def __init__(self, path: Path):
         self.path = Path(path).resolve()
-        self.raw = json.loads(self.path.read_text(encoding="utf-8"))
+        self.raw = _read(self.path)
         self.root = self.path.parent
         self.env_loaded = load_dotenv(self.root / ".env")
         if not self.env_loaded and self.root != DEFAULT_CONFIG.parent:

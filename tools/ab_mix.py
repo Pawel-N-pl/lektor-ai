@@ -88,7 +88,7 @@ def render(seg: pathlib.Path, out_dir: pathlib.Path, name: str, gain, mode, fram
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(seg), "-map", "0:a:0",
                         "-c:a", "eac3", "-b:a", "768k", str(out)], check=True)
         return out
-    cfg = Config(ROOT / "lektor.config.json")
+    cfg = Config(ROOT / "lektor.toml")
     cfg["mix"]["program_gain_db"] = gain
     cfg["mix"]["duck_mode"] = mode
     ctrl = int(frames / SR * MX.CTRL_HZ) + 2
@@ -149,7 +149,7 @@ def main():
     ap.add_argument("--refresh", action="store_true", help="re-cut the cached passage")
     args = ap.parse_args()
 
-    cfg = Config(ROOT / "lektor.config.json")
+    cfg = Config(ROOT / "lektor.toml")
     film = pathlib.Path(args.film)
     at = parse_at(args.at)
     seg = cache_segment(cfg, film, at, args.len, args.refresh)

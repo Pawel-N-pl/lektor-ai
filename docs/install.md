@@ -24,7 +24,7 @@ brew install ffmpeg              # macOS
 cp .env.example .env             # then put the two keys in it
 ```
 
-Then two keys in `lektor.config.json`: `paths.input_dir_wsl` is the directory holding the `.mkv`
+Then two keys in `lektor.toml`: `paths.input_dir_wsl` is the directory holding the `.mkv`
 files (the name is historical, it is simply "the input directory as this OS sees it"), and
 `paths.ffmpeg_wsl` / `paths.ffprobe_wsl` stay as `"ffmpeg"` / `"ffprobe"` when both are on PATH.
 The `paths.*_windows` twins are read only by `windows/lektor.ps1`; nothing in Python ever reaches
@@ -175,5 +175,5 @@ otherwise byte-identical to a run without the artefact. Shot detection itself is
 `speech.reference_srt_patterns` – the acoustic model is English – and without one the stage says
 `no English reference subtitle` and skips straight to the cuts.
 
-Everything else lives in `lektor.config.json`, which every side reads, and nearly every key carries
+Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
 a `_<key>_note` explaining what it is and what was measured to land on that value. No secrets in it.

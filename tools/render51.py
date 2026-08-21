@@ -38,7 +38,7 @@ from lektorlib import stages  # noqa: E402
 
 
 def main() -> None:
-    cfg = Config(ROOT / "lektor.config.json")
+    cfg = Config(ROOT / "lektor.toml")
     only = None
     if len(sys.argv) > 1:
         # The episode used to be a path to an mkv; the package selects by name, and the stem of

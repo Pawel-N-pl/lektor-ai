@@ -75,7 +75,7 @@ brew install ffmpeg              # macOS
 cp .env.example .env             # klucze API, jeśli będziesz ich używać
 ```
 
-W `lektor.config.json` ustaw **jeden** klucz:
+W `lektor.toml` ustaw **jeden** klucz:
 
 ```json
 "paths": { "input_dir": "/home/ty/Filmy/Serial.S01" }
@@ -95,7 +95,7 @@ uv pip install --python .venv\Scripts\python.exe numpy soundfile requests
 copy .env.example .env
 ```
 
-W `lektor.config.json` ustaw **jeden** klucz:
+W `lektor.toml` ustaw **jeden** klucz:
 
 ```json
 "paths": { "input_dir": "E:\\Filmy\\Serial.S01" }
@@ -117,7 +117,7 @@ do ffmpega bierze z `paths.ffmpeg` i `paths.ffprobe`, a jeśli ich nie ma, z `PA
 Układ, w którym ten projekt wyrósł: gigabajty zostają po stronie Windowsa, myślenie dzieje się w
 WSL-u, obie połowy czytają ten sam config i spotykają się w katalogu `_lektor`.
 
-W `lektor.config.json` ustaw **parę** kluczy, po jednym na stronę:
+W `lektor.toml` ustaw **parę** kluczy, po jednym na stronę:
 
 ```json
 "paths": {

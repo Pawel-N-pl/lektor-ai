@@ -66,7 +66,7 @@ def main() -> None:
     ap.add_argument("--repeats", type=int, default=1)
     args = ap.parse_args()
 
-    cfg = Config(ROOT / "lektor.config.json")
+    cfg = Config(ROOT / "lektor.toml")
     sr_cfg = cfg["mix"]["sample_rate"]
     b = get_backend(cfg.backend_name, cfg)
     b.prepare()

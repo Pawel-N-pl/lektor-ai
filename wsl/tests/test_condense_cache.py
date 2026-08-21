@@ -329,13 +329,15 @@ class TestStageReuse(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
-        raw = json.loads((REPO / "lektor.config.json").read_text(encoding="utf-8"))
+        raw = Config(REPO / "lektor.toml").raw
         raw["paths"] = dict(raw["paths"], input_dir_wsl=str(root), work_subdir="_lektor")
         raw["script"] = dict(raw["script"], request_gap_ms=0, max_rerolls=0)
-        (root / "lektor.config.json").write_text(json.dumps(raw), encoding="utf-8")
+        # Written as JSON on purpose: Config still reads that, and the standard library has no
+        # TOML writer. What this file exercises is the condensation cache, not the format.
+        (root / "lektor.json").write_text(json.dumps(raw), encoding="utf-8")
         mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}).start()
         self.addCleanup(mock.patch.stopall)
-        self.cfg = Config(root / "lektor.config.json")
+        self.cfg = Config(root / "lektor.json")
         (self.cfg.work_dir / "EP01.srt").write_text(SRT, encoding="utf-8")
         self.answers = [{"id": 1, "text": "Kibice Richmond wciąż tu są."},
                         {"id": 2, "text": "Mamy trzy mecze do końca."}]

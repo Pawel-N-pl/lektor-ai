@@ -96,7 +96,7 @@ def whole_prompt(cues, target_indices):
 
 
 def load_cues(srt_path=None, cps=14.5, safety=0.96):
-    cfg = json.loads((ROOT / "lektor.config.json").read_text())
+    cfg = json.loads((ROOT / "lektor.toml").read_text())
     cfg["paths"]["input_dir_wsl"] = str(SC)
     cfg["paths"]["work_subdir"] = "testwork"
     p = SC / "bench_cfg.json"

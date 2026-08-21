@@ -25,10 +25,12 @@ import pytest
 WSL = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(WSL))
 
+from lektorlib.config import Config
+
 from lektorlib.backends import BACKEND_NAMES, Backend, get_backend
 
 REPO = WSL.parent
-CONFIG = REPO / "lektor.config.json"
+CONFIG = REPO / "lektor.toml"
 BACKEND_SRC = WSL / "lektorlib" / "backends" / "kikivoice.py"
 
 # Read by the pipeline rather than by the backend: config.cps_path names the calibration file
@@ -41,7 +43,7 @@ class FakeConfig:
     """The real config file, with only the two things a test cannot have: a work dir and a cache."""
 
     def __init__(self, tmp):
-        self.raw = json.loads(CONFIG.read_text(encoding="utf-8"))
+        self.raw = Config(CONFIG).raw
         self._cache = tmp
 
     def __getitem__(self, key):
@@ -112,7 +114,7 @@ def _keys_read_from(source: str) -> dict[str, set[str]]:
 
 
 def _keys_in_config() -> dict[str, set[str]]:
-    kiki = json.loads(CONFIG.read_text(encoding="utf-8"))["voice"]["kikivoice"]
+    kiki = Config(CONFIG).raw["voice"]["kikivoice"]
     out = {"": set()}
     for key, value in kiki.items():
         if key.startswith("_"):
@@ -144,13 +146,34 @@ def test_the_config_ships_every_key_the_backend_reads():
     assert not missing, f"voice.kikivoice keys the backend reads but the config does not set: {missing}"
 
 
-def test_every_configured_key_carries_a_note():
+def test_every_configured_table_carries_a_note():
     """Repo rule, and the reason this backend is legible at all: a value without a note is a value
     nobody can second-guess a year from now. A note may cover several neighbouring keys, so this
-    only asks that each table has as many notes as it has ideas, not one per key."""
-    kiki = json.loads(CONFIG.read_text(encoding="utf-8"))["voice"]["kikivoice"]
-    for table in [kiki] + [v for v in kiki.values() if isinstance(v, dict)]:
-        assert any(k.startswith("_") for k in table), f"a kikivoice table with no note at all: {sorted(table)[:4]}"
+    only asks that each table has as many notes as it has ideas, not one per key.
+
+    Notes used to be `_key_note` STRINGS, because JSON has no comments. They are comments now, so
+    this reads the source text rather than the parsed mapping - which is the point of the format
+    change and would otherwise have gone unenforced the moment it landed.
+    """
+    import re
+
+    tables = {}
+    for f in (CONFIG, CONFIG.with_name(f"{CONFIG.stem}.tuning{CONFIG.suffix}")):
+        if not f.is_file():
+            continue
+        current = None
+        for line in f.read_text(encoding="utf-8").splitlines():
+            header = re.match(r"\s*\[([^\]]+)\]", line)
+            if header:
+                current = header.group(1)
+                tables.setdefault(current, [])
+            elif current is not None:
+                tables[current].append(line)
+    kiki = {name: body for name, body in tables.items()
+            if name == "voice.kikivoice" or name.startswith("voice.kikivoice.")}
+    assert kiki, "no kikivoice table in either config file"
+    for name, body in kiki.items():
+        assert any(l.lstrip().startswith("#") for l in body), f"{name} carries no note at all"
 
 
 # -- laziness ----------------------------------------------------------------
@@ -252,7 +275,7 @@ def test_the_client_and_the_batcher_both_sit_next_to_the_backend():
 # -- the copies against the checkout they came from --------------------------
 
 UPSTREAM = pathlib.Path(
-    json.loads(CONFIG.read_text(encoding="utf-8"))["voice"]["kikivoice"]["client_dir"])
+    Config(CONFIG).raw["voice"]["kikivoice"]["client_dir"])
 
 
 @pytest.mark.parametrize("name", ["kikivoice_client.py", "kikivoice_batch.py"])

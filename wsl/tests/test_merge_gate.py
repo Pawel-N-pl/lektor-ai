@@ -216,8 +216,7 @@ class TestArtefactPlumbing(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            raw = json.loads(Path("/home/pawel/projects/lektor-ai/lektor.config.json")
-                             .read_text(encoding="utf-8"))
+            raw = Config(Path("/home/pawel/projects/lektor-ai/lektor.toml")).raw
             raw["paths"]["input_dir_wsl"] = str(root / "media")
             raw["speech"]["tmp_dir"] = str(root / "tmp")
             raw["speech"]["asr_container"] = "no-such-container-here"

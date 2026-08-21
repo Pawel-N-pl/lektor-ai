@@ -79,7 +79,7 @@ def main() -> None:
     ap.add_argument("--from", dest="src", default="~/.cache/lektor-ai/tts_cache_rescue",
                     help="the flat directory of <oldkey>.mp3 files")
     ap.add_argument("--apply", action="store_true", help="copy; without it, only report")
-    ap.add_argument("-c", "--config", default=str(ROOT / "lektor.config.json"))
+    ap.add_argument("-c", "--config", default=str(ROOT / "lektor.toml"))
     args = ap.parse_args()
 
     src = pathlib.Path(args.src).expanduser()

@@ -178,7 +178,7 @@ def main():
                          "between a wide window and a tight one that it masks the thing being judged")
     args = ap.parse_args()
 
-    cfg = Config(ROOT / "lektor.config.json")
+    cfg = Config(ROOT / "lektor.toml")
     media = cfg.input_dir
     work = cfg.work_dir
     out = work / "ab"

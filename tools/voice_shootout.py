@@ -37,7 +37,7 @@ CACHE = SC / "tts_cache"
 
 START_S, LEN_S = 1574, 150
 SR, CH, FC = 48000, 6, 2
-CFG = json.loads((ROOT / "lektor.config.json").read_text())
+CFG = json.loads((ROOT / "lektor.toml").read_text())
 EL = CFG["voice"]["elevenlabs"]
 M = CFG["mix"]
 T = CFG["timing"]

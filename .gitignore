@@ -75,6 +75,7 @@ test-results/
 .aider*
 .mcp.json
 .agents/
+skills-lock.json
 
 # ─── BMad / bmad-assist ──────────────────────────────────────
 # input/config dirs are ignored; build output stays in the repo

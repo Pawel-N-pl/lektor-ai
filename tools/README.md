@@ -8,7 +8,7 @@ One-off and reference scripts. Nothing here is part of the pipeline: `wsl/lektor
 | `migrate_tts_cache.py` | Moves the paid ElevenLabs cache into the package's cache and key format, without buying a line again. | Done once, 3442 entries. Keep it: it is the only record of how the old key maps onto the new one. |
 | `seed_condensed_cache.py` | Fills `<base>.condensed.json` from condensed text already sitting in `<base>.lektor.json`. | Done once, 1452 lines. Run it on any episode condensed before the reuse cache existed. |
 | `ab_merge.py` | Renders the seams the merge gate refuses, both ways, over the real film audio, so the gate can be judged by ear. | Reference. This is what settles a question no measurement in this repo can. |
-| `bench_condense.py` | Whole-episode condensation harness. Produced the model comparison quoted in `lektor.config.json`. | Reference; re-run it when changing model or prompt. It imports the package first and only falls back to the dead scratch module, so it still runs. |
+| `bench_condense.py` | Whole-episode condensation harness. Produced the model comparison quoted in `lektor.toml`. | Reference; re-run it when changing model or prompt. It imports the package first and only falls back to the dead scratch module, so it still runs. |
 | `voice_shootout.py` | Renders one hard 150 s window through N candidate voices, mixed exactly like an episode, so a voice is judged in context rather than on a dry sample. | Reference; imports the same dead scratch module. Re-point it at the package before using it. |
 
 ## The lesson these files are

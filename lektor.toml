@@ -1,0 +1,84 @@
+# lektor-ai - what you change per show and by ear.
+# Every key here also exists in lektor.tuning.toml, with the measurement behind it. This file
+# only overrides, so deleting a line falls back to the tuned default rather than to nothing.
+# Secrets never live in this file. They come from the environment or from the project
+# .env: ELEVENLABS_API_KEY, OPENROUTER_API_KEY.
+
+[paths]
+# Set this on a single-platform install - Linux, macOS, or Windows without WSL - and it wins over the…
+input_dir = ''
+input_dir_windows = 'E:\Filmy\NCIS.S23E01.1080p.WEB.h264-ETHEL'
+input_dir_wsl = '/mnt/e/Filmy/NCIS.S23E01.1080p.WEB.h264-ETHEL'
+work_subdir = '_lektor'
+output_subdir = '_lektor/output'
+ffmpeg_windows = 'C:\Programy\ffmpeg\bin\ffmpeg.exe'
+ffprobe_windows = 'C:\Programy\ffmpeg\bin\ffprobe.exe'
+ffmpeg_wsl = 'ffmpeg'
+ffprobe_wsl = 'ffprobe'
+
+[extract]
+subtitle_language = 'pol'
+
+[script]
+# Measured on 210 overflowing cues from one real episode, whole-episode prompt, effort medium.
+openrouter_model = 'openai/gpt-5.6-luna'
+# Used when openrouter_model has burned every re-roll and still missed accept_fit_ratio.
+fallback_model = 'openai/gpt-5.6-luna-pro'
+
+[speech]
+# Which forced aligner to use: 'docker' hands the script to the container named below, 'local' runs the…
+aligner = 'auto'
+# A venv with torch and torchaudio and nothing else; the aligner needs no other dependency.
+aligner_venv = ''
+
+[voice]
+# elevenlabs | piper | chatterbox.
+backend = 'elevenlabs'
+
+[voice.kikivoice]
+# Fallback only, and it stays for standalone runs from the kikivoice checkout: kikivoice_client.py and…
+client_dir = '/home/pawel/projects/kikivoice'
+# library = a ready voice from the kikivoice catalogue (credit_rate 1.0); clone = a voice cloned from…
+mode = 'clone'
+voice_code = 'S089'
+# Used only when mode=library.
+voice_id = 'standard_30002'
+# kiki_core: 34 languages including Polish, max_text_length 1000, credit_rate 2.0, no emotions.
+model_type = 'kiki_core'
+
+[voice.elevenlabs]
+# Public library voice, not in the account collection: /v1/voices/{id} answers voice_not_found while…
+voice_id = 'Ix8C14HEHgIQkJswik2o'
+# eleven_flash_v2_5 is flat, cheap ($0.05/1000 chars) and gets 2x the concurrency;…
+model_id = 'eleven_flash_v2_5'
+
+[voice.piper]
+# Downloaded from rhasspy/piper-voices on first use.
+voice = 'pl_PL-darkman-medium'
+
+[voice.omnivoice]
+# Python 3.11 venv with torch and omnivoice (pip install omnivoice).
+venv = '/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice'
+# The voice to clone, 3-10 s per upstream; longer slows inference and can degrade the clone.
+reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/szolajski.ref.wav'
+# Polish is entry 461 of 646 in the model's language table with 911.68 hours of training data - solid,…
+language = 'pl'
+
+[voice.chatterbox]
+# python 3.11 with torch and chatterbox already installed.
+venv = '/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox'
+# Language tag for the multilingual model, passed straight to generate().
+language_id = 'pl'
+# Voice cloning reference; empty means the model's builtin speaker.
+reference_wav = ''
+
+[mix]
+# Layout of the finished track: '5.1(side)' or 'stereo'.
+channel_layout = '5.1(side)'
+voice_trim_db = 1.5
+# How far the lektor sits above the film's dialogue.
+voice_over_dialogue_lu = 6.0
+
+[clean]
+# ON as 'both', and the note below is the argument for the opposite - read both before changing it,…
+merge_gate = 'both'

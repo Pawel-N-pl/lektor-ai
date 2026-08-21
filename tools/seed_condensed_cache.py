@@ -40,7 +40,7 @@ def main() -> None:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--apply", action="store_true", help="write; without it, only report")
     ap.add_argument("--only", help="substring filter on the episode filename")
-    ap.add_argument("-c", "--config", default=str(ROOT / "lektor.config.json"))
+    ap.add_argument("-c", "--config", default=str(ROOT / "lektor.toml"))
     args = ap.parse_args()
 
     cfg = Config(pathlib.Path(args.config))
