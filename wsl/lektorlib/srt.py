@@ -272,6 +272,46 @@ def continues_sentence(prev: "Cue", cur: "Cue", ev=None) -> bool:
     return True
 
 
+def _same_line(a: str, b: str) -> str | bool:
+    """Whether two cleaned cards carry the same words, ignoring case and whitespace only."""
+    return " ".join(a.split()).casefold() == " ".join(b.split()).casefold()
+
+
+def drop_repeated_cards(cues: list[Cue], cfg) -> tuple[list[Cue], list[int]]:
+    """Throw away a card that repeats the one it OVERLAPS, before anything reads it aloud.
+
+    Some subtitle files carry the same line twice. Measured across the 10 017 Polish cards on this
+    disk the defect appears in exactly one episode - S03E04 has 16 pairs sharing byte-identical
+    timestamps and 9 more whose spans overlap - and everywhere else the count is zero. So this is a
+    property of one authoring run, not of the format, and the guard has to be narrow enough to
+    leave the other seventeen episodes byte-identical.
+
+    The test is the OVERLAP, not the similarity. Dialogue repeats itself constantly and a lektor
+    must read it: "Roy Kent!" shouted twice by two fans, a name asked and then confirmed. Measured
+    on the three clean episodes, every genuine repetition sits 0.5 to 4.5 seconds apart and none of
+    them overlaps at all, while every defective pair overlaps by 1.8 to 4.9 seconds. Two people
+    cannot say the same sentence in the same instant; a grid showing the same words over one span
+    is showing one line twice.
+
+    The survivor takes the union of the two spans, so a repeat that runs longer than its twin
+    leaves its window behind rather than taking it away.
+    """
+    m = cfg["clean"]
+    if not bool(m.get("drop_repeated_cards", True)) or not cues:
+        return cues, []
+    tol = int(m.get("repeat_overlap_ms", 0))
+    out: list[Cue] = [cues[0]]
+    dropped: list[int] = []
+    for cur in cues[1:]:
+        prev = out[-1]
+        if _same_line(cur.text, prev.text) and cur.start_ms < prev.end_ms + tol:
+            prev.end_ms = max(prev.end_ms, cur.end_ms)
+            dropped.append(cur.idx)
+            continue
+        out.append(cur)
+    return out, dropped
+
+
 def merge_contiguous(cues: list[Cue], cfg, ev=None) -> list[Cue]:
     """Join the cards that carry ONE sentence, so the lektor reads it as one breath.
 
@@ -324,7 +364,8 @@ def merge_contiguous(cues: list[Cue], cfg, ev=None) -> list[Cue]:
 
 
 def load_cues(path: Path, cfg, ev=None) -> list[Cue]:
-    """parse -> skip -> clean -> drop empties -> merge -> windows. The order matters and is load-bearing.
+    """parse -> skip -> clean -> drop empties -> drop repeats -> merge -> windows. The order matters
+    and is load-bearing.
 
     Merging comes after cleaning (so it joins what will actually be spoken, not markup) and before
     windows (so the merged cue gets one window spanning the whole group).
@@ -336,6 +377,9 @@ def load_cues(path: Path, cfg, ev=None) -> list[Cue]:
     for c in cues:
         c.text = clean_text(c.raw, cfg)
     cues = [c for c in cues if c.text]
+    # Before merging, so a duplicated card can never be folded INTO an utterance and read twice
+    # inside one breath, and before windows, so the survivor's window spans both cards.
+    cues, _ = drop_repeated_cards(cues, cfg)
     cues = merge_contiguous(cues, cfg, ev)
     compute_windows(cues, cfg)
     return cues

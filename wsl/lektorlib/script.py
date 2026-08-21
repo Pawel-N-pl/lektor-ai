@@ -34,7 +34,8 @@ from . import say
 from .config import Config, load_cps
 from .speech import (describe_delays, describe_leads, lead_counts, load_events, load_onsets,
                      plan_delays)
-from .srt import clean_text, load_cues
+from .srt import (clean_text, drop_repeated_cards, load_cues, parse_srt,
+                  should_skip)
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -1201,6 +1202,16 @@ def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = Fals
         # an episode whose speech.json was never built is a different document from one whose
         # gate ran, and the difference has to be visible in the log that produced the script.
         ev = load_events(cfg.work_dir, base, cfg)
+        # Reported, never silent: dropping a card changes what gets spoken, and a subtitle file
+        # that needs the guard is a fact about that release worth seeing in the log.
+        raw = [c for c in parse_srt(srt) if not should_skip(c.raw, cfg)]
+        for c in raw:
+            c.text = clean_text(c.raw, cfg)
+        _, repeated = drop_repeated_cards([c for c in raw if c.text], cfg)
+        if repeated:
+            say(f"  {len(repeated)} zdublowanych kart w napisach pominietych "
+                f"(ten sam tekst na nachodzacych sie kartach): {repeated[:8]}"
+                f"{' ...' if len(repeated) > 8 else ''}")
         cues = load_cues(srt, cfg, ev)
         if ev is not None:
             ungated = load_cues(srt, cfg)
