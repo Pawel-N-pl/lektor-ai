@@ -240,7 +240,13 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
     describes a render that is not going to happen.
     """
     out: list[str] = []
-    if "voice" in will_run and not cps_path(cfg).exists():
+    # Gated on the ENGINE, not just on the missing file. Four of the five backends never predict a
+    # duration - piper binary-searches length_scale, omnivoice is handed the length in seconds,
+    # chatterbox measures after the fact and kikivoice meets the window locally - and all four
+    # implement set_chars_per_second as an explicit no-op. Warning them that "the engine predicts
+    # its speed from timing.chars_per_second" states something untrue and sends the reader off to
+    # spend six TTS calls on a number nothing will read.
+    if "voice" in will_run and not cps_path(cfg).exists() and _predicts_duration(cfg):
         # Only the engine's own duration prediction is affected. The character budgets come from
         # timing.ms_per_char, so an uncalibrated backend is not a reason to spend six TTS calls.
         out.append(f"no calibration for {cfg.backend_name} yet: the engine predicts its speed "
@@ -505,6 +511,20 @@ def print_summary(cfg: Config, base: str, results: list[StepResult], steps: list
 # The chain
 # ---------------------------------------------------------------------------
 
+
+
+def _predicts_duration(cfg) -> bool:
+    """Does the selected backend have a speaking rate to calibrate at all?
+
+    Asked of the class rather than of a running engine: this is a warning printed before anything
+    is loaded, and constructing a backend to answer it would be the one place that opens a network
+    session or a model just to decide whether to print a sentence.
+    """
+    try:
+        from .backends import get_backend
+        return bool(get_backend(cfg.backend_name, cfg).needs_calibration)
+    except Exception:
+        return True          # unknown engine: say the cautious thing rather than stay silent
 
 def stage_run(cfg: Config, only: str | None, args) -> int:
     """Walk the pipeline for exactly one episode. Returns the process exit code.
