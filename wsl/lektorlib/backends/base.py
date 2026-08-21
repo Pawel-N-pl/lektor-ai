@@ -33,6 +33,12 @@ class Utterance:
     # the backend decides for itself, which is the right answer for an engine that controls
     # duration directly.
     speed_hint: float | None = None
+    # Silence on the TIMELINE between the previous cue and this one. Zero for the first cue and
+    # whenever the caller does not know. A batching backend groups cues into one request and has
+    # to put the group boundaries somewhere; putting them on the longest of these gaps keeps them
+    # on the subtitle grid, so editing a line's text invalidates that line's group and moves no
+    # other boundary. Engines that do not batch ignore it.
+    gap_before_ms: int = 0
 
 
 @dataclass
@@ -61,6 +67,24 @@ class Backend(abc.ABC):
     @abc.abstractmethod
     def prepare(self) -> None:
         """Load the model or validate credentials. Called ONCE, before any render."""
+
+    def prewarm(self, utterances: list[Utterance]) -> None:
+        """Optional: the whole episode, in order, BEFORE the first render() call.
+
+        Exists for one reason: an engine that generates in batches cannot be fed by render(), which
+        is handed exactly one line. A backend that implements this may generate as many lines as it
+        likes here and file them in its own cache, and the render() calls that follow then cost a
+        disk read each. Nothing else about the pipeline changes, because every backend that caches
+        already treats a cache hit as the normal case.
+
+        Measured on omnivoice, the first engine to use it: six lines in one call ran 4.4x faster
+        than the same six one at a time (RTF 0.317 against 1.38), which is the difference between
+        an episode taking five minutes of GPU and taking twenty.
+
+        The default is to do nothing, which is correct for every engine that has no batch API: the
+        network-bound one is already parallel over threads, and piper is faster than the overhead
+        of arranging anything.
+        """
 
     @abc.abstractmethod
     def render(self, u: Utterance) -> Rendered:

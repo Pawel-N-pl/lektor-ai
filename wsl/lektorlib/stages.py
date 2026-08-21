@@ -171,11 +171,13 @@ def generate_clips(cfg: Config, cues: list[dict], backend: Backend,
     clips: list[Clip] = [Clip(cue=c) for c in cues]
     done = [0]
 
-    def work(item) -> None:
-        i, clip = item
-        target_ms = int(clip.cue["window_ms"] * safety)
-        r = backend.render(Utterance(
-            index=i, text=clip.cue["text"], target_ms=target_ms or None,
+    # Built once, up front, so the batching hook below can see the whole episode and so a line's
+    # request is identical whether it was generated in a batch or on its own - the request IS the
+    # cache key, and two spellings of it would buy the same line twice.
+    utterances = [
+        Utterance(
+            index=i, text=clip.cue["text"],
+            target_ms=int(clip.cue["window_ms"] * safety) or None,
             # The lektor's own neighbours, not the film's: this is what he just said and what he
             # is about to say, which is what makes the engine read a line as part of a delivery.
             # Taken from the cue if the caller decided them over the whole episode, because they
@@ -185,7 +187,21 @@ def generate_clips(cfg: Config, cues: list[dict], backend: Backend,
             next_text=clip.cue.get("next_text",
                                    cues[i + 1]["text"] if i + 1 < len(cues) else ""),
             speed_hint=speeds[i] if speeds else None,
-        ))
+            # Distance on the timeline from the end of the previous cue. Only a batching backend
+            # reads it, to place its group boundaries on the subtitle grid rather than on the text.
+            gap_before_ms=max(0, int(clip.cue["start_ms"]) - int(cues[i - 1]["end_ms"])) if i else 0,
+        )
+        for i, clip in enumerate(clips)
+    ]
+
+    # A batching engine gets the episode here and fills its cache; everything else ignores this.
+    backend.prewarm(utterances)
+
+    def work(item) -> None:
+        i, clip = item
+        u = utterances[i]
+        target_ms = u.target_ms or 0
+        r = backend.render(u)
         clip.audio = resample_linear(r.audio, r.sample_rate, sr)
         clip.speed, clip.atempo = r.speed, r.atempo
         clip.target_ms = target_ms

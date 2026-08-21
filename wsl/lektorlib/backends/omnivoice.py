@@ -13,11 +13,13 @@ lines and the 6 s Gudowski reference:
   duration below natural (compression)      target + 200 ms, 6/6    median 55 ms, worst 300 ms
   duration at or above natural              unreliable, see below   -
 
-**The +200 ms is padding, not overrun.** Under compression the raw clip came back at exactly
-target + 200 ms every single time, zero variance, whatever the line and whatever the compression
-ratio. Trimming that tail - which this pipeline does to every clip anyway - leaves a median error
-of 55 ms, inside the 60 ms tolerance piper binary-searches for. So `duration_pad_ms` is subtracted
-from the ask and the result is trimmed, and between them the window is hit on the first try.
+**The +200 ms is padding, not overrun, and it must not be subtracted from the ask.** Under
+compression the raw clip came back at exactly target + 200 ms every single time, zero variance.
+That tail is SILENCE and trim_silence takes it off downstream, so after trimming the speech lasts
+about as long as the duration asked for - median error 55 ms, inside the 60 ms piper searches for.
+Subtracting the pad from the ask as well, as the first version did, spends those 200 ms twice and
+every line comes out a fifth of a second short. See `_ask_for`, which also floors the ask at
+timing.max_speed so no window can demand a scramble.
 
 **Compression is the only regime that matters and the only one that is reliable.** Asked for MORE
 than a line naturally takes, the model sometimes stretches (2.84 s line asked for 3.6 got 3.65)
@@ -57,7 +59,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import select
 import shutil
 import subprocess
 import tempfile
@@ -68,6 +69,8 @@ from .. import say
 import numpy as np
 
 from ..audio import decode_mono, trim_silence
+from ..srt import predicted_ms
+from ..worker import LineReader
 from .base import Backend, Rendered, Utterance
 
 # The model's own output rate. Everything is resampled to mix.sample_rate on the way in.
@@ -120,11 +123,13 @@ class OmniVoiceBackend(Backend):
         self.proc: subprocess.Popen | None = None
         self.tmpdir: str | None = None
         self.log_path: Path | None = None
+        self._reader: LineReader | None = None
         self.reference = "builtin"
         self.generated = 0
         self.gen_seconds = 0.0
         self.audio_seconds = 0.0
         self.empty_takes = 0
+        self.unconstrained = 0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -236,18 +241,15 @@ class OmniVoiceBackend(Backend):
             except (BrokenPipeError, ValueError):
                 self._die("omnivoice worker died before it could be asked for the next line")
 
-        deadline = time.monotonic() + timeout_s
-        line = b""
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._die(f"omnivoice worker did not answer within {timeout_s:.0f}s")
-            ready, _, _ = select.select([self.proc.stdout], [], [], min(remaining, 1.0))
-            if ready:
-                line = self.proc.stdout.readline()
-                break
+        # A reader thread, not select(): select accepts sockets only on Windows and raises on a
+        # pipe, which was the single call standing between this pipeline and a native Windows run.
+        if self._reader is None:
+            self._reader = LineReader(self.proc)
+        line = self._reader.read(timeout_s)
+        if line is None:
             if self.proc.poll() is not None:
                 self._die(f"omnivoice worker exited with code {self.proc.returncode}")
+            self._die(f"omnivoice worker did not answer within {timeout_s:.0f}s")
 
         if not line:
             self._die("omnivoice worker closed its pipe without answering")
@@ -266,29 +268,125 @@ class OmniVoiceBackend(Backend):
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{key}.wav"
 
-    def _ask_for(self, target_ms: int | None) -> float | None:
-        """The duration to request, which is not the window.
+    def _ask_for(self, u: Utterance) -> float | None:
+        """The duration to request for one line, and the floor under how fast it may be said.
 
-        Two corrections, both measured. The pad is the constant 200 ms tail the model appends to
-        every clip; asking for the window would spend it and land the speech that much late. The
-        safety factor is the pipeline's own, already applied everywhere else a window is turned
-        into an ask.
+        The ask is simply the window times the pipeline's safety factor, and getting that wrong is
+        what made the first version unlistenable. The model's constant 200 ms tail is SILENCE, and
+        trim_silence removes it downstream, so after trimming the speech lasts about as long as
+        the duration that was asked for. Subtracting the pad from the ask as well spent that
+        200 ms twice: every line came out a fifth of a second shorter than its window allowed, and
+        on a short card that is most of the card. Measured on the real script, cue 14 "Rywali
+        razem." has a 1334 ms window, keeps 784 ms after lead_in, and was being asked to fit
+        553 ms against a natural length of about 1280 ms - 43%, which is not fast speech, it is a
+        scramble.
+
+        The floor is the second half of the fix, and it is not a new invention: `timing.max_speed`
+        is the ceiling every other engine in this project obeys, and the fitted duration model says
+        how long the words take at 1.0. So this asks for no less than the same words at max_speed,
+        and a window tighter than that is simply overrun - which the mix already tolerates and the
+        report already counts. An overrun is recoverable; an unintelligible line is not.
         """
-        if not target_ms or target_ms <= 0:
+        if not u.target_ms or u.target_ms <= 0:
             return None
-        pad_ms = float(self.v.get("duration_pad_ms", 200.0))
-        want_ms = target_ms * float(self.timing.get("safety", 1.0)) - pad_ms
-        floor_ms = float(self.v.get("duration_floor_ms", 400.0))
-        return max(floor_ms, want_ms) / 1000.0
+        want_ms = u.target_ms * float(self.timing.get("safety", 1.0))
+        # The engine's own pad, kept as a knob for anyone who turns trimming off. See the note in
+        # the config: while trim_silence runs, this must stay at 0.
+        want_ms -= float(self.v.get("duration_pad_ms", 0.0))
+        fastest = float(self.timing.get("max_speed", 1.2)) or 1.0
+        want_ms = max(want_ms, predicted_ms(u.text, self.timing) / fastest)
+        return max(float(self.v.get("duration_floor_ms", 400.0)), want_ms) / 1000.0
+
+    def _long_enough(self, text: str, secs: float) -> bool:
+        """Did the model actually SAY the line, or did it stop partway through?
+
+        This is the check that matters most in the whole backend, and the first version got it
+        wrong by asking only whether anything came back at all. The model does not merely return
+        nothing sometimes - it returns a STUB. Measured over one full episode: 100 of 759 lines
+        came back under half the length the words need at the fastest rate this project allows,
+        most of them around 110 ms of audio for a whole sentence, and 217 were under 85%. A 50 ms
+        floor waved every one of them through, and because a stub trivially fits any window they
+        were then counted as lines that landed inside their slot. "Nie. To było FBI." was asked
+        for 1113 ms, came back as 870 ms, and plays as "to było F".
+
+        So the floor is proportional to the TEXT, not a constant: the fitted duration model says
+        how long the words take, timing.max_speed is the fastest they may be said, and anything
+        materially under that is truncation rather than brisk delivery. min_fill_ratio leaves room
+        for the model to be genuinely quicker than an average fit.
+        """
+        need = predicted_ms(text, self.timing) / (float(self.timing.get("max_speed", 1.2)) or 1.0)
+        floor = max(float(self.v.get("min_audio_s", 0.05)) * 1000.0,
+                    need * float(self.v.get("min_fill_ratio", 0.95)))
+        return secs * 1000.0 >= floor
+
+    def _plan(self, u: Utterance) -> tuple[str, Path, float | None]:
+        """The key, the file and the ask for one line. One spelling, used by both paths."""
+        duration_s = self._ask_for(u)
+        key = cache_key(u.text, self._params(), self.reference, duration_s)
+        return key, self._cache_path(key), duration_s
+
+    def prewarm(self, utterances: list[Utterance]) -> None:
+        """Generate the episode in batches, into the cache the render loop then reads.
+
+        This is where this backend earns its place. Batched, the model ran 4.4x faster than one
+        line at a time on the same six lines (RTF 0.317 against 1.38), which takes an episode from
+        about twenty minutes of GPU to about five. Every line still gets its OWN duration, because
+        `generate()` takes a list for `duration` as well as for `text` - so batching costs nothing
+        in fit: measured accuracy after trimming was 65 ms batched against 55 ms unbatched.
+
+        Anything that fails or comes back empty is simply left out of the cache. render() then
+        generates it on its own with the retry it already has, so a bad batch degrades into the
+        slow path rather than into a silent line.
+        """
+        size = max(1, int(self.v.get("batch_size", 8)))
+        if self.proc is None or size == 1:
+            return
+        todo = []
+        for u in utterances:
+            key, path, duration_s = self._plan(u)
+            if not path.exists():
+                todo.append({"text": u.text, "out": str(path), "duration": duration_s,
+                             "seed": int(key[:8], 16) % (2 ** 31)})
+        if not todo:
+            say(f"    omnivoice: all {len(utterances)} lines already cached")
+            return
+
+        say(f"    omnivoice: generating {len(todo)} of {len(utterances)} lines in batches of {size}")
+        t0 = time.perf_counter()
+        made = empty = 0
+        audio_s = 0.0
+        for start in range(0, len(todo), size):
+            chunk = todo[start:start + size]
+            # Timeout scales with the batch: one line's budget is not a batch's budget.
+            timeout = float(self.v.get("render_timeout_s", 300)) * len(chunk)
+            try:
+                reply = self._exchange({"cmd": "render_batch", "items": chunk}, timeout)
+            except RuntimeError:
+                raise
+            got = reply.get("audio_s") or []
+            for item, secs in zip(chunk, got):
+                if self._long_enough(item["text"], float(secs)):
+                    made += 1
+                    audio_s += float(secs)
+                else:
+                    empty += 1
+                    Path(item["out"]).unlink(missing_ok=True)
+            self.generated += len(chunk)
+            self.gen_seconds += float(reply.get("gen_s", 0.0))
+            self.audio_seconds += sum(float(s) for s in got)
+            if (start // size) % 5 == 0 or start + size >= len(todo):
+                say(f"      {min(start + size, len(todo))}/{len(todo)}")
+        dt = time.perf_counter() - t0
+        rtf = dt / audio_s if audio_s else 0.0
+        say(f"    omnivoice: {made} lines in {dt / 60:.1f} min of GPU for {audio_s / 60:.1f} min "
+            f"of speech (RTF {rtf:.3f})"
+            + (f"; {empty} came back empty or truncated and go to the slow path" if empty else ""))
 
     def render(self, u: Utterance) -> Rendered:
         if self.proc is None:
             raise RuntimeError("omnivoice backend used before prepare()")
 
-        params = self._params()
-        duration_s = self._ask_for(u.target_ms)
-        key = cache_key(u.text, params, self.reference, duration_s)
-        path = self._cache_path(key)
+        key, path, duration_s = self._plan(u)
         cached = path.exists()
 
         if not cached:
@@ -304,7 +402,6 @@ class OmniVoiceBackend(Backend):
             # clip report. So an empty take is re-rolled on a fresh seed and never cached: a failure
             # gets another chance instead of becoming permanent, exactly as the paid backend treats
             # a failed call.
-            min_s = float(self.v.get("min_audio_s", 0.05))
             attempts = max(1, int(self.v.get("max_retries", 3)))
             for attempt in range(attempts):
                 reply = self._exchange(
@@ -316,13 +413,34 @@ class OmniVoiceBackend(Backend):
                 self.gen_seconds += float(reply.get("gen_s", 0.0))
                 got_s = float(reply.get("audio_s", 0.0))
                 self.audio_seconds += got_s
-                if got_s >= min_s:
+                if self._long_enough(u.text, got_s):
                     break
                 self.empty_takes += 1
                 path.unlink(missing_ok=True)
                 if attempt == attempts - 1:
-                    say(f"    !! omnivoice returned nothing {attempts}x for {u.text[:48]!r} -- "
-                        f"this line will be silent")
+                    # Last resort: ask for the line with NO duration at all. Three empties in a
+                    # row is not the ~3% base rate rolling badly (that would be 0.003%), so
+                    # something about this particular text-and-length is degenerate, and the
+                    # unconstrained regime is the one the model is most reliable in. The line may
+                    # then overrun its window - which the mix tolerates and the report counts.
+                    # An overrun is recoverable; a silent line is not, and it is the one failure
+                    # nobody notices until they are watching the episode.
+                    reply = self._exchange(
+                        {"cmd": "render", "text": u.text, "out": str(path),
+                         "duration": None, "seed": (int(key[:8], 16) + attempts) % (2 ** 31)},
+                        float(self.v.get("render_timeout_s", 300)),
+                    )
+                    self.generated += 1
+                    self.gen_seconds += float(reply.get("gen_s", 0.0))
+                    self.audio_seconds += float(reply.get("audio_s", 0.0))
+                    if self._long_enough(u.text, float(reply.get("audio_s", 0.0))):
+                        self.unconstrained += 1
+                        say(f"    omnivoice: {u.text[:40]!r} would not fit its window at all, "
+                            f"read at natural length instead")
+                        break
+                    path.unlink(missing_ok=True)
+                    say(f"    !! omnivoice truncated {attempts + 1}x for {u.text[:48]!r}, including "
+                        f"once with no length constraint -- this line will be silent")
                     return Rendered(audio=np.zeros(0, dtype=np.float32),
                                     sample_rate=self.sample_rate, speed=1.0, atempo=1.0,
                                     cached=False, billable_chars=0)
@@ -348,9 +466,12 @@ class OmniVoiceBackend(Backend):
             say(f"    omnivoice: {self.generated} lines generated, "
                 f"{self.gen_seconds / 60:.1f} min of GPU for {self.audio_seconds / 60:.1f} min "
                 f"of speech (RTF {rtf:.2f})"
-                + (f", {self.empty_takes} empty take(s) re-rolled" if self.empty_takes else ""))
+                + (f", {self.empty_takes} empty take(s) re-rolled" if self.empty_takes else "")
+                + (f", {self.unconstrained} read unconstrained after repeated failures"
+                   if self.unconstrained else ""))
             self.generated = 0
 
+        self._reader = None
         proc, self.proc = self.proc, None
         if proc is not None:
             try:
@@ -463,6 +584,34 @@ for raw in sys.stdin:
         fail("worker got a non-JSON request: %r" % raw[:200])
     if req.get("cmd") == "quit":
         break
+
+    if req.get("cmd") == "render_batch":
+        # One call, N lines, N separate durations. That last part is what makes batching free
+        # here: the model is not given one window to share, every line keeps its own.
+        items = req["items"]
+        try:
+            torch.manual_seed(int(items[0].get("seed", 0)) % (2 ** 31))
+            t0 = time.perf_counter()
+            with torch.inference_mode():
+                outs = model.generate(text=[it["text"] for it in items],
+                                      language=[LANG] * len(items),
+                                      ref_audio=[REF] * len(items),
+                                      duration=[it.get("duration") for it in items],
+                                      generation_config=None, num_step=STEPS)
+            gen_s = time.perf_counter() - t0
+            secs = []
+            for it, out in zip(items, outs):
+                audio = np.asarray(out, dtype=np.float32)
+                secs.append(len(audio) / SR)
+                # A zero-length take is not written at all: the caller re-renders it one at a
+                # time, and a file on disk would look like a cached silence forever.
+                if audio.size:
+                    sf.write(it["out"], audio, SR, subtype="PCM_16")
+            emit({"ok": True, "gen_s": gen_s, "audio_s": secs})
+        except Exception as exc:
+            emit({"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)})
+        continue
+
     if req.get("cmd") != "render":
         fail("unknown command %r" % req.get("cmd"))
 
