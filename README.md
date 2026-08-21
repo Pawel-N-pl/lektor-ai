@@ -73,6 +73,18 @@ nie kosztuje to żadnej zależności. Codium i VS Code nie kolorują TOML-a bez 
 Wspólne dla wszystkich środowisk: **Python 3.11+**, trzy biblioteki i **ffmpeg**. Reszta jest
 opcjonalna, a każda opcja mówi niżej, co przestaje działać bez niej.
 
+**Najpierw wybierz swój układ, nie czytaj po kolei** – trzy poniższe sekcje wykluczają się
+nawzajem:
+
+| twój układ | co instalujesz |
+|---|---|
+| **Linux albo macOS** | wszystko na tej jednej maszynie |
+| **Windows bez WSL-a** | wszystko natywnie na Windowsie |
+| **Windows + WSL**, źródła na dysku windowsowym | **wszystko w WSL-u. Po stronie Windowsa nie instalujesz ani Pythona, ani uv, ani venva** – najwyżej ffmpega, i to tylko jeśli chcesz używać skryptów z `windows/`. |
+
+`uv` w poniższych komendach to wygoda, nie wymóg. `python -m venv .venv` i `pip install` robią
+dokładnie to samo, jeśli uv nie masz albo się zacina.
+
 ### Linux / macOS
 
 ```bash
@@ -136,6 +148,12 @@ W `lektor.toml` ustaw **parę** kluczy, po jednym na stronę:
 input_dir_windows = 'E:\Filmy\Serial.S01'
 input_dir_wsl     = '/mnt/e/Filmy/Serial.S01'
 ```
+
+**Po stronie Windowsa nie stawiaj Pythona ani venva.** Cały pipeline chodzi w WSL-u, w tym
+jednym venvie z sekcji Linux/macOS wyżej. Windows dostaje najwyżej ffmpega, i tylko na
+potrzeby skryptów z `windows/` – a te nie są już potrzebne, bo `lektor.py extract` i `mux`
+robią to samo natywnie. Jeśli trafiłeś tu z sekcji „Windows bez WSL-a" i zacząłeś stawiać
+tam `uv`: to była inna instrukcja, do innego układu.
 
 `paths.input_dir` zostaw pusty – wtedy każda strona weźmie swój klucz. Skrypty w `windows/` nadal
 działają, ale nie są już potrzebne: `lektor.py extract` i `mux` robią to samo natywnie.

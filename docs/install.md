@@ -93,6 +93,14 @@ merge gate.
 
 ### (c) Windows + WSL, sources on `E:`
 
+**Install nothing Python-shaped on the Windows side.** No interpreter, no uv, no venv: the whole
+pipeline runs in WSL, out of the single venv from (a). Windows gets ffmpeg at most, and only for the
+scripts in `windows/` - which `lektor.py extract` and `mux` have replaced anyway.
+
+This is worth stating because the three sections read as a sequence and are not one. Somebody
+working in this layout followed (b) from the top, spent half an hour on a hung `uv install`, and
+needed none of it.
+
 The current layout here, and the reason the PowerShell exists: the sources sit on an NTFS drive,
 Windows does the gigabyte-scale I/O natively, WSL does everything else, and both sides meet in the
 same `_lektor` directory seen from both worlds.
