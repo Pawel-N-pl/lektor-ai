@@ -80,7 +80,20 @@ class Config:
 
     @property
     def input_dir(self) -> Path:
-        return Path(self.raw["paths"]["input_dir_wsl"])
+        """Where the episodes live, spelled for the platform actually reading this file.
+
+        The config carries a PAIR of these because the original setup is split down the middle:
+        the sources sit on a Windows drive and are addressed as E:\\Filmy from one side and
+        /mnt/e/Filmy from the other, with both halves reading the same config. A single-platform
+        install has no such split, so a plain `input_dir` wins over both when it is present - and
+        that is the key a Linux, macOS or native-Windows user should set.
+        """
+        paths = self.raw["paths"]
+        plain = str(paths.get("input_dir", "") or "")
+        if plain:
+            return Path(plain).expanduser()
+        key = "input_dir_windows" if os.name == "nt" else "input_dir_wsl"
+        return Path(str(paths.get(key) or paths.get("input_dir_wsl", ""))).expanduser()
 
     @property
     def work_dir(self) -> Path:

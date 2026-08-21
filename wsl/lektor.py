@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
-"""WSL half of the lektor-ai pipeline: everything that thinks, nothing that moves gigabytes.
+"""lektor-ai: Polish voice-over for one episode, from the mkv to the remuxed mkv.
 
-Reads the small artifacts the Windows stage dropped into the work dir on E: (a .srt and a
-stereo FLAC downmix), and produces a finished lektor audio track for the Windows stage to
-remux. The 2.7 GB sources are never opened from here.
+Everything that thinks lives here. The 2.7 GB sources are opened only where there is no way
+round it – the extract and the mux – and every stage in between works on the small artifacts in
+the work dir: a .srt, a stereo FLAC downmix, a JSON script.
 
-Stages
-------
+The whole thing, unattended
+---------------------------
+  python3 wsl/lektor.py run --only S23E01
+
+`run` walks extract -> speech -> script -> retime -> voice -> mux for exactly ONE episode,
+skipping every step whose artefact is already on disk, and stops the chain where carrying on
+would ship something wrong. It prints a plan before it starts and a summary of what it did,
+what it skipped and why, what it cost and where the file is, when it finishes.
+
+  --from STEP --to STEP   run part of the chain (default: the whole of it)
+  --skip a,b              leave steps out of the middle
+  --redo STEP[,STEP]|all  rebuild artefacts that already exist (--force means --redo all)
+  --require-speech        treat a failed measurement as fatal instead of a degradation
+  --dry-run               print the plan and touch nothing
+
+Stages, one at a time
+---------------------
+  extract    Pull the Polish subtitle stream and a stereo FLAC downmix out of the mkv, and
+             record which file they came from. Skips the language-tagged forced and SDH tracks.
   calibrate  Measure how fast the chosen voice actually speaks. Only backends that have to
              predict a duration need it; the rest say so and do nothing.
   speech     Measure what the actors and the editor actually did: forced-aligned word times off
@@ -22,6 +39,8 @@ Stages
              text, and therefore costs nothing at all - no LLM draw, no TTS re-read.
   voice      Read the script with the configured backend, fit each line to its slot, duck the
              original audio underneath it, and encode the mix.
+  mux        Copy the film and append the lektor track as a new default audio stream, keeping
+             every original stream, subtitle and chapter untouched.
   sample     Render the same ~90 s of one episode several ways, into separate files, so the
              choice is made by ear: --backends piper,elevenlabs compares ENGINES, --models
              compares ElevenLabs models on the current one.
@@ -47,7 +66,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.exit(f"missing dependency ({exc})\n  pip install numpy soundfile requests")
 
-from lektorlib import stages
+from lektorlib import media, pipeline, stages
 from lektorlib.backends import BACKEND_NAMES
 from lektorlib.config import DEFAULT_CONFIG, Config
 
@@ -66,8 +85,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("stage", choices=["calibrate", "speech", "script", "retime", "voice", "all",
-                                      "sample", "cost", "status"])
+    ap.add_argument("stage", choices=["run", "extract", "calibrate", "speech", "script", "retime",
+                                      "voice", "mux", "all", "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")
@@ -79,14 +98,49 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--backend", help=f"override voice.backend for this run ({backend_list})")
     ap.add_argument("--backends", default="",
                     help=f"sample: comma-separated backends to compare ({backend_list})")
+    # `run` only, and refused on the other stages below rather than ignored there.
+    step_list = " | ".join(pipeline.STEPS)
+    ap.add_argument("--from", dest="from_step", default=pipeline.STEPS[0], metavar="STEP",
+                    help=f"run: first step of the chain ({step_list})")
+    ap.add_argument("--to", dest="to_step", default=pipeline.STEPS[-1], metavar="STEP",
+                    help=f"run: last step of the chain ({step_list})")
+    ap.add_argument("--skip", default="", metavar="STEP,STEP",
+                    help="run: steps to leave out of the range")
+    ap.add_argument("--redo", default="", metavar="STEP,STEP",
+                    help="run: rebuild these steps even though their artefact exists ('all' for "
+                         "every selected step, which is what --force means here)")
+    ap.add_argument("--require-speech", action="store_true",
+                    help="run: abort when the speech measurement fails instead of continuing "
+                         "with the pause gate off")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run: print the plan and touch nothing")
     args = ap.parse_args(argv)
+
+    # A flag that means nothing to the chosen stage is a usage error, not a no-op. `voice
+    # --dry-run` is the one that matters: silently ignored, it reads the whole episode and bills
+    # for it under a flag whose entire promise is that it touches nothing.
+    chain_only = [flag for flag, given in (("--from", args.from_step != pipeline.STEPS[0]),
+                                           ("--to", args.to_step != pipeline.STEPS[-1]),
+                                           ("--skip", bool(args.skip)),
+                                           ("--redo", bool(args.redo)),
+                                           ("--require-speech", args.require_speech),
+                                           ("--dry-run", args.dry_run)) if given]
+    if args.stage != "run" and chain_only:
+        ap.error(f"only `run` takes {', '.join(chain_only)}; the stage {args.stage!r} would "
+                 f"ignore that and do the work anyway")
 
     cfg = Config(args.config)
     if args.backend:
         cfg.raw["voice"]["backend"] = check_backends([args.backend])[0]
     backends = check_backends([b.strip() for b in args.backends.split(",") if b.strip()])
 
-    if args.stage == "calibrate":
+    if args.stage == "run":
+        raise SystemExit(pipeline.stage_run(cfg, args.only, args))
+    elif args.stage == "extract":
+        media.stage_extract(cfg, args.only, args.force)
+    elif args.stage == "mux":
+        media.stage_mux(cfg, args.only, args.force)
+    elif args.stage == "calibrate":
         stages.stage_calibrate(cfg)
     elif args.stage == "speech":
         stages.stage_speech(cfg, args.only, args.force)

@@ -47,7 +47,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import select
 import shutil
 import subprocess
 import tempfile
@@ -56,6 +55,7 @@ from pathlib import Path
 
 from .. import say
 from ..audio import decode_mono
+from ..worker import LineReader
 from .base import Backend, Rendered, Utterance
 
 # Steady-state resident footprint, baseline -> after warmup, sampled with nvidia-smi. Per-process
@@ -96,6 +96,7 @@ class ChatterboxBackend(Backend):
         self.proc: subprocess.Popen | None = None
         self.tmpdir: str | None = None
         self.log_path: Path | None = None
+        self._reader: LineReader | None = None
         self.reference = "builtin"
         self.generated = 0
         self.gen_seconds = 0.0
@@ -223,18 +224,15 @@ class ChatterboxBackend(Backend):
             except (BrokenPipeError, ValueError):
                 self._die("chatterbox worker died before it could be asked for the next line")
 
-        deadline = time.monotonic() + timeout_s
-        line = b""
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                self._die(f"chatterbox worker did not answer within {timeout_s:.0f}s")
-            ready, _, _ = select.select([self.proc.stdout], [], [], min(remaining, 1.0))
-            if ready:
-                line = self.proc.stdout.readline()
-                break
+        # A reader thread, not select(): select accepts sockets only on Windows and raises on a
+        # pipe, which was the single call standing between this pipeline and a native Windows run.
+        if self._reader is None:
+            self._reader = LineReader(self.proc)
+        line = self._reader.read(timeout_s)
+        if line is None:
             if self.proc.poll() is not None:
                 self._die(f"chatterbox worker exited with code {self.proc.returncode}")
+            self._die(f"chatterbox worker did not answer within {timeout_s:.0f}s")
 
         if not line:
             self._die("chatterbox worker closed its pipe without answering")
@@ -308,6 +306,7 @@ class ChatterboxBackend(Backend):
                 f"of speech (RTF {rtf:.2f})")
             self.generated = 0
 
+        self._reader = None
         proc, self.proc = self.proc, None
         if proc is not None:
             try:

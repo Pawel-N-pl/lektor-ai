@@ -37,6 +37,7 @@ from tempfile import gettempdir
 
 from . import say
 from .srt import parse_srt, predicted_ms
+from .venvs import venv_python
 
 # Runs INSIDE the asr container, fed on stdin to its python3. Kept as a string rather than a file
 # because it is not our code's environment: it needs the container's torch, and shipping it as a
@@ -556,6 +557,61 @@ def cues_for_alignment(srt: Path) -> list[dict]:
 
 
 def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
+    """Word times for the English reference, from whichever aligner this machine can offer.
+
+    The alignment itself is one script (`_FA_SCRIPT`) taking four arguments, and it does not care
+    where it runs. Only the delivery differs, so `speech.aligner` picks between two:
+
+      docker  hand it to the container named by speech.asr_container. This is how it started, and
+              the container is INCIDENTAL - it was recycled from a sibling project because it
+              already had torch on the GPU, not because anything here needs a container.
+      local   run it with the interpreter in speech.aligner_venv, which needs torch and torchaudio
+              and nothing else. No container, no daemon, no copying: the wav and the cues are
+              already on this filesystem, which is also why this path is the simpler of the two.
+      auto    local when a usable venv is configured, docker otherwise. The default, so a machine
+              with neither still degrades the documented way - the caller catches the failure and
+              writes an artefact carrying shot cuts only.
+
+    Docker Desktop runs Linux containers on a WSL2 or Hyper-V backend, so on Windows the docker
+    path drags in the very thing a native install is trying to avoid. That is the reason `local`
+    exists rather than a preference: it is the only aligner a Windows or macOS box without a
+    container runtime can use, and it costs the same GPU either way.
+    """
+    s = cfg["speech"]
+    choice = str(s.get("aligner", "auto")).strip().lower()
+    venv = str(s.get("aligner_venv", "") or "")
+    if choice == "local" or (choice == "auto" and venv and venv_python(venv).is_file()):
+        return _align_local(cfg, wav, cues, tmp)
+    return _align_docker(cfg, wav, cues, tmp)
+
+
+def _align_local(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
+    """Same script, this machine, no container. Paths are local, so nothing is copied."""
+    s = cfg["speech"]
+    venv = str(s.get("aligner_venv", "") or "")
+    if not venv:
+        raise RuntimeError(
+            "speech.aligner is 'local' but speech.aligner_venv is empty -- point it at a venv "
+            "with torch and torchaudio installed"
+        )
+    python = venv_python(venv)
+    if not python.is_file():
+        raise RuntimeError(f"no interpreter at {python} -- speech.aligner_venv must be a venv")
+
+    cues_json = tmp / "fa_cues.json"
+    cues_json.write_text(json.dumps(cues), encoding="utf-8")
+    out = tmp / "fa.json"
+    run = subprocess.run(
+        [str(python), "-", str(wav), str(cues_json), str(out), str(s["fa_window_s"])],
+        input=_FA_SCRIPT, capture_output=True, text=True, timeout=s["fa_timeout_s"])
+    if run.returncode != 0:
+        raise RuntimeError(f"forced alignment failed: {run.stderr.strip()[-400:]}")
+    if not out.is_file():
+        raise RuntimeError("forced alignment wrote no output")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
     """Run the aligner inside the container that is already up. Nothing is installed anywhere.
 
     The container is treated as read-only apart from one scratch directory under its /tmp, which

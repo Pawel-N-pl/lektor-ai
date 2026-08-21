@@ -103,3 +103,6 @@ tmp/
 # lektor-ai
 .venv/
 _lektor/
+
+# Voice reference recordings. Real people; keep them out of the repo.
+*.mp3
