@@ -60,6 +60,16 @@ Szczegóły, liczby i przypadki brzegowe: **[docs/](docs/)**.
 
 ## Instalacja
 
+Konfiguracja to **dwa pliki**. `lektor.toml` ma 84 linie i trzyma to, co zmieniasz przy każdym
+serialu i po uchu: ścieżki, silnik, głos, poziom, model. `lektor.tuning.toml` trzyma wszystkie 233
+klucze wraz z pomiarem, który za każdym stoi. Pierwszy nadpisuje drugi, więc **skasowanie linijki
+cofa cię do zmierzonej wartości domyślnej, a nie do pustki**.
+
+TOML, a nie JSON, z jednego powodu: 84% starego pliku było prozą trzymaną w kluczach `_note`,
+bo JSON nie ma komentarzy. Teraz są komentarzami. `tomllib` siedzi w bibliotece standardowej, więc
+nie kosztuje to żadnej zależności. Codium i VS Code nie kolorują TOML-a bez rozszerzenia –
+`tamasfe.even-better-toml`.
+
 Wspólne dla wszystkich środowisk: **Python 3.11+**, trzy biblioteki i **ffmpeg**. Reszta jest
 opcjonalna, a każda opcja mówi niżej, co przestaje działać bez niej.
 
@@ -77,8 +87,9 @@ cp .env.example .env             # klucze API, jeśli będziesz ich używać
 
 W `lektor.toml` ustaw **jeden** klucz:
 
-```json
-"paths": { "input_dir": "/home/ty/Filmy/Serial.S01" }
+```toml
+[paths]
+input_dir = '/home/ty/Filmy/Serial.S01'
 ```
 
 ### Windows, bez WSL-a
@@ -97,8 +108,9 @@ copy .env.example .env
 
 W `lektor.toml` ustaw **jeden** klucz:
 
-```json
-"paths": { "input_dir": "E:\\Filmy\\Serial.S01" }
+```toml
+[paths]
+input_dir = 'E:\Filmy\Serial.S01'
 ```
 
 ```powershell
@@ -119,11 +131,10 @@ WSL-u, obie połowy czytają ten sam config i spotykają się w katalogu `_lekto
 
 W `lektor.toml` ustaw **parę** kluczy, po jednym na stronę:
 
-```json
-"paths": {
-  "input_dir_windows": "E:\\Filmy\\Serial.S01",
-  "input_dir_wsl":     "/mnt/e/Filmy/Serial.S01"
-}
+```toml
+[paths]
+input_dir_windows = 'E:\Filmy\Serial.S01'
+input_dir_wsl     = '/mnt/e/Filmy/Serial.S01'
 ```
 
 `paths.input_dir` zostaw pusty – wtedy każda strona weźmie swój klucz. Skrypty w `windows/` nadal

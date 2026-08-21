@@ -35,7 +35,7 @@ verified bit-for-bit identical to serial. CUDA buys nothing here (136.5 s agains
 is no GPU switch; do not install `onnxruntime-gpu`. `noise_w_scale` stays at 0, or the same text at
 the same `length_scale` varies 4783–5050 ms across eight runs and the search stops being exact.
 A line that will not fit even at `search_min` 0.6 is handed back clamped and reported as clamped:
-**4 lines on the real 598-cue episode, worst overrun +16 %** (`voice.piper._search_min_note`).
+**4 lines on the real 598-cue episode, worst overrun +16 %** (comment above `voice.piper.search_min`).
 
 **ElevenLabs** sounds like broadcast and costs money, so it never generates the same line twice:
 every call is content-addressed on disk, and the rate is flat on every plan – what a plan buys is a

@@ -102,7 +102,7 @@ which is exactly where actors pause, made the lektor sound like it was reading w
 lektor is a narrator reading a text, not a performer imitating a delivery – he reads the sentence,
 and the pause in the picture is not his to copy.
 
-`clean._merge_gate_note` records that conclusion. The value next to it is still `"both"`, i.e. the
+The comment above `clean.merge_gate` records that conclusion. The value next to it is still `"both"`, i.e. the
 gate is ON as this config ships, and one of the two is stale. Until that is settled by whoever ran
 the A/B, set `clean.merge_gate` to `"off"` to get what the listening test preferred, or leave it and
 know which choice you are making. `merge_min_pause_ms` (300) is the knob that matters if it stays

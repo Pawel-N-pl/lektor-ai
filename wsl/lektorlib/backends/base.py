@@ -7,7 +7,13 @@ the window it must fit in; how that is achieved differs per engine and the pipel
               voice_settings.speed, make ONE call, then atempo off the CACHED bytes if it missed.
   piper       free, deterministic and ~instant, and length_scale controls duration directly, so
               binary search length_scale until it hits target_ms. No calibration, no atempo.
+  omnivoice   free, on the GPU, and the only one ASKED for a length: generate() takes duration in
+              seconds, honoured exactly under compression, so one generation lands in the window.
+              Clones a voice from 3-10 s. Batches through prewarm, which is worth 4.4x.
   chatterbox  free but very slow, with no exact length control: generate naturally, then atempo.
+  kikivoice   billed in a weekly credit bucket that cannot be topped up, and gated by a challenge
+              a human solves in a browser: buy each line ONCE at speed 1.0 and meet the window
+              locally off the cached bytes.
 """
 
 from __future__ import annotations

@@ -23,14 +23,11 @@ What does not work well, stated plainly.
   `mix.duck_to_db` is -3.0 while its note says -4.5 by ear. A third is cosmetic:
   `voice.omnivoice.reference_wav` points at `szolajski.ref.wav` while its note describes the Knapik
   sample.
-- **The two piper fit figures disagree.** `voice._backend_note` says 597 of 598 lines inside their
-  window on the real episode; `voice.piper._search_min_note` says 4 lines clamped and still over on
-  what reads as the same episode, worst +16 %. Both are recorded as measured, both date from the same
+- **The two piper fit figures disagree.** The comment above `voice.backend` says 597 of 598 lines
+  landed inside their window on the real episode; the one above `voice.piper.search_min` says 4
+  lines were clamped and still over on what reads as the same episode, worst +16 %. Both are recorded as measured, both date from the same
   commit, and the table above quotes the second. One of them is wrong and the episode would have to be
   re-rendered to find out which.
-- **`voice._backend_note` and `backends/base.py` still describe three engines.** They predate
-  omnivoice and kikivoice, and they are the two places text gets copied from into documentation, so
-  the error propagates.
 - **chatterbox cannot aim at a window and nothing rescues it.** Nothing about generation targets a
   duration, and with `timing.max_atempo` at 1.0 a long reading is not stretched either – it simply
   overruns into the silence after it. On the 20 s smoke slice one line of four ran 56 % past its slot.

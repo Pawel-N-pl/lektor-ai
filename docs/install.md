@@ -69,8 +69,9 @@ copy .env.example .env
 
 Set one path key and nothing else:
 
-```json
-"paths": { "input_dir": "E:\\Filmy\\Serial.S01" }
+```toml
+[paths]
+input_dir = 'E:\Filmy\Serial.S01'
 ```
 
 `paths.ffmpeg` and `paths.ffprobe` are optional - without them the binaries are taken from `PATH`,
@@ -176,4 +177,4 @@ otherwise byte-identical to a run without the artefact. Shot detection itself is
 `no English reference subtitle` and skips straight to the cuts.
 
 Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
-a `_<key>_note` explaining what it is and what was measured to land on that value. No secrets in it.
+a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 84 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 233 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either.
