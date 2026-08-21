@@ -213,6 +213,28 @@ Recurring cost: **$0**. One-off cost: 229 lines change text, 9610 characters, **
 the season on ElevenLabs flash, $0.00 on piper. Without a `.speech.json` the key does nothing and
 the pipeline is byte-identical to the version before the gate existed.
 
+## The card a subtitle file shows twice
+
+`S03E04` of one release carries **16 pairs of cards with byte-identical timestamps AND
+byte-identical text**, plus 9 more whose spans overlap. The lektor read every one of those
+sentences a second time. The same test over all 10 017 Polish cards on this disk finds **zero** in
+the other seventeen episodes, so this is one bad authoring run rather than a property of the
+format – and the guard has to be narrow enough that those seventeen stay byte-identical.
+
+The test is the **overlap**, not the similarity, and that is the whole design. Dialogue repeats
+itself constantly and a lektor has to read it: "Roy Kent!" shouted by two different fans, a name
+asked and then confirmed. A first pass scoring text similarity flagged 23 pairs in the episode and
+half of them were real exchanges. Measured on the three clean episodes, **every genuine repetition
+sits 0.5 to 4.5 s apart and none overlaps at all, while every defective pair overlaps by 1.8 to
+4.9 s.** Two people cannot say the same sentence in the same instant; a grid showing the same words
+over one span is showing one line twice.
+
+It runs before merging, so a duplicate can never be folded INTO an utterance and read twice inside
+one breath, and before windows, so the survivor takes the union of both spans rather than losing
+the longer one. Verified on the episodes already rendered: 696 → 696, 666 → 666, 658 → 658, and
+**682 → 660**. `clean.drop_repeated_cards` switches it off; `clean.repeat_overlap_ms` widens the
+test past pure overlap and should stay at 0.
+
 ## The lektor waits for the actor
 
 A card goes up a median 73 ms before the first word is spoken, and that lead is working room, not
@@ -278,8 +300,19 @@ level hangs off it).
 
 `python3 wsl/lektor.py cost --plan creator` counts characters and prices them against the backend
 that is actually selected, before you spend anything. Local backends print $0.00 rather than a
-fake number. Rough shape for one Ted Lasso episode: ~18 500 characters of subtitles, ~370 utterances,
-condensed to ~14 700.
+fake number.
+
+Measured shape, seven episodes rendered end to end. Six of Ted Lasso S03: **666–787 utterances and
+18 139–22 285 characters** of finished lektor script per episode. One of Platonic S01, a sitcom
+that talks without pause: 596 utterances, 16 006 characters in 31 minutes.
+
+**The bill is a third to a half above that character count, and the `cost` estimate does not say
+so.** A line that overruns its window after synthesis is re-read at a corrected speed, and that
+second call is billed like any other: 244 to 348 lines an episode came back long and were bought
+twice. Against scripts of 16 006 to 22 285 characters the real bills were 23 703 to 28 511, i.e.
+**+28% to +48%, or $1.19 to $1.43 an episode** on flash rather than the $0.80–$1.11 the script
+alone prices at. On piper it is $0.00 either way, because the duration knob is exact and nothing is
+ever read twice.
 
 ElevenLabs bills a flat rate per 1000 characters, the same on every plan:
 
