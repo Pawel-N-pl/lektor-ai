@@ -142,15 +142,18 @@ działają, ale nie są już potrzebne: `lektor.py extract` i `mux` robią to sa
 
 ### Elementy opcjonalne
 
+Komendy do każdego z nich są w [docs/install.md](docs/install.md) – tu jest tylko to, czego
+wymagają i co przestaje działać bez nich.
+
 | co | jak | bez tego |
 |---|---|---|
 | **Piper** – domyślny silnik, darmowy, offline | `uv pip install --python .venv/bin/python piper-tts` | brak darmowej syntezy |
 | **ElevenLabs** | `ELEVENLABS_API_KEY` w `.env` | ten backend nie wystartuje |
 | **Skracanie tekstu** (OpenRouter) | `OPENROUTER_API_KEY` w `.env` | kwestie nie są skracane i lektor nie mieści się w oknach |
-| **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice`, ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
-| **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` | jak wyżej |
+| **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice` ([komendy](docs/install.md)), ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
+| **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` ([komendy](docs/install.md)) | jak wyżej |
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
-| **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv`, **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
+| **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv` ([komendy](docs/install.md)), **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
 
 ---
 
