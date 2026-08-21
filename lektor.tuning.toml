@@ -227,6 +227,14 @@ chars_per_second = 14.5
 max_borrow_ms = 1500
 
 gap_guard_ms = 120
+# Silence held on BOTH sides of a screen card - a shop sign, a chyron, a location caption. A card
+# is not part of the conversation, and read flush against the dialogue around it the lektor sounds
+# like he is answering the actor: S03E07 opens on five shop signs and they land as dialogue. The
+# pause is taken from the neighbours' borrowed window, which is silence on the timeline anyway, so
+# it costs a dialogue line nothing until the borrow runs out. A card that cannot have both pauses
+# and still be said is moved to the head of the next utterance instead, which pushes that line
+# back by the card plus one pause. Set 0 to place cards exactly as the subtitle timed them.
+card_pause_ms = 300
 safety = 0.96
 # Ceiling on voice_settings.speed. 1.2 is the API's own hard limit, verified: 1.25 comes back as
 # invalid_voice_settings, "expected to be greater or equal to...". This is the engine genuinely
@@ -1160,6 +1168,12 @@ delay_samples = 256
 # with the old timestamp-only rule a 7 s cap chopped 571 of 1926 candidate joins, and 87 of those
 # refusals landed mid-sentence - moving the hole rather than closing it.
 [clean]
+# Read a screen card once per episode, however many times it appears. A location caption or a shop
+# sign carries the same information every time it is shown - S03E07 of Ted Lasso puts "U OLA" up
+# three times and "SMAK ATEN" twice - and a lektor announcing it again is padding a viewer reads in
+# a glance. Dialogue is never deduplicated: a repeated LINE is nearly always meant, which is what
+# the narrow overlap rule in drop_repeated_cards exists to protect. Set false to read every card.
+dedupe_captions = true
 # A cue matching any of these never reaches the lektor at all. The note characters mark sung
 # lyrics, which a lektor does not read over - the song is the scene. The pattern deliberately
 # matches a note ANYWHERE, not the opening-and-closing pair it used to: '♪TRENERNATE -

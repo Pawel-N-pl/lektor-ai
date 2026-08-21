@@ -706,16 +706,27 @@ def stage_retime(cfg: Config, only: str | None) -> None:
         # Only the four fields the planner reads are rebuilt; everything else in the document is
         # left exactly as it was, because this stage must never rewrite a line's text.
         cues = [Cue(idx=c["id"], start_ms=c["start_ms"], end_ms=c["end_ms"], raw="",
-                    text=c["text"], window_ms=c["window_ms"], delay_ms=int(c.get("delay_ms", 0)))
+                    text=c["text"], window_ms=c["window_ms"], delay_ms=int(c.get("delay_ms", 0)),
+                    card_delay=bool(c.get("card_delay")))
                 for c in data["cues"]]
         before = sum(1 for c in cues if c.delay_ms)
         moved = plan_delays(cues, onsets, t, data.get("chars_per_second"))
         say(f"  {onsets.describe()}; {describe_delays(moved)}")
         say(f"  {describe_leads(lead_counts(cues, onsets))}")
 
+        # A delay the card pass placed is not the planner's to revise: it holds a screen card and
+        # the dialogue around it apart, and the planner only knows how to align a line to the actor
+        # who speaks it. A caption has no actor, so left to itself the planner would zero the gap
+        # and put the card back on top of the line it was moved away from.
         by_id = {c.idx: c.delay_ms for c in cues}
+        held = 0
         for c in data["cues"]:
+            if c.get("card_delay"):
+                held += 1
+                continue
             c["delay_ms"] = by_id.get(c["id"], 0)
+        if held:
+            say(f"  {held} opoznien wokol plansz zachowanych bez zmian")
         data["retimed_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
         tmp = path.with_suffix(f".{os.getpid():x}.tmp")
         tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -1437,6 +1437,8 @@ def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = Fals
                     # How much later than the card this line is spoken, because the actor had not
                     # started yet. The voice stage adds it to start_ms; nothing else moves.
                     "delay_ms": c.delay_ms,
+                    # Set by isolate_cards, not by the onset planner, so retime knows to leave it.
+                    "card_delay": c.card_delay,
                     "end_ms": c.end_ms,
                     "window_ms": c.window_ms,
                     "budget_chars": c.budget_chars,

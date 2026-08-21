@@ -35,6 +35,10 @@ class Cue:
     # How much later than its card this line is spoken, because the actor had not started yet.
     # Always >= 0: subtitles lead speech on purpose and a lektor is never moved earlier.
     delay_ms: int = 0
+    # This delay was placed by isolate_cards to keep a screen card and the dialogue around it from
+    # running into each other, NOT by the onset planner. Retime must leave it alone: the planner
+    # aligns a line to the actor who speaks it, and a caption has no actor to align to.
+    card_delay: bool = False
     # Ids of the cues folded into this one, empty when nothing was merged. Kept so the script file
     # can show what a line was assembled from.
     merged_from: list[int] = field(default_factory=list)
@@ -221,6 +225,56 @@ def compute_windows(cues: list[Cue], cfg) -> None:
         c.window_ms = c.duration_ms + borrow
 
 
+def isolate_cards(cues: list["Cue"], cfg) -> dict:
+    """Set every screen card apart with silence, and move it out of the way when it does not fit.
+
+    A card is not part of the conversation. Read flush against the dialogue it sits between, it
+    lands as though the lektor were answering the actor, which is how "SKLEP MIĘSNY" ended up
+    sounding like a line in the scene. So a card gets a pause on both sides, and the pause is taken
+    out of whatever has room to give it - the neighbour's borrowed window first, since that space
+    is silence on the timeline anyway.
+
+    When the card cannot have both pauses AND enough room to be said, its own slot is hopeless and
+    the card is moved to the head of the NEXT utterance instead: it is spoken immediately before
+    that line, with the pause after it, and the line itself is pushed back by exactly as much. That
+    is the ordering a lektor uses reading a sign that appears mid-scene - the sign first, a beat,
+    then the dialogue - and it is the only placement that costs the dialogue nothing but its start.
+
+    Returns what it did, for the stage to report.
+    """
+    t = cfg["timing"]
+    pause = int(t.get("card_pause_ms", 300))
+    fastest = float(t.get("max_speed", 1.2)) or 1.0
+    stats = {"padded": 0, "moved": 0, "cards": 0}
+    if pause <= 0:
+        return stats
+    for i, c in enumerate(cues):
+        if not is_screen_text(c):
+            continue
+        stats["cards"] += 1
+        prev = cues[i - 1] if i else None
+        nxt = cues[i + 1] if i + 1 < len(cues) else None
+        if prev:                       # silence BEFORE: stop the previous line short of the card
+            prev.window_ms = max(0, min(prev.window_ms, c.start_ms - prev.start_ms - pause))
+        if nxt:                        # silence AFTER: stop the card short of the next line
+            c.window_ms = max(0, min(c.window_ms, nxt.start_ms - c.start_ms - pause))
+        need = predicted_ms(c.text, t) / fastest
+        if c.window_ms >= need or not nxt:
+            stats["padded"] += 1
+            continue
+        # No room where the card sits. Speak it at the head of the next utterance instead, and
+        # push that utterance back by the card plus its pause. The card keeps its own card time as
+        # a floor, because a lektor may not announce a sign before it is on screen.
+        room = int(need + pause)
+        c.delay_ms = max(0, min(c.delay_ms, max(0, nxt.start_ms - room - c.start_ms)))
+        c.window_ms = int(need)
+        c.card_delay = True
+        nxt.delay_ms = max(nxt.delay_ms, room - max(0, nxt.start_ms - c.start_ms - c.delay_ms - int(need)))
+        nxt.card_delay = True
+        stats["moved"] += 1
+    return stats
+
+
 SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u00bb)\]]*\s*$")
 ELLIPSIS_END = re.compile(r"(\.\.\.|\u2026)[\"'\u201d\u00bb)\]]*\s*$")
 SPEAKER_DASH = re.compile(r"^\s*[-\u2013\u2014]\s*\S")
@@ -296,6 +350,34 @@ def is_screen_text(cue: "Cue") -> bool:
     if len(letters) < 4:
         return False
     return sum(1 for ch in letters if ch.isupper()) / len(letters) >= 0.8
+
+
+def drop_repeated_captions(cues: list["Cue"], cfg) -> tuple[list["Cue"], list[int]]:
+    """Read a CARD once. The same shop sign three times is not three pieces of information.
+
+    Different from drop_repeated_cards, which exists for one broken authoring run and only ever
+    looks at cards that OVERLAP. This is about the ordinary case: an episode returns to the same
+    location and the subtitle names it again. Ted Lasso S03E07 puts "U OLA" on screen three times
+    and "SMAK ATEN" twice; a viewer reads the sign again in a glance, a lektor announcing it again
+    is padding.
+
+    Only SCREEN TEXT is deduplicated, never dialogue. Dialogue repeats itself constantly and every
+    repetition is meant - a name asked and confirmed, a line shouted twice - which is exactly the
+    trap drop_repeated_cards documents. A caption carries no such intent: it is a label on a
+    place, and the second time it is the same label.
+    """
+    if not cfg["clean"].get("dedupe_captions", True):
+        return cues, []
+    kept, dropped, seen = [], [], set()
+    for c in cues:
+        if is_screen_text(c):
+            key = " ".join(c.text.lower().split())
+            if key in seen:
+                dropped.append(c.idx)
+                continue
+            seen.add(key)
+        kept.append(c)
+    return kept, dropped
 
 
 def initialisms(texts) -> set[str]:
@@ -524,6 +606,12 @@ def load_cues(path: Path, cfg, ev=None) -> list[Cue]:
             if caption_colour(c.raw):
                 c.screen_text = True
     cues, _ = drop_repeated_cards(cues, cfg)
+    # After the overlap guard and still before merging: a card dropped here must not have
+    # been folded into an utterance first, or the dedupe would silently eat dialogue.
+    cues, _ = drop_repeated_captions(cues, cfg)
     cues = merge_contiguous(cues, cfg, ev)
     compute_windows(cues, cfg)
+    # After windows, because it SPENDS window: the pauses around a card come out of the
+    # borrow its neighbours were given, and there is nothing to take until that exists.
+    isolate_cards(cues, cfg)
     return cues
