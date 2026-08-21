@@ -5,94 +5,120 @@
 # ELEVENLABS_API_KEY, OPENROUTER_API_KEY.
 
 [paths]
-# Set this on a single-platform install - Linux, macOS, or Windows without WSL - and it wins over
-# the pair below.
+# The directory holding the .mkv files. SET THIS ONE on Linux, macOS or Windows without WSL, and
+# ignore the two keys under it - a value here overrides both.
 input_dir = ''
+# Only for the split Windows+WSL setup, where both halves read this file: the same directory as
+# input_dir_wsl, spelled the Windows way. Unused when input_dir is set.
 input_dir_windows = 'E:\Filmy\NCIS.S23E01.1080p.WEB.h264-ETHEL'
+# The other half of that pair, spelled the Linux way. Nothing checks that the two name the same
+# directory.
 input_dir_wsl = '/mnt/e/Filmy/NCIS.S23E01.1080p.WEB.h264-ETHEL'
+# Where the working files go, relative to the episode directory: subtitles, the script you edit,
+# the finished audio.
 work_subdir = '_lektor'
+# Where the remuxed .mkv lands, relative to the episode directory.
 output_subdir = '_lektor/output'
+# Only for the PowerShell half of the split setup. The Python half never uses it - it cannot open
+# POSIX paths.
 ffmpeg_windows = 'C:\Programy\ffmpeg\bin\ffmpeg.exe'
+# As above, for ffprobe.
 ffprobe_windows = 'C:\Programy\ffmpeg\bin\ffprobe.exe'
+# The ffmpeg to run. A bare name is enough when it is on PATH, which is what apt, brew and winget
+# all give you.
 ffmpeg_wsl = 'ffmpeg'
+# As above, for ffprobe.
 ffprobe_wsl = 'ffprobe'
 
 [extract]
+# ISO 639-2 code of the subtitle track to pull out: 'pol' for Polish. Matched on the track's
+# language TAG, never on its number.
 subtitle_language = 'pol'
 
 [script]
-# Measured on 210 overflowing cues from one real episode, whole-episode prompt, effort medium.
+# The model that shortens lines too long for their slot. Draws twice, then hands over to
+# fallback_model.
 openrouter_model = 'openai/gpt-5.6-luna'
-# Used when openrouter_model has burned every re-roll and still missed accept_fit_ratio.
+# Taken up when the model above misses the fit threshold on both draws. Empty string disables
+# escalation entirely.
 fallback_model = 'openai/gpt-5.6-luna-pro'
 
 [speech]
-# Which forced aligner to use: 'docker' hands the script to the container named below, 'local'
-# runs the very same script with the interpreter in aligner_venv, and 'auto' picks local when that
-# venv exists and docker otherwise.
+# Where forced alignment runs: 'local' in aligner_venv, 'docker' in a container, 'auto' for local
+# when that venv exists and docker otherwise.
 aligner = 'auto'
-# A venv with torch and torchaudio and nothing else; the aligner needs no other dependency.
+# A venv with torch and torchaudio, nothing else. Leave empty to use the container instead. With
+# neither, the stage keeps the shot cuts and drops the word timings.
 aligner_venv = ''
 
 [voice]
-# elevenlabs | piper | chatterbox.
+# Which engine speaks: elevenlabs, piper, chatterbox, omnivoice or kikivoice. piper is free,
+# offline and the default recommendation.
 backend = 'elevenlabs'
 
 [voice.kikivoice]
-# Fallback only, and it stays for standalone runs from the kikivoice checkout: kikivoice_client.py
-# and kikivoice_batch.py are now copied next to backends/kikivoice.py, so the relative import wins
-# and this path is never put on sys.path.
+# Where the kikivoice checkout lives. A fallback only - the client is copied into the package
+# beside the backend.
 client_dir = '/home/pawel/projects/kikivoice'
-# library = a ready voice from the kikivoice catalogue (credit_rate 1.0); clone = a voice cloned
-# from our own sample (kiki_core, 2.0x).
+# 'clone' speaks with the sample below; 'library' speaks with a catalogue voice named by
+# voice_code and voice_id.
 mode = 'clone'
+# Catalogue voice. Read only when mode = 'library'.
 voice_code = 'S089'
-# Used only when mode=library.
+# The same catalogue voice's id. Read only when mode = 'library'.
 voice_id = 'standard_30002'
-# kiki_core: 34 languages including Polish, max_text_length 1000, credit_rate 2.0, no emotions.
+# Which kikivoice model speaks. kiki_core covers Polish; this also decides the credit rate per
+# character.
 model_type = 'kiki_core'
 
 [voice.kikivoice.clone]
-# Our own reference recording, 6.7 s.
+# The recording the voice is cloned from, uploaded to the server once a day. 5 to 120 s, any
+# format ffmpeg reads. Changing it invalidates every cached line of that voice.
 sample_path = '/home/pawel/projects/kikivoice/Maciej Gudowski - próbka głosu (128kbit_AAC).m4a'
 
 [voice.elevenlabs]
-# Public library voice, not in the account collection: /v1/voices/{id} answers voice_not_found
-# while /v1/text-to-speech/{id} answers 200, so it is usable but cannot be listed.
+# The ElevenLabs voice. Changing it calls for a re-calibration and a re-measured presence shelf -
+# see the same key in the tuning file.
 voice_id = 'Ix8C14HEHgIQkJswik2o'
-# eleven_flash_v2_5 is flat, cheap ($0.05/1000 chars) and gets 2x the concurrency;
-# eleven_multilingual_v2 and eleven_v3 are warmer at $0.10/1000 chars.
+# Which ElevenLabs model reads. flash and turbo cost half of the rest and get twice the
+# concurrency.
 model_id = 'eleven_flash_v2_5'
 
 [voice.piper]
-# Downloaded from rhasspy/piper-voices on first use.
+# Piper voice, downloaded into the cache on first use. pl_PL-darkman-medium is the flat male one
+# this project reads as a lektor.
 voice = 'pl_PL-darkman-medium'
 
 [voice.omnivoice]
-# Python 3.11 venv with torch and omnivoice (pip install omnivoice).
+# A venv with torch and omnivoice. The model is held by a worker launched from it, so the pipeline
+# itself never imports torch.
 venv = '/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice'
-# The voice to clone, 3-10 s per upstream; longer slows inference and can degrade the clone.
+# A 3 to 10 s recording to clone the voice from. Shorter is both faster and a better clone - 5.2 s
+# measured 1.5x faster than 7.8 s.
 reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/szolajski.ref.wav'
-# Polish is entry 461 of 646 in the model's language table with 911.68 hours of training data -
-# solid, though far from the English tier.
+# Language code OmniVoice reads the text as. 'pl' for Polish.
 language = 'pl'
 
 [voice.chatterbox]
-# python 3.11 with torch and chatterbox already installed.
+# A venv with torch and chatterbox, spoken to the same way as omnivoice's.
 venv = '/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox'
-# Language tag for the multilingual model, passed straight to generate().
+# Language code Chatterbox reads the text as.
 language_id = 'pl'
-# Voice cloning reference; empty means the model's builtin speaker.
+# An 8 to 20 s recording to clone from. Empty means the model's own built-in voice.
 reference_wav = ''
 
 [mix]
-# Layout of the finished track: '5.1(side)' or 'stereo'.
+# '5.1(side)' puts the lektor on the centre channel and leaves the film's surround alone. 'stereo'
+# folds it into both speakers.
 channel_layout = '5.1(side)'
+# A final nudge to the lektor's level in dB, applied after everything else. This is the taste
+# knob.
 voice_trim_db = 1.5
-# How far the lektor sits above the film's dialogue.
+# How far above the film's OWN DIALOGUE the lektor sits, in LU. The main loudness setting; 6 to 7
+# is the useful range.
 voice_over_dialogue_lu = 6.0
 
 [clean]
-# ON as 'both', and the note below is the argument for the opposite - read both before changing
-# it, because the file and its note disagreed for three days.
+# Which evidence may refuse joining two cards into one breath: 'pause', 'cut', 'both', or 'off' to
+# join on the text rules alone.
 merge_gate = 'both'
