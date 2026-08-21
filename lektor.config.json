@@ -1,8 +1,8 @@
 {
   "_comment": "Shared config for both halves of the pipeline. Secrets live in env vars or in the project .env, never here: ELEVENLABS_API_KEY, OPENROUTER_API_KEY.",
   "paths": {
-    "input_dir_windows": "E:\\Filmy\\Platonic.S01.PLSUB.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H264-SLiM",
-    "input_dir_wsl": "/mnt/e/Filmy/Platonic.S01.PLSUB.1080p.ATVP.WEB-DL.DDP5.1.Atmos.H264-SLiM",
+    "input_dir_windows": "E:\\Filmy\\NCIS.S23E01.1080p.WEB.h264-ETHEL",
+    "input_dir_wsl": "/mnt/e/Filmy/NCIS.S23E01.1080p.WEB.h264-ETHEL",
     "work_subdir": "_lektor",
     "output_subdir": "_lektor/output",
     "ffmpeg_windows": "C:\\Programy\\ffmpeg\\bin\\ffmpeg.exe",
@@ -190,6 +190,30 @@
       "concurrency": 14,
       "_concurrency_note": "Worker threads over one shared session, measured: 4 -> 20.6 cues/s, 8 -> 30.1, 12 -> 34.7, 14 -> ~35, 16 -> 35.2, 20 -> 32.6. It plateaus at the core count and degrades past it. Capped at 14 of the machine's 16 by owner rule - other containers share this WSL instance and must keep a core - which costs about 1% against the 16 the curve peaks at. Parallel output was verified bit-for-bit identical to serial."
     },
+    "omnivoice": {
+      "venv": "/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice",
+      "_venv_note": "Python 3.11 venv with torch and omnivoice (pip install omnivoice). The model is held by a worker subprocess launched from it and spoken to over a JSON pipe, so the pipeline itself never imports torch.",
+      "model": "k2-fsa/OmniVoice",
+      "reference_wav": "/home/pawel/.cache/lektor-ai-omnivoice/gudowski.ref.wav",
+      "_reference_wav_note": "The voice to clone, 3-10 s per upstream; longer slows inference and can degrade the clone. Kept outside the repo on purpose - it is a recording of a real person, not source code. This one is 6.0 s of Maciej Gudowski, high-passed at 60 Hz and trimmed, mono 24 kHz.",
+      "language": "pl",
+      "_language_note": "Polish is entry 461 of 646 in the model's language table with 911.68 hours of training data - solid, though far from the English tier.",
+      "dtype": "bfloat16",
+      "num_step": 32,
+      "_num_step_note": "Diffusion steps. Upstream offers 16 for faster inference; 32 is the default and what every measurement in the backend docstring was taken at. Changing it changes the waveform and therefore every cache key.",
+      "seed": 1234,
+      "duration_pad_ms": 200.0,
+      "_duration_pad_note": "Subtracted from the window before it is asked for, because the model appends a constant tail of silence. Measured on this voice: under compression the raw clip came back at exactly target + 200 ms, six times out of six, zero variance, whatever the line and whatever the ratio. Trimming it afterwards leaves a median error of 55 ms - inside the 60 ms piper binary-searches for. Re-measure if the reference clip or num_step changes.",
+      "duration_floor_ms": 400.0,
+      "_duration_floor_note": "Never ask for less than this however tight the card. A sub-400 ms ask on a real sentence produces a scramble, and the mix already tolerates a line running into the following gap.",
+      "max_retries": 3,
+      "min_audio_s": 0.05,
+      "_max_retries_note": "An empty take is re-rolled on a fresh seed and never cached. Not hypothetical: on a 60 s slice 1 of 23 lines came back as a zero-length array for an ordinary short line, and re-running nine such lines twice each reproduced it zero times - so it is the sampler, not the text. At that rate an episode would silently lose about thirty lines with nothing but one word in the clip report to show for it.",
+      "load_timeout_s": 900,
+      "render_timeout_s": 300,
+      "concurrency": 1,
+      "_concurrency_note": "Fixed at 1 by the backend whatever this says: one model, one GPU, one worker, one pipe."
+    },
     "chatterbox": {
       "venv": "/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox",
       "_venv_note": "python 3.11 with torch and chatterbox already installed. Reuse it; do not reinstall. The pipeline itself runs on python 3.13 and has no torch, so the model is held by a worker subprocess launched from this venv and spoken to over a JSON pipe.",
@@ -304,9 +328,13 @@
   },
   "clean": {
     "skip_patterns": [
-      "[♪♫]",
-      "^\\s*$"
+      "[\u266a\u266b]",
+      "^\\s*$",
+      "(?i)napisy24",
+      "\\.::.*::\\.",
+      "(?m)^\\s*(?:<[^>]*>)?\\s*(?:T\u0142umaczenie|Synchronizacja|Synchro|Korekta)\\s*(?:</[^>]*>)?\\s*$"
     ],
+    "_skip_patterns_note": "A card matching any of these is dropped before it is cleaned. The last three are fansub credits, which an official track never carries and a lektor would otherwise read out loud: NCIS.S23E01 from Napisy24 puts the translator's nick on cards 64 and 836 and a site banner on 837. They are deliberately narrow. The credit test is a line that consists of NOTHING but the word, after tags are allowed for - because the same episode has card 509, \"Co t\u0142umaczy Parkera?\", which is dialogue, and a bare \\btlumacz\\b would have eaten it.",
     "strip_patterns": [
       "<[^>]+>",
       "\\{[^}]+\\}",

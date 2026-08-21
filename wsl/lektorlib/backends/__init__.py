@@ -10,7 +10,7 @@ from .base import Backend, Rendered, Utterance
 
 __all__ = ["Backend", "Rendered", "Utterance", "get_backend", "BACKEND_NAMES"]
 
-BACKEND_NAMES = ("elevenlabs", "piper", "chatterbox")
+BACKEND_NAMES = ("elevenlabs", "piper", "chatterbox", "omnivoice")
 
 
 def get_backend(name: str, cfg) -> Backend:
@@ -27,4 +27,8 @@ def get_backend(name: str, cfg) -> Backend:
         from .chatterbox import ChatterboxBackend
 
         return ChatterboxBackend(cfg)
+    if key == "omnivoice":
+        from .omnivoice import OmniVoiceBackend
+
+        return OmniVoiceBackend(cfg)
     raise ValueError(f"unknown voice backend {name!r} -- pick one of {', '.join(BACKEND_NAMES)}")
