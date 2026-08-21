@@ -81,9 +81,25 @@ To nie są napisy. Nie ograniczasz się do tego, co widz zdąży przeczytać wzr
 się do czasu, który postać naprawdę miała na ekranie.
 
 SKALA SKRACANIA
-Zawodowo opracowana lista lektorska jest o mniej więcej jedną trzecią krótsza od oryginalnych
-dialogów. Jeśli twoja wersja jest tylko odrobinę krótsza od wejścia, nie wykonałeś zadania.
-Limit z >>> SKROC DO N ZNAKOW <<< jest twardy. Zmieścić się to zadanie numer jeden.
+Limit z >>> SKROC DO N ZNAKOW <<< jest twardy i jest JEDYNYM powodem, dla którego skracasz.
+Tniesz dokładnie tyle, ile trzeba, żeby się w nim zmieścić – ani słowa więcej. Kwestia, która
+mieści się w limicie po wyrzuceniu samego wołacza, ma stracić wołacz i nic poza tym.
+NIE MASZ NORMY SKRÓTU. Nie ma progu procentowego, który trzeba osiągnąć. Wersja krótsza od
+wejścia o dwa znaki jest poprawna, jeśli te dwa znaki wystarczyły.
+Jeżeli kwestia mieści się w limicie bez żadnej zmiany, zwracasz ją DOSŁOWNIE tak, jak ją
+dostałeś. Przepisanie jej "lepiej" jest błędem: kosztuje, psuje spójność z resztą odcinka
+i niczego nie załatwia.
+
+KAŻDA ZWRÓCONA KWESTIA STOI SAMA
+Widz słyszy jedną kwestię naraz, bez dostępu do sąsiednich kart. Każda zwrócona kwestia musi
+więc być skończoną, wymawialną całością – zdaniem albo równoważnikiem, który da się przeczytać
+i zrozumieć bez tego, co stoi obok.
+NIGDY nie kończysz kwestii na przymiotniku, liczebniku, przyimku ani zaimku, który czeka na
+swój rzeczownik. "rodziny przestępczej Środkowego" to nie jest skrót – to urwany ogon, po
+którym lektor milknie w połowie myśli. Jeśli określenie nie mieści się w całości, wyrzucasz je
+RAZEM z tym, co określa, i zostawiasz krótszą, ale zamkniętą wersję.
+Jeżeli kwestia na wejściu sama jest urwanym fragmentem zdania z sąsiedniej karty, twoim
+zadaniem jest zwrócić z niej to, co się broni samodzielnie – nie przepisać urwania.
 
 CO WYRZUCASZ, W TEJ KOLEJNOŚCI
 1. Wołacze i zwroty adresatywne, gdy są tylko wołaczem: "Ted, chodź tu" -> "Chodź tu".
@@ -107,6 +123,26 @@ CZEGO NIE WOLNO WYRZUCIĆ
 - Imienia i nazwy własnej, kiedy są INFORMACJĄ, a nie wołaczem: gdy przedstawiają nową postać,
   gdy mowa o kimś spoza kadru, gdy bez nich nie wiadomo, o kogo albo o co chodzi.
 - Rzeczy powiedzianej pierwszy raz, choćby wyglądała na drobiazg – widz nie ma jej skąd wziąć.
+
+RODZAJ GRAMATYCZNY: NIE DOPOWIADASZ TEGO, CZEGO NIE MOŻESZ WIEDZIEĆ
+Masz sam tekst, bez obrazu. Nie wiesz, jakiej płci jest rozmówca ani osoba, o której mowa.
+Polszczyzna pozwala mówić bezrodzajowo i oryginał bardzo często właśnie tak mówi.
+NIGDY nie zamieniasz formy bezrodzajowej na rodzajową. Jeśli wejście nie rozstrzyga płci,
+wyjście też nie może jej rozstrzygać.
+- Bezrodzajowe, więc bezpieczne: czas teraźniejszy ("robisz"), przyszły ("zrobisz",
+  "będziesz robić"), tryb rozkazujący ("zrób"), bezokolicznik, formy bezosobowe ("trzeba",
+  "można", "należy", "zrobiono").
+- Rodzajowe, więc niebezpieczne: czas przeszły ("zrobił" / "zrobiła"), tryb przypuszczający
+  ("żebyś zrobił" / "żebyś zrobiła"), imiesłowy ("zmęczony" / "zmęczona"), przymiotniki
+  i orzeczniki odnoszące się do rozmówcy ("jesteś pewien" / "jesteś pewna").
+- Błąd, dla którego ta reguła powstała: "żeby to była ostatnia rzecz, jaką zrobisz" nie
+  wskazuje płci; skrót "byś tego nie przeżył" wskazuje mężczyznę. Kwestia leciała do kobiety,
+  więc wersja lektorska skłamała - a z samego tekstu nikt tego nie wyłapie.
+- Kiedy krótszy wariant wymagałby rodzaju, wybierasz dłuższy bezrodzajowy albo tniesz w innym
+  miejscu kwestii. Limit znaków nie jest usprawiedliwieniem dla zgadywania płci.
+Jeśli wejście JEST rodzajowe, zostawiasz dokładnie ten sam rodzaj. Nie odwracasz go, nie
+"poprawiasz" i nie ujednolicasz. Tak samo nie zmieniasz osoby ani liczby: "wy" nie staje się
+"ty", a "pan" nie staje się "pani".
 
 KTO DO KOGO MÓWI
 Największa wada wersji lektorskiej jest taka, że widz gubi, kto mówi. Nie pogarszaj tego.
@@ -188,8 +224,9 @@ NAZWY WŁASNE
   lepiej "odznaczenie" niż niezrozumiała kalka. Nie dopisujesz objaśnień – nie ma na nie czasu.
 
 KOLEJNOŚĆ WAŻNOŚCI, GDY TRZEBA WYBIERAĆ
-(1) zmieścić się w limicie, (2) pełne słowa bez skrótów, (3) informacja fabularna i liczby,
-(4) jak najwięcej reszty sensu. Krótka, uboższa, ale poprawna i zrozumiała kwestia jest lepsza
+(1) zmieścić się w limicie, (2) pełne słowa bez skrótów, (3) kwestia zamknięta, nieurwana,
+(4) informacja fabularna i liczby, (5) jak najwięcej reszty sensu, (6) jak najmniejsza zmiana
+wobec wejścia. Krótka, uboższa, ale poprawna i zrozumiała kwestia jest lepsza
 niż bogata, która się nie mieści.
 
 Odpowiadasz wyłącznie obiektem JSON: {"cues":[{"id":<int>,"text":"<skrócona kwestia>"}]}"""
@@ -433,6 +470,12 @@ class SchemaRejected(CondenseError):
 class CallStats:
     purpose: str
     response_format: str
+    # Which model was actually billed. Not decorative: the run record used to attribute every call
+    # to the PRIMARY model, so an escalation was invisible in it. On one episode that hid the
+    # entire story - the account was charged $0.5926, of which the escalation to gpt-5.6-terra was
+    # $0.4668 across four calls (79%) while the five draws from the cheap model came to $0.1258.
+    # The only place that split could be read was the provider's own dashboard.
+    model: str = ""
     cost: float = 0.0
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -442,6 +485,7 @@ class CallStats:
     def as_dict(self) -> dict:
         return {
             "purpose": self.purpose,
+            "model": self.model,
             "response_format": self.response_format,
             "usd": round(self.cost, 6),
             "prompt_tokens": self.prompt_tokens,
@@ -494,6 +538,14 @@ def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format
     # endpoints where the client-side validation below earns its keep.
     if s.get("temperature") is not None:
         body["temperature"] = float(s["temperature"])
+    # A re-roll has to be a different DRAW, and without this it is not one. Every retry sent a
+    # byte-identical request - same model, same messages, same temperature, same effort - and got
+    # a byte-identical reply back: measured on one episode, three consecutive re-rolls each scored
+    # 240/413, to the cue. Four draws were paid for and one was received. Varying the seed keeps
+    # the temperature that was tuned for counting characters (0.3, measured at 206/210 against
+    # 92/210 at the default) and changes only the sampling path.
+    if s.get("seed") is not None:
+        body["seed"] = int(s["seed"])
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -557,6 +609,8 @@ def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format
         usage = payload.get("usage") or {}
         stats = CallStats(
             purpose=purpose,
+            # What the provider says it served, falling back to what we asked for.
+            model=str(payload.get("model") or s["openrouter_model"]),
             response_format=fmt,
             # usage.cost is what the account was actually charged. Recomputing it from token prices
             # would miss reasoning tokens, which bill as output and are mandatory on some models.
@@ -720,15 +774,29 @@ def condense_episode(cues, target_ids: set[int], cfg: Config, api_key: str) -> C
     # plus an escalation over two lines is throwing money at a lottery it cannot win.
     rerolls = min(rerolls, max(1, len(budgets)))
     attempts = 0
+    previous = None
     for attempt in range(rerolls + 1):
-        out = _condense_once(cues, target_ids, cfg, api_key)
+        # A distinct seed per attempt, so a re-roll is a re-roll. Derived from the attempt index
+        # alone: the draw has to differ from the LAST one, not be unpredictable.
+        draw = cfg if attempt == 0 else _ScriptOverride(
+            cfg, dict(cfg.raw["script"], seed=1000 + attempt))
+        out = _condense_once(cues, target_ids, cfg if attempt == 0 else draw, api_key)
         attempts += 1
         spent.extend(out.calls)
-        if best is None or fits(out) > fits(best):
+        this = fits(out)
+        if best is None or this > fits(best):
             best = out
         got = fits(best)
         if got >= need or out.error or attempt == rerolls:
             break
+        # If the endpoint ignores the seed, the ladder is buying nothing and the escalation below
+        # is the only thing left that can help. Rolling three more times to find that out costs a
+        # whole-episode prompt each time.
+        if previous is not None and this == previous:
+            say(f"  re-roll {attempt + 1}/{rerolls}: {this}/{len(budgets)} again, identical to the "
+                f"previous draw - the seed is not changing the result, so escalating now")
+            break
+        previous = this
         say(f"  re-roll {attempt + 1}/{rerolls}: {got}/{len(budgets)} inside budget, "
             f"below the {need} needed")
 

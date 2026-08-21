@@ -108,3 +108,108 @@ class TestMerge(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# -- the wide band: seams the tight threshold cannot reach --------------------
+
+WIDE_CFG = {"clean": {"merge_gap_ms": 140, "merge_gap_wide_ms": 250, "merge_max_cues": 4,
+                      "merge_max_chars": 160, "merge_max_span_ms": 9000,
+                      "drop_repeated_cards": False}}
+
+
+def _cue(idx, start, end, text):
+    from lektorlib.srt import Cue
+    return Cue(idx=idx, start_ms=start, end_ms=end, raw=text, text=text)
+
+
+def test_a_lowercase_continuation_four_frames_away_is_joined():
+    """Verbatim from NCIS S23E01, cards 2 and 3: one sentence, 166 ms apart, which is exactly four
+    frames at 23.976 fps. The tight 140 ms threshold refused it and the condenser then shortened
+    each half alone, leaving "rodziny przestępczej Środkowego" - a stranded fragment the lektor
+    read and stopped."""
+    from lektorlib.srt import merge_contiguous
+    cues = [_cue(2, 7123, 9459, "Carla Marino, matriarcha największej"),
+            _cue(3, 9625, 11836, "zorganizowanej rodziny przestępczej na Środkowym Zachodzie.")]
+    out = merge_contiguous(cues, WIDE_CFG)
+    assert len(out) == 1
+    assert out[0].text.startswith("Carla Marino, matriarcha największej zorganizowanej")
+
+
+def test_the_wide_band_refuses_a_capitalised_opener():
+    """The regression that widening the threshold outright caused: the recap title card glued onto
+    the sentence after it. Both are four frames apart and neither carries a full stop, so only the
+    capital letter distinguishes a new sentence from a continuation."""
+    from lektorlib.srt import merge_contiguous
+    cues = [_cue(1, 4954, 6956, "Poprzednio w NCIS"),
+            _cue(2, 7123, 9459, "Carla Marino, matriarcha największej")]
+    out = merge_contiguous(cues, WIDE_CFG)
+    assert len(out) == 2
+
+
+def test_the_tight_band_is_untouched_by_the_wide_one():
+    """A seam inside the original threshold joins on the old rules, capital letter or not - so no
+    release that merged before merges differently now."""
+    from lektorlib.srt import merge_contiguous
+    cues = [_cue(1, 0, 2000, "Powiedział mi wtedy"),
+            _cue(2, 2083, 4000, "Coś, czego nie zapomnę.")]
+    assert len(merge_contiguous(cues, WIDE_CFG)) == 1
+
+
+def test_nothing_joins_past_the_wide_band():
+    from lektorlib.srt import merge_contiguous
+    cues = [_cue(1, 0, 2000, "Powiedział mi wtedy"),
+            _cue(2, 2400, 4000, "coś, czego nie zapomnę.")]
+    assert len(merge_contiguous(cues, WIDE_CFG)) == 2
+
+
+# -- captions by colour, and the limits of that signal ------------------------
+
+COLOUR_CFG = {"clean": {"merge_gap_ms": 140, "merge_gap_wide_ms": 250, "merge_max_cues": 4,
+                        "merge_max_chars": 160, "merge_max_span_ms": 9000,
+                        "drop_repeated_cards": False, "caption_colour_max_share": 0.10}}
+
+
+def _raw_cue(idx, start, end, raw, text):
+    from lektorlib.srt import Cue
+    return Cue(idx=idx, start_ms=start, end_ms=end, raw=raw, text=text)
+
+
+def test_a_coloured_caption_is_not_glued_to_the_dialogue_after_it():
+    """Verbatim from NCIS S23E01: a location caption, the dialogue under it, then the second half
+    of the same caption. Merged, the lektor said "Filadelfia" twice inside one breath."""
+    from lektorlib.srt import colour_marks_captions, caption_colour, merge_contiguous
+    cues = [_raw_cue(26, 68142, 68935, "<font color=#FFc30f>Filadelfia</font>", "Filadelfia"),
+            _raw_cue(27, 68935, 70561, "Prezydent Carter ogłosił...", "Prezydent Carter ogłosił..."),
+            _raw_cue(28, 70561, 72355, "<font color=#FFc30f>Filadelfia</font>\n"
+                                       "<font color=#FFc30f>1977</font>", "Filadelfia 1977")]
+    cues += [_raw_cue(100 + i, 100000 + i * 2000, 101000 + i * 2000, "Zwykly dialog.",
+                      "Zwykly dialog.") for i in range(40)]
+    assert colour_marks_captions(cues, COLOUR_CFG)
+    for c in cues:
+        if caption_colour(c.raw):
+            c.screen_text = True
+    out = merge_contiguous(cues[:3], COLOUR_CFG)
+    assert len(out) == 3
+
+
+def test_white_is_not_a_caption_colour():
+    """White is what a subtitle already is, so painting a line white states nothing."""
+    from lektorlib.srt import caption_colour
+    assert caption_colour('<font color=#FFFFFF>Zwykly dialog.</font>') == ""
+    assert caption_colour('<font color="white">Zwykly dialog.</font>') == ""
+    assert caption_colour("<font color=#FFc30f>Filadelfia</font>") == "#ffc30f"
+
+
+def test_the_rule_disqualifies_itself_when_the_whole_file_is_painted():
+    """A release that colours every line carries the markup with none of the meaning. Reading it
+    as caption evidence there would refuse every merge in the file."""
+    from lektorlib.srt import colour_marks_captions
+    painted = [_raw_cue(i, i * 1000, i * 1000 + 900,
+                        f"<font color=#00FF00>Linia {i}.</font>", f"Linia {i}.") for i in range(40)]
+    assert not colour_marks_captions(painted, COLOUR_CFG)
+
+
+def test_a_file_with_no_colour_at_all_is_untouched():
+    from lektorlib.srt import colour_marks_captions
+    plain = [_raw_cue(i, i * 1000, i * 1000 + 900, f"Linia {i}.", f"Linia {i}.") for i in range(40)]
+    assert not colour_marks_captions(plain, COLOUR_CFG)

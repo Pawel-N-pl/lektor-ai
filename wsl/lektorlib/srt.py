@@ -41,6 +41,9 @@ class Cue:
     # Set only for merged cues, built from the cleaned parts rather than by re-cleaning the
     # joined raw, which would run the whitespace rules across the join.
     text_original: str = ""
+    # Decided per FILE rather than per card: whether this one is a caption. None until load_cues
+    # has looked at how the whole file uses colour. See colour_marks_captions.
+    screen_text: bool | None = None
 
     @property
     def duration_ms(self) -> int:
@@ -223,13 +226,72 @@ ELLIPSIS_END = re.compile(r"(\.\.\.|\u2026)[\"'\u201d\u00bb)\]]*\s*$")
 SPEAKER_DASH = re.compile(r"^\s*[-\u2013\u2014]\s*\S")
 
 
+# A fansub sets its captions in COLOUR. Measured on the one such release here: of eight cards
+# carrying a colour-bearing font tag, every single one is a caption, a title card or the
+# translator's credit, and not one is dialogue - the recap title, two location captions, the
+# series and episode titles, a "to be continued" and two credits. Dialogue in the same file is
+# never coloured.
+_COLOUR_TAG = re.compile(r"<font[^>]*\bcolor\s*=\s*[\"']?(#?[0-9a-z]+)", re.I)
+
+# White is what a subtitle already is, so painting a line white says nothing about it. Only a
+# colour that DEPARTS from the default marks a caption, and a file that colours its dialogue white
+# would otherwise have every card called a caption and merging switched off wholesale.
+_DEFAULT_COLOURS = frozenset({"#ffffff", "ffffff", "#fff", "fff", "white"})
+
+
+def caption_colour(raw: str) -> str:
+    """The first non-default font colour on a card, or "" when it carries none."""
+    for m in _COLOUR_TAG.finditer(raw or ""):
+        value = m.group(1).strip().lower()
+        if value not in _DEFAULT_COLOURS:
+            return value
+    return ""
+
+
+def colour_marks_captions(cues: list["Cue"], cfg) -> bool:
+    """Does colour carry caption meaning IN THIS FILE, or is it just how the file is painted?
+
+    The signal only works while it is a minority convention. Measured on the one fansub here, 8 of
+    834 cards carry a non-default colour - the recap title, two location captions, the series and
+    episode titles, a to-be-continued and two translator credits - and not one of them is dialogue,
+    so colour separates caption from speech perfectly. A release that paints every line, or every
+    italic, would carry the same markup with none of the meaning, and reading it as caption
+    evidence there would refuse every merge in the file.
+
+    So the rule disqualifies itself above `clean.caption_colour_max_share`: past that point colour
+    is a property of the authoring tool rather than a statement about the card - the same argument
+    the merge gate makes about contiguity.
+    """
+    if not cues:
+        return False
+    share = sum(1 for c in cues if caption_colour(c.raw)) / len(cues)
+    limit = float(cfg["clean"].get("caption_colour_max_share", 0.10))
+    return 0 < share <= limit
+
+
 def is_screen_text(cue: "Cue") -> bool:
     """A title card, chyron or sign rather than something a person says.
 
-    Subtitles set these in capitals. They are their own utterance and must never be glued to
-    dialogue: merging produced lines like a commentator's sentence running straight into the show's
-    title card, and in two cases a sentence ENDING on a screen graphic.
+    Two conventions, because one of them alone missed a whole class of card.
+
+    The first is CAPITALS, which is how official subtitles set a caption. The second is COLOUR,
+    which is how a fansub sets one - and that signal survives only in `cue.raw`, because
+    clean_text strips the markup before anything else looks at the line. Reading the cleaned text
+    alone therefore threw the evidence away, and the cost was measured twice: the recap title
+    "Poprzednio w NCIS" (33 % capitals, so not a caption by the first rule) was glued onto the
+    sentence after it, and the location caption "Filadelfia" was glued to the dialogue that
+    followed AND to the second half of its own caption two seconds later, so the lektor said
+    "Filadelfia" twice inside one breath.
+
+    These are their own utterance and must never be joined to dialogue: merging produced lines like
+    a commentator's sentence running straight into the show's title card, and in two cases a
+    sentence ENDING on a screen graphic. The card is still READ - a location caption is exactly the
+    sort of on-screen text a lektor voices - it simply stands alone.
     """
+    # Set once per file by load_cues, which is the only place that can see whether colour is a
+    # minority convention here. None means nobody asked the question, so fall through to capitals.
+    if cue.screen_text is not None:
+        return cue.screen_text
     letters = [ch for ch in cue.text if ch.isalpha()]
     if len(letters) < 4:
         return False
@@ -325,6 +387,20 @@ def merge_contiguous(cues: list[Cue], cfg, ev=None) -> list[Cue]:
     gap_ms = float(m.get("merge_gap_ms", 0.0))
     if gap_ms <= 0 or not cues:
         return cues
+    # A second, wider band for seams the tight threshold cannot reach. The tight one is a fact
+    # about ONE authoring tool: measured against the frame grid, a 23.976 fps fansub spaces cards
+    # at exact frame multiples - 83 ms (2 frames), 125 ms (3), 167 ms (4), 208 ms (5) - while the
+    # ATVP releases this was tuned on butt 427 of their cards at exactly 0 ms. A constant of 140
+    # therefore falls arbitrarily between three frames and four, and every seam its author happened
+    # to space at four frames is refused because of where a number landed rather than because
+    # anybody paused.
+    #
+    # Widening it outright is wrong, though: it glued the recap title card "Poprzednio w NCIS"
+    # onto the sentence after it, four frames away, because that card carries no full stop and
+    # is_screen_text only recognises the ALL-CAPS convention. So the wide band demands the stronger
+    # evidence instead - the next card must OPEN IN LOWER CASE, which a continuation does and a new
+    # sentence does not. Inside the tight band nothing changes at all, so no existing render moves.
+    wide_ms = max(gap_ms, float(m.get("merge_gap_wide_ms", 0.0)))
     max_cues = int(m.get("merge_max_cues", 4))
     max_chars = int(m.get("merge_max_chars", 160))
     max_span_ms = int(m.get("merge_max_span_ms", 9000))
@@ -347,8 +423,10 @@ def merge_contiguous(cues: list[Cue], cfg, ev=None) -> list[Cue]:
         out.append(merged)
 
     for prev, cur in zip(cues, cues[1:]):
+        seam = cur.start_ms - prev.end_ms
+        first = next((ch for ch in cur.text if ch.isalpha()), "")
         joinable = (
-            cur.start_ms - prev.end_ms <= gap_ms
+            (seam <= gap_ms or (seam <= wide_ms and first.islower()))
             and continues_sentence(prev, cur, ev)
             and len(group) < max_cues
             and len(" ".join(c.text for c in group)) + 1 + len(cur.text) <= max_chars
@@ -379,6 +457,12 @@ def load_cues(path: Path, cfg, ev=None) -> list[Cue]:
     cues = [c for c in cues if c.text]
     # Before merging, so a duplicated card can never be folded INTO an utterance and read twice
     # inside one breath, and before windows, so the survivor's window spans both cards.
+    # Before merging, because is_screen_text decides what may be joined - and it can only answer
+    # honestly once it knows whether colour means anything in THIS file.
+    if colour_marks_captions(cues, cfg):
+        for c in cues:
+            if caption_colour(c.raw):
+                c.screen_text = True
     cues, _ = drop_repeated_cards(cues, cfg)
     cues = merge_contiguous(cues, cfg, ev)
     compute_windows(cues, cfg)
