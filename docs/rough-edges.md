@@ -25,9 +25,21 @@ What does not work well, stated plainly.
   sample.
 - **The two piper fit figures disagree.** The comment above `voice.backend` says 597 of 598 lines
   landed inside their window on the real episode; the one above `voice.piper.search_min` says 4
-  lines were clamped and still over on what reads as the same episode, worst +16 %. Both are recorded as measured, both date from the same
-  commit, and the table above quotes the second. One of them is wrong and the episode would have to be
-  re-rendered to find out which.
+  lines were clamped and still over on what reads as the same episode, worst +16 %. Both are
+  recorded as measured, both date from the same commit, and the table above quotes the second.
+
+  Re-measured on a full episode of dense fansub material: **557 of 755 inside their window, 198
+  over, worst +197 %**. That does not convict either figure - this is a different release, with 53 %
+  of its cards over budget at the source against 11-20 % on the material the originals were taken
+  from - but it does show that both were written as properties of the ENGINE when they are
+  properties of an episode. Read them as "piper on easy material", not as a specification.
+
+- **piper is the one engine allowed to gabble.** `timing.max_speed` is 1.2 and every other backend
+  obeys it - omnivoice has an explicit floor that lets a line overrun rather than be compressed past
+  that ceiling. piper reaches its window by searching `length_scale` down to `voice.piper.search_min`
+  = 0.6, which is 1.67x faster than natural, and the run above used it: **476 of 755 lines read
+  faster than natural, up to 1.67x**. Nothing is wrong with the search; the ceiling simply is not
+  wired into it, so the two engines answer "how fast may a line be read" differently.
 - **chatterbox cannot aim at a window and nothing rescues it.** Nothing about generation targets a
   duration, and with `timing.max_atempo` at 1.0 a long reading is not stretched either – it simply
   overruns into the silence after it. On the 20 s smoke slice one line of four ran 56 % past its slot.

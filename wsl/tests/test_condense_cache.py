@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -428,3 +429,41 @@ def json_loads(p: Path):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# -- the freeze that fed itself ----------------------------------------------
+
+class TestEditProvenance(unittest.TestCase):
+    """A line the pipeline condensed must never come back as a line a human typed.
+
+    Measured on one episode before the fix: 172 of 755 cues - 23 % - were being kept as hand edits
+    that nobody had made, 75 of them over budget and therefore unfixable by any prompt change. The
+    mechanism was a loop, not a one-off: a kept line is taken out of the work list, so nothing sets
+    its `condensed` flag that run and it is written back False; the next run reads that False as
+    proof only a human could have changed the text, and keeps it again.
+    """
+
+    def test_a_kept_line_keeps_the_flag_that_says_the_model_wrote_it(self):
+        from lektorlib.script import hand_edited
+        prev = {"cues": [{"id": 1, "text": "Skrocona wersja.", "text_original": "Dluga wersja.",
+                          "condensed": True, "edited": False}]}
+        cue = SimpleNamespace(idx=1, text="Dluga wersja.", budget_chars=10)
+        book = {}
+        # With the book empty the narrow test cannot fire, and the broad one must not: this line
+        # says plainly that the model condensed it.
+        assert hand_edited([cue], prev, book, {}) == {}
+
+    def test_a_real_hand_edit_is_still_honoured(self):
+        from lektorlib.script import hand_edited
+        prev = {"cues": [{"id": 1, "text": "Tak wolę.", "text_original": "Oryginalna kwestia.",
+                          "condensed": False, "edited": False}]}
+        cue = SimpleNamespace(idx=1, text="Oryginalna kwestia.", budget_chars=10)
+        assert hand_edited([cue], prev, {}, {}) == {1: "Tak wolę."}
+
+    def test_forget_edits_lets_everything_be_redrawn(self):
+        """The escape hatch. Before it, an episode frozen this way could only be freed by deleting
+        the script by hand - and --redraw deliberately does not do it, because 'draw the text
+        again' and 'throw away what I typed' are different requests."""
+        import inspect
+        from lektorlib.script import stage_script
+        assert "forget_edits" in inspect.signature(stage_script).parameters

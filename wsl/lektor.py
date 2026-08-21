@@ -90,6 +90,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")
+    ap.add_argument("--forget-edits", dest="forget_edits", action="store_true",
+                    help="script: treat NOTHING in the existing script as a hand edit and let "
+                         "every line be redrawn (use when the pipeline froze lines you never "
+                         "touched)")
     ap.add_argument("--redraw", action="store_true",
                     help="script: ignore <base>.condensed.json and pay for a clean draw")
     ap.add_argument("--plan", default="creator", help="cost: elevenlabs plan for the allowance table")
@@ -145,13 +149,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "speech":
         stages.stage_speech(cfg, args.only, args.force)
     elif args.stage == "script":
-        stages.stage_script(cfg, args.only, args.force, args.redraw)
+        stages.stage_script(cfg, args.only, args.force, args.redraw, args.forget_edits)
     elif args.stage == "retime":
         stages.stage_retime(cfg, args.only)
     elif args.stage == "voice":
         stages.stage_voice(cfg, args.only, args.force)
     elif args.stage == "all":
-        stages.stage_script(cfg, args.only, args.force, args.redraw)
+        stages.stage_script(cfg, args.only, args.force, args.redraw, args.forget_edits)
         stages.stage_voice(cfg, args.only, args.force)
     elif args.stage == "sample":
         models = [m.strip() for m in args.models.split(",") if m.strip()] or [

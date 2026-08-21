@@ -1240,7 +1240,8 @@ def load_previous_script(cfg: Config, base: str) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
-def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = False) -> None:
+def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = False,
+                 forget_edits: bool = False) -> None:
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if redraw and not force:
         # "Pay for a clean draw, then skip the episode because its script already exists" cannot
@@ -1311,10 +1312,21 @@ def stage_script(cfg: Config, only: str | None, force: bool, redraw: bool = Fals
         # cache says, so they come out of the work list before anything else looks at it. This is
         # deliberately NOT conditioned on `reuse`: "draw the text again" and "throw away what I
         # typed" are two different requests, and --redraw only asks for the first.
-        edits = hand_edited(cues, load_previous_script(cfg, base), book, s_tbl)
+        prev_script = load_previous_script(cfg, base)
+        edits = {} if forget_edits else hand_edited(cues, prev_script, book, s_tbl)
+        prev_by_id = {c.get("id"): c for c in (prev_script or {}).get("cues", [])}
         for idx, text in edits.items():
             by_id[idx].text = text
             by_id[idx].edited = True
+            # Carry the previous provenance forward, and it is not bookkeeping: a kept line is
+            # taken OUT of the work list, so nothing this run sets `condensed` and it would be
+            # written back as False. The next run reads that False as "never condensed, yet its
+            # text is not its source - only a human can have done that" and keeps it again. One
+            # false positive then froze the line for good, and 172 of 755 cues on one episode had
+            # ended up that way: 23 % of the episode invisible to every prompt fix, and no way out
+            # short of deleting the script by hand. Preserving the flag leaves only the narrow
+            # test - the book holds something else than the file - which is the one that means it.
+            by_id[idx].condensed = bool(prev_by_id.get(idx, {}).get("condensed"))
         work = [i for i in work if i not in edits]
 
         hits, todo, poisoned = (split_by_cache(cues, work, book, s_tbl) if reuse

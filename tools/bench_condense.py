@@ -18,6 +18,7 @@ identical model AND gives every cue the full episode as context.
 {"reasoning":{"enabled":false}} returns HTTP 400 on these models; only {"effort": ...} works.
 OpenRouter reports real spend in usage.cost -- log that, never recompute from token prices.
 """
+import argparse
 import json, os, sys, time, pathlib, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
@@ -36,7 +37,20 @@ except Exception:
     CFG = S
     _new = False
 
-KEY = os.environ["OPENROUTER_API_KEY"]
+def api_key() -> str:
+    """The key, looked up when it is needed rather than when the module loads.
+
+    At module level this was `os.environ[...]`, which raised KeyError on every invocation - `--help`
+    included - and did so before Config had run, so the project .env that supplies the key
+    everywhere else had not been read yet. Two failures for the price of one: the script could not
+    describe itself, and it could not see a key the rest of the pipeline could.
+    """
+    CFG.Config(ROOT / "lektor.toml")          # loads the project .env as a side effect
+    key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not key:
+        raise SystemExit("OPENROUTER_API_KEY is not set (put it in the project .env or export it)")
+    return key
+
 URL = "https://openrouter.ai/api/v1/chat/completions"
 
 SCHEMA = {
@@ -96,7 +110,13 @@ def whole_prompt(cues, target_indices):
 
 
 def load_cues(srt_path=None, cps=14.5, safety=0.96):
-    cfg = json.loads((ROOT / "lektor.toml").read_text())
+    # Through the package loader, not json.loads: the config is a TOML PAIR now, and reading
+    # lektor.toml as JSON raised on every invocation of this script, --help included. Config._read
+    # also merges lektor.tuning.toml underneath, which the old monolithic JSON carried inline - so
+    # this is what keeps the 200 measured constants in the benchmark instead of only the 33 knobs.
+    # The temp file below stays JSON on purpose: _read still accepts a flat legacy .json, and a
+    # temp .toml would need a matching .tuning.toml beside it to mean the same thing.
+    cfg = CFG.Config(ROOT / "lektor.toml").raw
     cfg["paths"]["input_dir_wsl"] = str(SC)
     cfg["paths"]["work_subdir"] = "testwork"
     p = SC / "bench_cfg.json"
@@ -121,7 +141,7 @@ def call(model, effort, user, max_tokens=48000):
     }
     req = urllib.request.Request(
         URL,
-        headers={"Authorization": f"Bearer {KEY}", "Content-Type": "application/json",
+        headers={"Authorization": f"Bearer {api_key()}", "Content-Type": "application/json",
                  "HTTP-Referer": "https://github.com/local/lektor-ai", "X-Title": "lektor-ai"},
         data=json.dumps(body).encode(), method="POST")
     t0 = time.time()
@@ -153,11 +173,31 @@ def run(model, effort, cues, targets):
 
 
 def main():
-    cues = load_cues()
+    # There was no argument parsing at all, and the corpus it defaults to - a test .srt that lived
+    # in the wiped scratch directory - has no history in this repo. So the script could only fail,
+    # with a FileNotFoundError naming a path nobody can restore. Any episode's subtitles work.
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--srt", type=pathlib.Path, default=None,
+                    help="subtitles to benchmark against (default: the vanished test corpus)")
+    # Kept positional: this is how the script has always been given its model list, and adding
+    # argparse around it must not take that away.
+    ap.add_argument("combos", nargs="?", default=None,
+                    help='JSON list of [model, effort] pairs, e.g. \'[["openai/gpt-5.6-luna","medium"]]\'')
+    args = ap.parse_args()
+    if args.srt and not args.srt.is_file():
+        raise SystemExit(f"no subtitles at {args.srt}")
+    if not args.srt:
+        fallback = SC / "testwork/Ted.Lasso.S02E01.Test.srt"
+        if not fallback.is_file():
+            raise SystemExit(
+                f"no corpus: {fallback} is not in this repository - it lived in a scratch "
+                f"directory that was wiped. Pass --srt pointing at any episode's .srt instead.")
+    cues = load_cues(srt_path=args.srt)
     targets = [i for i, c in enumerate(cues) if len(c.text) > c.budget_chars]
     print(f"odcinek: {len(cues)} kwestii, {sum(len(c.text) for c in cues)} znakow, "
           f"{len(targets)} do skrocenia  (srt helpers: {'lektorlib' if _new else 'lektor_original'})\n")
-    combos = json.loads(sys.argv[1]) if len(sys.argv) > 1 else [["openai/gpt-5.6-luna", "medium"]]
+    combos = json.loads(args.combos) if args.combos else [["openai/gpt-5.6-luna", "medium"]]
     # Never more than 3 at once, and the pipeline's own throttle spaces them further apart.
     with ThreadPoolExecutor(max_workers=min(3, len(combos))) as pool:
         results = list(pool.map(lambda c: run(c[0], c[1], cues, targets), combos))
