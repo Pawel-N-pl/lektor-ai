@@ -183,6 +183,10 @@ JĘZYK
   każdy z nich jest błędem, bo lektor tego nie wymówi. Skracasz WYRZUCAJĄC SŁOWA, nigdy
   okrawając je do kropki.
 - Bez didaskaliów, nawiasów i cudzysłowów.
+- SYMBOLE CZYTASZ ZGODNIE Z ROLĄ, JAKĄ PEŁNIĄ, nie z nazwą znaku. "@" przed nazwą konta w
+  serwisie społecznościowym po prostu ZNIKA – "@BrindaBarot" to "Brinda Barot", nigdy "małpa
+  BrindaBarot". Tak samo "#hasztag" to samo hasło. Nazwę znaku wymawiasz wyłącznie tam, gdzie
+  bohater naprawdę mówi o samym znaku.
 - Nie sil się ani na literackość, ani na sztuczną potoczność. Zwykła, prosta polszczyzna.
 
 LICZBY

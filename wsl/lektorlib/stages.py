@@ -35,7 +35,7 @@ from .script import CONDENSE_SYSTEM, condense_episode, stage_script, whole_promp
 from .speech import (describe_delays, describe_leads, find_video, lead_counts, load_events,
                      load_onsets,
                      plan_delays, stage_speech)
-from .srt import Cue, predicted_ms
+from .srt import Cue, initialisms, predicted_ms, speakable
 
 __all__ = [
     "CONDENSE_SYSTEM",
@@ -174,9 +174,13 @@ def generate_clips(cfg: Config, cues: list[dict], backend: Backend,
     # Built once, up front, so the batching hook below can see the whole episode and so a line's
     # request is identical whether it was generated in a batch or on its own - the request IS the
     # cache key, and two spellings of it would buy the same line twice.
+    # Capitals in a subtitle are a CAPTION MARKER, not a pronunciation. Normalised here rather
+    # than in the script so the artefact keeps the line exactly as the subtitle wrote it, while
+    # the engine gets something it can actually say. See srt.speakable for the measurement.
+    keep = initialisms(c["text"] for c in cues)
     utterances = [
         Utterance(
-            index=i, text=clip.cue["text"],
+            index=i, text=speakable(clip.cue["text"], keep),
             target_ms=int(clip.cue["window_ms"] * safety) or None,
             # The lektor's own neighbours, not the film's: this is what he just said and what he
             # is about to say, which is what makes the engine read a line as part of a delivery.

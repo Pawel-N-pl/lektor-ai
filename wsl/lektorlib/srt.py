@@ -298,6 +298,66 @@ def is_screen_text(cue: "Cue") -> bool:
     return sum(1 for ch in letters if ch.isupper()) / len(letters) >= 0.8
 
 
+def initialisms(texts) -> set[str]:
+    """Tokens this episode writes in capitals INSIDE an ordinary sentence.
+
+    The only honest way to tell FBI from NIŻ once a whole line is capitalised: you cannot do it
+    from the line itself, and a length rule gets Polish wrong immediately - NIŻ, JAK, ALE and TAK
+    are three letters and none of them is an initialism, while U OLA is a shop name in two tokens
+    of one and three. So the evidence comes from the rest of the episode, where the same writer
+    used mixed case and capitals therefore MEAN something.
+    """
+    found = set()
+    for text in texts:
+        letters = [ch for ch in text if ch.isalpha()]
+        if not letters or sum(1 for ch in letters if ch.isupper()) / len(letters) >= 0.8:
+            continue                      # a capitalised line proves nothing about its own tokens
+        for token in re.findall(r"\b\w+\b", text):
+            core = [ch for ch in token if ch.isalpha()]
+            if len(core) >= 2 and all(ch.isupper() for ch in core):
+                found.add(token.upper())
+    return found
+
+
+def speakable(text: str, keep: set[str] | None = None) -> str:
+    """The line as it should be READ, when the way it is WRITTEN is a subtitle convention.
+
+    Subtitles set a caption in CAPITALS - a shop sign, a chyron, a tweet on screen. That is
+    typography, not pronunciation, and handing it to a TTS engine straight is the single worst
+    thing this pipeline was doing. Measured against ASR over one whole episode of the delivered
+    lektor: the 31 all-capital cues came back with a median 0.47 of their text recognisable and
+    58 % of them under half, against a median of 1.00 and 4 % for the 755 ordinary ones. The
+    engine reads capitals as something to be spelled or stressed rather than spoken, so "OTWARTE"
+    came back as silence, "RICHMOND" as "zgrilla" and "RACZEJ" as "radzaj".
+
+    Only whole-line capitals are touched, because that is the convention. A capitalised word
+    inside a normal sentence is emphasis or a name and is left as written. `keep` is the set of
+    tokens this episode proved to be initialisms, from `initialisms()` - those stay capital,
+    because spelling them out is the right reading.
+    """
+    letters = [ch for ch in text if ch.isalpha()]
+    if len(letters) < 4 or sum(1 for ch in letters if ch.isupper()) / len(letters) < 0.8:
+        return text
+    keep = keep or set()
+    out, seen_letter = [], False
+    for token in re.split(r"(\s+)", text):
+        if not token or token.isspace():
+            out.append(token)
+            continue
+        if token.upper().strip(".,:;!?\"'()") in keep:
+            out.append(token)
+        elif not seen_letter:
+            out.append(token.capitalize())     # opens a sentence, so it keeps a capital
+        else:
+            out.append(token.lower())
+        if any(ch.isalpha() for ch in token):
+            # A new sentence starts after terminal punctuation, so the next word is capitalised
+            # again. Case does not change Polish pronunciation, but this text is also what the
+            # cache key and any human reading the artefact see, and half-cased prose reads as a bug.
+            seen_letter = not token.rstrip("\"')").endswith((".", "!", "?", ":"))
+    return "".join(out)
+
+
 def continues_sentence(prev: "Cue", cur: "Cue", ev=None) -> bool:
     """Is `cur` the rest of a sentence that `prev` started?
 
