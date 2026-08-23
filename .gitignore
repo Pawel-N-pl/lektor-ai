@@ -78,11 +78,12 @@ test-results/
 skills-lock.json
 
 # ─── BMad / bmad-assist ──────────────────────────────────────
-# input/config dirs are ignored; build output stays in the repo
+# Nothing BMad writes belongs in the repository: the input/config dirs are one machine's
+# tooling, and _bmad-output/ is generated notes, kept on disk but no longer committed.
 .bmad/
 _bmad/
 .bmad-assist/cache/
-# keep _bmad-output/ tracked — do NOT add it here
+_bmad-output/
 
 # ─── OS / Editor ─────────────────────────────────────────────
 .DS_Store
