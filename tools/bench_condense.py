@@ -23,7 +23,7 @@ import json, os, sys, time, pathlib, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
 
 SC = pathlib.Path(__file__).resolve().parent
-ROOT = pathlib.Path("/home/pawel/projects/lektor-ai")
+ROOT = SC.parent
 
 # The srt helpers live in the project. Prefer the refactored package; fall back to the pre-refactor
 # module kept beside this file so the harness stays runnable mid-refactor.

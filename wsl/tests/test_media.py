@@ -464,7 +464,7 @@ class TestWindowsPath(unittest.TestCase):
 
     def test_a_path_with_no_windows_meaning_is_left_alone(self):
         """On a Linux box the field is a note about where the file came from, not an address."""
-        self.assertEqual(M.windows_path("/home/pawel/filmy/ep.mkv"), "/home/pawel/filmy/ep.mkv")
+        self.assertEqual(M.windows_path("/home/user/filmy/ep.mkv"), "/home/user/filmy/ep.mkv")
         self.assertEqual(M.windows_path("/mnt/storage/ep.mkv"), "/mnt/storage/ep.mkv")
 
     def test_it_round_trips_with_native_path_where_the_mount_exists(self):

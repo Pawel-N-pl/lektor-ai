@@ -83,7 +83,14 @@ def _read(path: Path) -> dict:
     """
     if path.suffix == ".json":
         return json.loads(path.read_text(encoding="utf-8"))
-    with path.open("rb") as fh:
+    # A fresh checkout has no lektor.toml: the name is gitignored so that a working setup – paths,
+    # which engine, whose voice – never turns into a commit. The tracked lektor.toml.example stands
+    # in until the copy is made, which keeps `lektor.py --help` and the test suite runnable on a
+    # checkout nobody has configured yet.
+    src = path if path.is_file() else path.with_name(path.name + ".example")
+    if not src.is_file():
+        src = path                      # let the open below raise on the name the caller asked for
+    with src.open("rb") as fh:
         user = tomllib.load(fh)
     tuning = path.with_name(f"{path.stem}.tuning{path.suffix}")
     if not tuning.is_file():

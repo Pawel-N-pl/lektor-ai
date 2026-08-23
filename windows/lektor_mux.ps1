@@ -1,17 +1,19 @@
 # Mux a finished 5.1 lektor track back into its episode.
 # Runs natively on Windows so the 2.7 GB write never crosses the WSL 9p bridge.
 #
-#   lektor_mux.ps1                     -> every *.lektor51.eac3 that has no output yet
-#   lektor_mux.ps1 -Match S02E02       -> just that episode
-#   lektor_mux.ps1 -Force              -> rebuild outputs that already exist
+#   lektor_mux.ps1 -Dir E:\Filmy\Serial.S01   -> every *.lektor51.eac3 with no output yet
+#   lektor_mux.ps1 -Dir ... -Match S02E02   -> just that episode
+#   lektor_mux.ps1 -Dir ... -Force          -> rebuild outputs that already exist
 param(
-    [string]$Dir = 'E:\Filmy\Ted.Lasso.S02.PLSUB.1080p.ATVP.WEB-DL.DDPA5.1.H.264-NTb',
+    [Parameter(Mandatory = $true)]
+    [string]$Dir,           # the episode directory, the Windows way: E:\Filmy\Serial.S01
     [string]$Match = '',
     [string]$Suffix = '',   # e.g. -Suffix _v2 when the old output is open in a player
+    [string]$FFmpeg = 'ffmpeg',   # a full path when it is not on PATH
     [switch]$Force
 )
 
-$ff = 'C:\Programy\ffmpeg\bin\ffmpeg.exe'
+$ff = $FFmpeg
 $work = Join-Path $Dir '_lektor'
 $outd = Join-Path $work 'output'
 New-Item -ItemType Directory -Force -Path $outd | Out-Null

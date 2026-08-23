@@ -107,3 +107,10 @@ _lektor/
 
 # Voice reference recordings. Real people; keep them out of the repo.
 *.mp3
+
+# ─── lektor-ai local config ──────────────────────────────────
+# The working copy: paths, which engine, whose voice. Template: lektor.toml.example
+/lektor.toml
+
+# Written by tools/bench_condense.py on every run, from whatever lektor.toml says.
+/tools/bench_cfg.json

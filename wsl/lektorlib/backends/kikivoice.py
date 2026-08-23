@@ -27,11 +27,11 @@ IMPORTING THIS FILE
 -------------------
 It is written to work from two places without edits:
 
-  a) standalone, in /home/pawel/projects/kikivoice next to kikivoice_client.py. Then
+  a) standalone, in the kikivoice checkout next to kikivoice_client.py. Then
      `from kikivoice_client import ...` resolves because both files sit in the same directory.
      lektorlib itself is NOT importable in that mode, so importing this module standalone fails
-     unless /home/pawel/projects/lektor-ai/wsl is on sys.path (or KIKIVOICE_LEKTOR_DIR points at
-     it). That is expected: standalone use goes through the CLI in kikivoice_client.py, not here.
+     unless this repository's wsl/ directory is on sys.path, which is what KIKIVOICE_LEKTOR_DIR
+     names. That is expected: standalone use goes through the CLI in kikivoice_client.py, not here.
   b) copied into lektor-ai/wsl/lektorlib/backends/ together with kikivoice_client.py. Then the
      relative imports `from .kikivoice_client import ...` and `from ..audio import ...` win.
 
@@ -93,7 +93,9 @@ try:  # (b) copied into lektorlib/backends/
     from ..audio import decode_mono, shorten_pauses, trim_silence
     from .base import Backend, Rendered, Utterance
 except ImportError:  # (a) standalone, or any layout where lektorlib is a top-level package
-    _lek = os.environ.get("KIKIVOICE_LEKTOR_DIR", "/home/pawel/projects/lektor-ai/wsl")
+    # No default worth hardcoding: standalone means this file is somewhere else entirely, so
+    # the caller names the wsl/ directory or lektorlib is expected on sys.path already.
+    _lek = os.environ.get("KIKIVOICE_LEKTOR_DIR", "")
     if _lek and _lek not in sys.path and Path(_lek).is_dir():
         sys.path.insert(0, _lek)
     from lektorlib import say
@@ -120,11 +122,11 @@ def _load_client(client_dir: str | None):
                 import kikivoice_client as mod  # same directory, standalone
             except ImportError:
                 d = str(client_dir or "").strip()
+                d = str(Path(d).expanduser()) if d else d
                 if not d or not Path(d, "kikivoice_client.py").is_file():
                     raise SystemExit(
                         "kikivoice: nie znalazlem kikivoice_client.py.\n"
-                        "  Ustaw voice.kikivoice.client_dir na katalog, w ktorym lezy ten plik "
-                        "(domyslnie /home/pawel/projects/kikivoice),\n"
+                        "  Ustaw voice.kikivoice.client_dir na katalog, w ktorym lezy ten plik,\n"
                         "  albo skopiuj kikivoice_client.py obok kikivoice_backend.py."
                     ) from None
                 if d not in sys.path:

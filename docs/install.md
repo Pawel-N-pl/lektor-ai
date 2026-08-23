@@ -22,9 +22,11 @@ sudo apt install ffmpeg          # Debian/Ubuntu: gives both ffmpeg and ffprobe
 brew install ffmpeg              # macOS
 
 cp .env.example .env             # then put the two keys in it
+cp lektor.toml.example lektor.toml   # your config; that name is gitignored
 ```
 
-Then two keys in `lektor.toml`: `paths.input_dir_wsl` is the directory holding the `.mkv`
+Then two keys in the `lektor.toml` you just copied: `paths.input_dir_wsl` is the directory
+holding the `.mkv`
 files (the name is historical, it is simply "the input directory as this OS sees it"), and
 `paths.ffmpeg_wsl` / `paths.ffprobe_wsl` stay as `"ffmpeg"` / `"ffprobe"` when both are on PATH.
 The `paths.*_windows` twins are read only by `windows/lektor.ps1`; nothing in Python ever reaches
@@ -163,8 +165,8 @@ refused outright while a 1 GiB one succeeds. `voice.omnivoice.reference_wav` is 
 3–10 s, kept outside the repo on purpose: it is a recording of a real person, not source code.
 
 **kikivoice** – no venv, but the client lives in another repository. `voice.kikivoice.client_dir`
-must point at the directory holding `kikivoice_client.py` and `kikivoice_batch.py` (here:
-`/home/pawel/projects/kikivoice`); it is deliberately not vendored, so `--backend kikivoice`
+must point at the directory holding `kikivoice_client.py` and `kikivoice_batch.py`; it is
+deliberately not vendored, so `--backend kikivoice`
 without it exits with a named error rather than an ImportError. `voice.kikivoice.clone.sample_path`
 is the voice sample to clone from, 5–120 s. The budget is a **weekly bucket of 80 000 credits**,
 not money, and a render can **stop and exit 75** waiting for a human to solve a GeeTest challenge
@@ -190,4 +192,4 @@ otherwise byte-identical to a run without the artefact. Shot detection itself is
 `no English reference subtitle` and skips straight to the cuts.
 
 Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
-a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 84 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 233 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either.
+a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 84 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 233 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either. Only the second is tracked: `lektor.toml` is gitignored and ships as `lektor.toml.example`, which the loader falls back to until you make the copy.

@@ -15,8 +15,7 @@ model's logits.
      The failure arrives as a CUDA device-side assert, which POISONS the context: the process
      cannot recover, so float16 is refused outright in prepare() rather than left as an option.
 
-Measured on this machine (RTX 3090, WSL2), against the bench harness in
-/home/pawel/.cache/lektor-ai-chatterbox:
+Measured on one machine (RTX 3090, WSL2), against the bench harness in the chatterbox venv:
 
   dtype     stability grid (24 gens)   VRAM delta   RTF          cloning
   float16   died on generation 1       2607 MiB     1.24-1.70    dtype crash

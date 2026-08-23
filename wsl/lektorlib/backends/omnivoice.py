@@ -7,7 +7,7 @@ measured chars/second, misses, and buys the line a second time. OmniVoice's `gen
 searched, predicted or re-bought.
 
 Measured here on an RTX 3090 under WSL2, bfloat16, batch of one, against the six calibration
-lines and the 6 s Gudowski reference:
+lines and a 6 s reference recording:
 
   regime                                    raw output              after trim_silence
   duration below natural (compression)      target + 200 ms, 6/6    median 55 ms, worst 300 ms

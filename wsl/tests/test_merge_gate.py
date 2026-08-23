@@ -14,7 +14,9 @@ import sys
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+WSL = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WSL))
+REPO = WSL.parent
 
 from lektorlib.speech import (SpeechEvents, cues_for_alignment, episode_tag,  # noqa: E402
                               events_from, load_events, words_and_gaps)
@@ -216,7 +218,7 @@ class TestArtefactPlumbing(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
-            raw = Config(Path("/home/pawel/projects/lektor-ai/lektor.toml")).raw
+            raw = Config(REPO / "lektor.toml").raw
             raw["paths"]["input_dir_wsl"] = str(root / "media")
             raw["speech"]["tmp_dir"] = str(root / "tmp")
             raw["speech"]["asr_container"] = "no-such-container-here"

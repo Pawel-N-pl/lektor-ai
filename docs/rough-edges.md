@@ -20,9 +20,7 @@ What does not work well, stated plainly.
   do not care, but the number of cues sent for condensation is set by somebody else's speaking rate.
 - **Two config notes disagree with the value beside them, and this README cannot settle either.**
   `clean.merge_gate` is `"both"` while its note says the gate was switched off after listening;
-  `mix.duck_to_db` is -3.0 while its note says -4.5 by ear. A third is cosmetic:
-  `voice.omnivoice.reference_wav` points at `szolajski.ref.wav` while its note describes the Knapik
-  sample.
+  `mix.duck_to_db` is -3.0 while its note says -4.5 by ear.
 - **The two piper fit figures disagree.** The comment above `voice.backend` says 597 of 598 lines
   landed inside their window on the real episode; the one above `voice.piper.search_min` says 4
   lines were clamped and still over on what reads as the same episode, worst +16 %. Both are

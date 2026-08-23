@@ -1,7 +1,7 @@
 # Chatterbox recon — measurements salvaged from the killed recon agent
 
 Real numbers produced on this machine. A partially built venv survives at
-`/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox` (python 3.11, chatterbox installed,
+`~/.cache/lektor-ai-chatterbox/venv-chatterbox` (python 3.11, chatterbox installed,
 `chatterbox/mtl_tts.py` present) along with bench scripts and a cut reference clip in `out/`.
 Reuse it — do not reinstall from scratch.
 

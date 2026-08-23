@@ -11,12 +11,12 @@
 # input_dir_windows on Windows, input_dir_wsl everywhere else.
 input_dir = ''
 
-input_dir_windows = 'E:\Filmy\NCIS.S23E01.1080p.WEB.h264-ETHEL'
-input_dir_wsl = '/mnt/e/Filmy/NCIS.S23E01.1080p.WEB.h264-ETHEL'
+input_dir_windows = 'E:\Filmy\Serial.S01'
+input_dir_wsl = '/mnt/e/Filmy/Serial.S01'
 work_subdir = '_lektor'
 output_subdir = '_lektor/output'
-ffmpeg_windows = 'C:\Programy\ffmpeg\bin\ffmpeg.exe'
-ffprobe_windows = 'C:\Programy\ffmpeg\bin\ffprobe.exe'
+ffmpeg_windows = 'C:\ffmpeg\bin\ffmpeg.exe'
+ffprobe_windows = 'C:\ffmpeg\bin\ffprobe.exe'
 ffmpeg_wsl = 'ffmpeg'
 ffprobe_wsl = 'ffprobe'
 
@@ -484,7 +484,7 @@ concurrency = 8
 # and this path is never put on sys.path. If the copies are ever dropped, BOTH files have to live
 # here – the backend swallows a failed batcher import and quietly falls back to one task per line,
 # which on this episode is ~25 human verifications instead of 2.
-client_dir = '/home/pawel/projects/kikivoice'
+client_dir = '~/projects/kikivoice'
 
 # Empty = the client's own default, ~/.config/kikivoice/session.json. There is no API key for this
 # service: identity is the uuid cookie lifted from a browser session, and that file also carries
@@ -624,7 +624,7 @@ cut_margin_ms = 40
 # client re-uploads it once a day; the cache key deliberately does NOT contain custom_voice_id, so
 # that daily re-upload does not invalidate the whole episode. The client enforces its own 5-120 s
 # bounds on the sample, and there is no config knob for them.
-sample_path = '/home/pawel/projects/kikivoice/Maciej Gudowski - próbka głosu (128kbit_AAC).m4a'
+sample_path = '~/voice-samples/lektor.m4a'
 
 denoise = 1
 asr = 1
@@ -785,15 +785,15 @@ concurrency = 14
 # Python 3.11 venv with torch and omnivoice (pip install omnivoice). The model is held by a worker
 # subprocess launched from it and spoken to over a JSON pipe, so the pipeline itself never imports
 # torch.
-venv = '/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice'
+venv = '~/.cache/lektor-ai-omnivoice/venv-omnivoice'
 
 model = 'k2-fsa/OmniVoice'
 # The voice to clone, 3-10 s per upstream; longer slows inference and can degrade the clone. Kept
-# outside the repo on purpose - it is a recording of a real person, not source code. This one is
-# 5.2 s of Tomasz Knapik cut from the middle of a continuous reading, high-passed at 60 Hz, pulled
-# down 3 dB for headroom because the source peaked at -0.1 dB, trimmed, mono 24 kHz. Gudowski at
-# gudowski.ref.wav is the other one that was tried.
-reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/szolajski.ref.wav'
+# outside the repo on purpose – it is a recording of a real person, not source code, and whose
+# voice you clone is your business and your licence to sort out. The one measured here was 5.2 s
+# cut from the middle of a continuous reading, high-passed at 60 Hz, pulled down 3 dB for headroom
+# because the source peaked at -0.1 dB, trimmed, mono 24 kHz.
+reference_wav = '~/.cache/lektor-ai-omnivoice/reference.wav'
 
 # Polish is entry 461 of 646 in the model's language table with 911.68 hours of training data -
 # solid, though far from the English tier.
@@ -845,7 +845,7 @@ concurrency = 1
 # python 3.11 with torch and chatterbox already installed. Reuse it; do not reinstall. The
 # pipeline itself runs on python 3.13 and has no torch, so the model is held by a worker
 # subprocess launched from this venv and spoken to over a JSON pipe.
-venv = '/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox'
+venv = '~/.cache/lektor-ai-chatterbox/venv-chatterbox'
 
 # bfloat16 | float32. THIS IS THE FIX FOR BOTH RECORDED CRASHES, do not set float16. T3's CFG
 # combine and the temperature divide push logits past the float16 ceiling; they saturate to inf,

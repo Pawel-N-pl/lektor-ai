@@ -1,4 +1,7 @@
-# lektor-ai - what you change per show and by ear.
+# lektor-ai – what you change per show and by ear. This is the template.
+# Copy it to lektor.toml and edit the copy; that name is gitignored, so a working setup –
+# your paths, which engine, whose voice – never turns into a commit. Until the copy exists
+# the pipeline falls back to this file, so a fresh checkout still runs.
 # Every key here also exists in lektor.tuning.toml, with the measurement behind it. This file
 # only overrides, so deleting a line falls back to the tuned default rather than to nothing.
 # Secrets never live here. They come from the environment or from the project .env:
@@ -10,10 +13,10 @@
 input_dir = ''
 # Only for the split Windows+WSL setup, where both halves read this file: the same directory as
 # input_dir_wsl, spelled the Windows way. Unused when input_dir is set.
-input_dir_windows = 'E:\Filmy\Ted.Lasso.S03.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb'
+input_dir_windows = 'E:\Filmy\Serial.S01'
 # The other half of that pair, spelled the Linux way. Nothing checks that the two name the same
 # directory.
-input_dir_wsl = '/mnt/e/Filmy/Ted.Lasso.S03.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb'
+input_dir_wsl = '/mnt/e/Filmy/Serial.S01'
 # Where the working files go, relative to the episode directory: subtitles, the script you edit,
 # the finished audio.
 work_subdir = '_lektor'
@@ -21,9 +24,9 @@ work_subdir = '_lektor'
 output_subdir = '_lektor/output'
 # Only for the PowerShell half of the split setup. The Python half never uses it - it cannot open
 # POSIX paths.
-ffmpeg_windows = 'C:\Programy\ffmpeg\bin\ffmpeg.exe'
+ffmpeg_windows = 'C:\ffmpeg\bin\ffmpeg.exe'
 # As above, for ffprobe.
-ffprobe_windows = 'C:\Programy\ffmpeg\bin\ffprobe.exe'
+ffprobe_windows = 'C:\ffmpeg\bin\ffprobe.exe'
 # The ffmpeg to run. A bare name is enough when it is on PATH, which is what apt, brew and winget
 # all give you.
 ffmpeg_wsl = 'ffmpeg'
@@ -54,12 +57,12 @@ aligner_venv = ''
 [voice]
 # Which engine speaks: elevenlabs, piper, chatterbox, omnivoice or kikivoice. piper is free,
 # offline and the default recommendation.
-backend = 'kikivoice'
+backend = 'piper'
 
 [voice.kikivoice]
 # Where the kikivoice checkout lives. A fallback only - the client is copied into the package
 # beside the backend.
-client_dir = '/home/pawel/projects/kikivoice'
+client_dir = '~/projects/kikivoice'
 # 'clone' speaks with the sample below; 'library' speaks with a catalogue voice named by
 # voice_code and voice_id.
 mode = 'clone'
@@ -74,7 +77,7 @@ model_type = 'kiki_core'
 [voice.kikivoice.clone]
 # The recording the voice is cloned from, uploaded to the server once a day. 5 to 120 s, any
 # format ffmpeg reads. Changing it invalidates every cached line of that voice.
-sample_path = '/home/pawel/projects/kikivoice/Maciej Gudowski - próbka głosu (128kbit_AAC).m4a'
+sample_path = '~/voice-samples/lektor.m4a'
 
 [voice.elevenlabs]
 # The ElevenLabs voice. Changing it calls for a re-calibration and a re-measured presence shelf -
@@ -92,16 +95,16 @@ voice = 'pl_PL-darkman-medium'
 [voice.omnivoice]
 # A venv with torch and omnivoice. The model is held by a worker launched from it, so the pipeline
 # itself never imports torch.
-venv = '/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice'
+venv = '~/.cache/lektor-ai-omnivoice/venv-omnivoice'
 # A 3 to 10 s recording to clone the voice from. Shorter is both faster and a better clone - 5.2 s
 # measured 1.5x faster than 7.8 s.
-reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/knapik.ref.wav'
+reference_wav = '~/.cache/lektor-ai-omnivoice/reference.wav'
 # Language code OmniVoice reads the text as. 'pl' for Polish.
 language = 'pl'
 
 [voice.chatterbox]
 # A venv with torch and chatterbox, spoken to the same way as omnivoice's.
-venv = '/home/pawel/.cache/lektor-ai-chatterbox/venv-chatterbox'
+venv = '~/.cache/lektor-ai-chatterbox/venv-chatterbox'
 # Language code Chatterbox reads the text as.
 language_id = 'pl'
 # An 8 to 20 s recording to clone from. Empty means the model's own built-in voice.
@@ -121,4 +124,4 @@ voice_over_dialogue_lu = 6.0
 [clean]
 # Which evidence may refuse joining two cards into one breath: 'pause', 'cut', 'both', or 'off' to
 # join on the text rules alone.
-merge_gate = 'off'
+merge_gate = 'both'

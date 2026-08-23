@@ -21,7 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 SC = pathlib.Path(__file__).resolve().parent
-ROOT = pathlib.Path("/home/pawel/projects/lektor-ai")
+ROOT = SC.parent
 sys.path.insert(0, str(SC))
 sys.path.insert(0, str(ROOT / "wsl"))
 import lektor_original as L  # noqa: E402

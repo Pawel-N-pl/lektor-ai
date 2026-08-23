@@ -61,7 +61,9 @@ Szczegóły, liczby i przypadki brzegowe: **[docs/](docs/)**.
 ## Instalacja
 
 Konfiguracja to **dwa pliki**. `lektor.toml` ma 84 linie i trzyma to, co zmieniasz przy każdym
-serialu i po uchu: ścieżki, silnik, głos, poziom, model. `lektor.tuning.toml` trzyma wszystkie 233
+serialu i po uchu: ścieżki, silnik, głos, poziom, model. W repo leży jako
+`lektor.toml.example`; skopiuj go pod właściwą nazwą, bo ta jest w `.gitignore` i twoje
+ścieżki nigdy nie wylądują w commicie. Dopóki kopii nie ma, pipeline czyta sam szablon. `lektor.tuning.toml` trzyma wszystkie 233
 klucze wraz z pomiarem, który za każdym stoi. Pierwszy nadpisuje drugi, więc **skasowanie linijki
 cofa cię do zmierzonej wartości domyślnej, a nie do pustki**.
 
@@ -95,6 +97,7 @@ sudo apt install ffmpeg          # Debian/Ubuntu
 brew install ffmpeg              # macOS
 
 cp .env.example .env             # klucze API, jeśli będziesz ich używać
+cp lektor.toml.example lektor.toml   # twój config – ten plik jest w .gitignore
 ```
 
 W `lektor.toml` ustaw **jeden** klucz:
