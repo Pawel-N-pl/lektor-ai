@@ -30,7 +30,10 @@ holding the `.mkv`
 files (the name is historical, it is simply "the input directory as this OS sees it"), and
 `paths.ffmpeg_wsl` / `paths.ffprobe_wsl` stay as `"ffmpeg"` / `"ffprobe"` when both are on PATH.
 The `paths.*_windows` twins are read only by `windows/lektor.ps1`; nothing in Python ever reaches
-for them, because a Windows binary cannot open the POSIX paths every stage hands it.
+for them, because a Windows binary cannot open the POSIX paths every stage hands it. That script
+reads the same `lektor.toml` pair everything else does – it carries its own reader for the subset
+of TOML the two files use, since PowerShell ships none – and falls back to `lektor.toml.example`
+the same way, so it starts on an unconfigured checkout too.
 
 `uv venv` does not activate anything and the dependencies go into `.venv` only, so a bare `python3`
 in a fresh shell is the system interpreter and exits with `missing dependency (No module named
@@ -113,7 +116,8 @@ Windows does the gigabyte-scale I/O natively, WSL does everything else, and both
 same `_lektor` directory seen from both worlds.
 
 ```powershell
-winget install Gyan.FFmpeg          # then point paths.ffmpeg_windows / ffprobe_windows at the exe
+winget install Gyan.FFmpeg          # paths.ffmpeg_windows / ffprobe_windows: the exe, or a bare
+                                    # 'ffmpeg' when winget has put it on PATH
 .\windows\lektor.ps1 -Stage extract
 .\windows\lektor.ps1 -Stage mux
 .\windows\lektor.ps1 -Stage status

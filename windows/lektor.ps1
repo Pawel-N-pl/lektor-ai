@@ -25,7 +25,7 @@ param(
     [ValidateSet('extract', 'mux', 'status')]
     [string]$Stage,
 
-    [string]$Config = (Join-Path $PSScriptRoot '..\lektor.config.json'),
+    [string]$Config = (Join-Path $PSScriptRoot '..\lektor.toml'),
     [string]$InputDir,
     [string]$Language,
     [switch]$Force
@@ -34,19 +34,230 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2.0
 
+# Normalised once, so the '..' in the default does not turn up in every error message.
+$Config = [IO.Path]::GetFullPath($Config)
+
+function Write-Step  ([string]$m) { Write-Host "  -> $m" -ForegroundColor DarkGray }
+function Write-Ok    ([string]$m) { Write-Host "  OK  $m" -ForegroundColor Green }
+function Write-Warn2 ([string]$m) { Write-Host "  !!  $m" -ForegroundColor Yellow }
+
+# ---------------------------------------------------------------------------
+# TOML
+#
+# Both halves of the pipeline read the same config, and when it stopped being one JSON file this
+# half stopped being able to open it at all: PowerShell ships no TOML reader, and the
+# ConvertFrom-Json that used to sit here throws on the first `[section]` it meets.
+#
+# What follows parses the subset the two config files actually contain - table headers including
+# dotted ones, quoted keys, strings, numbers, booleans and single-line arrays. Not multi-line
+# strings, inline tables or dates: none appear in either file, and supporting them would only be
+# a second implementation to keep honest against the Python one that does the real reading.
+# ---------------------------------------------------------------------------
+
+function Remove-TomlComment {
+    <# Everything from an unquoted '#' onwards is a comment. Inside a string it is a character. #>
+    param([string]$Text)
+
+    $quote = ''
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = [string]$Text[$i]
+        if ($quote -ne '') {
+            if ($c -eq '\' -and $quote -eq '"') { $i++; continue }
+            if ($c -eq $quote) { $quote = '' }
+            continue
+        }
+        if ($c -eq '"' -or $c -eq "'") { $quote = $c; continue }
+        if ($c -eq '#') { return $Text.Substring(0, $i) }
+    }
+    return $Text
+}
+
+function Split-TomlOutsideQuotes {
+    <# Split on one separator character, ignoring the ones inside strings and nested brackets. #>
+    param([string]$Text, [string]$Separator)
+
+    $parts = @()
+    $sb = [Text.StringBuilder]::new()
+    $quote = ''
+    $depth = 0
+    for ($i = 0; $i -lt $Text.Length; $i++) {
+        $c = [string]$Text[$i]
+        if ($quote -ne '') {
+            $null = $sb.Append($c)
+            if ($c -eq '\' -and $quote -eq '"') {
+                $i++
+                if ($i -lt $Text.Length) { $null = $sb.Append([string]$Text[$i]) }
+                continue
+            }
+            if ($c -eq $quote) { $quote = '' }
+            continue
+        }
+        if ($c -eq '"' -or $c -eq "'") { $quote = $c; $null = $sb.Append($c); continue }
+        if ($c -eq '[') { $depth++ }
+        if ($c -eq ']') { $depth-- }
+        if ($c -eq $Separator -and $depth -eq 0) { $parts += $sb.ToString(); $null = $sb.Clear(); continue }
+        $null = $sb.Append($c)
+    }
+    $parts += $sb.ToString()
+    return $parts
+}
+
+function Get-TomlScalar {
+    param([string]$Text)
+
+    $t = $Text.Trim()
+    if ($t.Length -eq 0) { return '' }
+
+    if ($t[0] -eq "'") {                      # literal string: no escapes at all
+        $end = $t.IndexOf("'", 1)
+        if ($end -lt 0) { return $t.Substring(1) }
+        return $t.Substring(1, $end - 1)
+    }
+    if ($t[0] -eq '"') {                      # basic string: the usual backslash escapes
+        $sb = [Text.StringBuilder]::new()
+        for ($i = 1; $i -lt $t.Length; $i++) {
+            $c = [string]$t[$i]
+            if ($c -eq '\') {
+                $i++
+                if ($i -ge $t.Length) { break }
+                $e = [string]$t[$i]
+                switch ($e) {
+                    'n'     { $null = $sb.Append("`n") }
+                    'r'     { $null = $sb.Append("`r") }
+                    't'     { $null = $sb.Append("`t") }
+                    '"'     { $null = $sb.Append('"') }
+                    '\'     { $null = $sb.Append('\') }
+                    default { $null = $sb.Append('\'); $null = $sb.Append($e) }
+                }
+                continue
+            }
+            if ($c -eq '"') { break }
+            $null = $sb.Append($c)
+        }
+        return $sb.ToString()
+    }
+
+    if ($t -eq 'true')  { return $true }
+    if ($t -eq 'false') { return $false }
+
+    $asInt = 0
+    if ([int]::TryParse($t, [ref]$asInt)) { return $asInt }
+    $asDouble = 0.0
+    $style = [Globalization.NumberStyles]::Float
+    $invariant = [Globalization.CultureInfo]::InvariantCulture
+    if ([double]::TryParse($t, $style, $invariant, [ref]$asDouble)) { return $asDouble }
+    return $t
+}
+
+function Get-TomlValue {
+    param([string]$Text)
+
+    $t = $Text.Trim()
+    if ($t.Length -eq 0 -or $t[0] -ne '[') { return Get-TomlScalar $t }
+
+    $close = $t.LastIndexOf(']')
+    $inner = if ($close -gt 0) { $t.Substring(1, $close - 1) } else { $t.Substring(1) }
+    $items = @()
+    foreach ($piece in (Split-TomlOutsideQuotes $inner ',')) {
+        if ($piece.Trim().Length -gt 0) { $items += , (Get-TomlValue $piece) }
+    }
+    return , $items                           # the comma keeps a one-item array an array
+}
+
+function Get-TomlName {
+    <# A key or a table-header segment, with its quotes taken off. #>
+    param([string]$Text)
+
+    $t = $Text.Trim()
+    if ($t.Length -ge 2 -and ($t[0] -eq '"' -or $t[0] -eq "'") -and $t[-1] -eq $t[0]) {
+        return $t.Substring(1, $t.Length - 2)
+    }
+    return $t
+}
+
+function ConvertFrom-Toml {
+    param([string]$Path)
+
+    $root = @{}
+    $table = $root
+    foreach ($raw in [IO.File]::ReadAllLines($Path, [Text.Encoding]::UTF8)) {
+        $line = $raw.Trim()
+        if ($line.Length -eq 0 -or $line[0] -eq '#') { continue }
+
+        if ($line[0] -eq '[') {
+            $close = $line.IndexOf(']')
+            if ($close -lt 0) { continue }
+            $table = $root
+            foreach ($segment in (Split-TomlOutsideQuotes $line.Substring(1, $close - 1) '.')) {
+                $name = Get-TomlName $segment
+                if (-not $table.ContainsKey($name)) { $table[$name] = @{} }
+                $table = $table[$name]
+            }
+            continue
+        }
+
+        $halves = Split-TomlOutsideQuotes $line '='
+        if ($halves.Count -lt 2) { continue }
+        $key = Get-TomlName $halves[0]
+        $value = ($halves[1..($halves.Count - 1)] -join '=')
+        $table[$key] = Get-TomlValue (Remove-TomlComment $value)
+    }
+    return $root
+}
+
+function Merge-TomlTable {
+    <# `Over` wins, key by key, all the way down. Mirrors lektorlib.config._merge. #>
+    param([hashtable]$Base, [hashtable]$Over)
+
+    $out = @{}
+    foreach ($k in $Base.Keys) { $out[$k] = $Base[$k] }
+    foreach ($k in $Over.Keys) {
+        if ($out.ContainsKey($k) -and $out[$k] -is [hashtable] -and $Over[$k] -is [hashtable]) {
+            $out[$k] = Merge-TomlTable $out[$k] $Over[$k]
+        } else {
+            $out[$k] = $Over[$k]
+        }
+    }
+    return $out
+}
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-if (-not (Test-Path $Config)) { throw "Config not found: $Config" }
-$cfg = Get-Content -Path $Config -Raw -Encoding UTF8 | ConvertFrom-Json
-
-$ffmpeg  = $cfg.paths.ffmpeg_windows
-$ffprobe = $cfg.paths.ffprobe_windows
-foreach ($bin in @($ffmpeg, $ffprobe)) {
-    if (-not (Test-Path $bin)) { throw "Binary not found: $bin -- fix paths.ffmpeg_windows / paths.ffprobe_windows in $Config" }
+# lektor.toml is gitignored, so a checkout nobody has configured yet has only the template. Read
+# it rather than refusing to start - the same fallback the Python half makes.
+$cfgPath = $Config
+if (-not (Test-Path $cfgPath)) {
+    $template = "$Config.example"
+    if (-not (Test-Path $template)) { throw "Config not found: $Config (nor $template)" }
+    Write-Warn2 "no $([IO.Path]::GetFileName($Config)) yet, reading $([IO.Path]::GetFileName($template))"
+    $cfgPath = $template
 }
 
+$cfgDir  = Split-Path -Parent $Config
+$cfgStem = [IO.Path]::GetFileNameWithoutExtension($Config)
+$cfgExt  = [IO.Path]::GetExtension($Config)
+$tuningPath = Join-Path $cfgDir "$cfgStem.tuning$cfgExt"
+
+$cfg = ConvertFrom-Toml $cfgPath
+if (Test-Path $tuningPath) { $cfg = Merge-TomlTable (ConvertFrom-Toml $tuningPath) $cfg }
+
+function Resolve-Binary {
+    <# A full path, or a bare name found on PATH - which is what winget and choco both give you. #>
+    param([string]$Configured, [string]$Key)
+
+    if (-not $Configured) { throw "paths.$Key is empty in $Config" }
+    if (Test-Path $Configured) { return (Resolve-Path $Configured).Path }
+    $found = Get-Command $Configured -CommandType Application -ErrorAction SilentlyContinue
+    if ($found) { return $found.Source }
+    throw "Binary not found: $Configured -- fix paths.$Key in $Config, or put it on PATH"
+}
+
+$ffmpeg  = Resolve-Binary $cfg.paths.ffmpeg_windows  'ffmpeg_windows'
+$ffprobe = Resolve-Binary $cfg.paths.ffprobe_windows 'ffprobe_windows'
+
+if (-not $InputDir) { $InputDir = $cfg.paths.input_dir }
 if (-not $InputDir) { $InputDir = $cfg.paths.input_dir_windows }
 if (-not (Test-Path $InputDir)) { throw "Input dir not found: $InputDir" }
 if (-not $Language) { $Language = $cfg.extract.subtitle_language }
@@ -54,10 +265,6 @@ if (-not $Language) { $Language = $cfg.extract.subtitle_language }
 $workDir = Join-Path $InputDir $cfg.paths.work_subdir
 $outDir  = Join-Path $InputDir $cfg.paths.output_subdir
 $null = New-Item -ItemType Directory -Force -Path $workDir
-
-function Write-Step  ([string]$m) { Write-Host "  -> $m" -ForegroundColor DarkGray }
-function Write-Ok    ([string]$m) { Write-Host "  OK  $m" -ForegroundColor Green }
-function Write-Warn2 ([string]$m) { Write-Host "  !!  $m" -ForegroundColor Yellow }
 
 function Invoke-Ffmpeg {
     param([string[]]$FfArgs, [string]$What)
