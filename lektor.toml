@@ -10,10 +10,10 @@
 input_dir = ''
 # Only for the split Windows+WSL setup, where both halves read this file: the same directory as
 # input_dir_wsl, spelled the Windows way. Unused when input_dir is set.
-input_dir_windows = 'E:\Filmy\NCIS.S23E01.1080p.WEB.h264-ETHEL'
+input_dir_windows = 'E:\Filmy\Ted.Lasso.S03.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb'
 # The other half of that pair, spelled the Linux way. Nothing checks that the two name the same
 # directory.
-input_dir_wsl = '/mnt/e/Filmy/NCIS.S23E01.1080p.WEB.h264-ETHEL'
+input_dir_wsl = '/mnt/e/Filmy/Ted.Lasso.S03.1080p.ATVP.WEB-DL.DDP5.1.H.264-NTb'
 # Where the working files go, relative to the episode directory: subtitles, the script you edit,
 # the finished audio.
 work_subdir = '_lektor'
@@ -54,7 +54,7 @@ aligner_venv = ''
 [voice]
 # Which engine speaks: elevenlabs, piper, chatterbox, omnivoice or kikivoice. piper is free,
 # offline and the default recommendation.
-backend = 'elevenlabs'
+backend = 'kikivoice'
 
 [voice.kikivoice]
 # Where the kikivoice checkout lives. A fallback only - the client is copied into the package
@@ -95,7 +95,7 @@ voice = 'pl_PL-darkman-medium'
 venv = '/home/pawel/.cache/lektor-ai-omnivoice/venv-omnivoice'
 # A 3 to 10 s recording to clone the voice from. Shorter is both faster and a better clone - 5.2 s
 # measured 1.5x faster than 7.8 s.
-reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/szolajski.ref.wav'
+reference_wav = '/home/pawel/.cache/lektor-ai-omnivoice/knapik.ref.wav'
 # Language code OmniVoice reads the text as. 'pl' for Polish.
 language = 'pl'
 
@@ -121,4 +121,4 @@ voice_over_dialogue_lu = 6.0
 [clean]
 # Which evidence may refuse joining two cards into one breath: 'pause', 'cut', 'both', or 'off' to
 # join on the text rules alone.
-merge_gate = 'both'
+merge_gate = 'off'
