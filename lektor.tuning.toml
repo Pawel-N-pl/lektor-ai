@@ -479,13 +479,6 @@ concurrency = 8
 # shifts the formants and destroys speaker identity between lines. pitch is also ignored on the
 # clone path – clone_task does not take it.
 [voice.kikivoice]
-# Fallback only, and it stays for standalone runs from the kikivoice checkout: kikivoice_client.py
-# and kikivoice_batch.py are now copied next to backends/kikivoice.py, so the relative import wins
-# and this path is never put on sys.path. If the copies are ever dropped, BOTH files have to live
-# here – the backend swallows a failed batcher import and quietly falls back to one task per line,
-# which on this episode is ~25 human verifications instead of 2.
-client_dir = '~/projects/kikivoice'
-
 # Empty = the client's own default, ~/.config/kikivoice/session.json. There is no API key for this
 # service: identity is the uuid cookie lifted from a browser session, and that file also carries
 # the verification counter and the last quota snapshot. KIKIVOICE_UUID overrides the uuid for a

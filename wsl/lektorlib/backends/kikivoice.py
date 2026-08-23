@@ -35,9 +35,11 @@ It is written to work from two places without edits:
   b) copied into lektor-ai/wsl/lektorlib/backends/ together with kikivoice_client.py. Then the
      relative imports `from .kikivoice_client import ...` and `from ..audio import ...` win.
 
-Both directions are tried, relative first, and if neither works the config's
-`voice.kikivoice.client_dir` is appended to sys.path and the client import is retried once. No pip
-install, no vendoring, no copies of the client kept in two places.
+Both directions are tried, relative first. There is no third: kikivoice_client.py and
+kikivoice_batch.py are vendored beside this file and travel with the repository, so the import
+that fails is a checkout missing its own tracked files, not a machine missing an install. The
+copies are held to their upstream by test_kikivoice_wiring.py, which finds that checkout through
+KIKIVOICE_CHECKOUT and byte-compares the two.
 
 WHAT THIS MODULE USES FROM kikivoice_client.py
 ----------------------------------------------
@@ -109,8 +111,8 @@ _CLIENT = None
 _CLIENT_LOCK = threading.Lock()
 
 
-def _load_client(client_dir: str | None):
-    """Import kikivoice_client from wherever it happens to live. Cached, thread-safe."""
+def _load_client():
+    """Import kikivoice_client from beside this file. Cached, thread-safe."""
     global _CLIENT
     with _CLIENT_LOCK:
         if _CLIENT is not None:
@@ -121,17 +123,11 @@ def _load_client(client_dir: str | None):
             try:
                 import kikivoice_client as mod  # same directory, standalone
             except ImportError:
-                d = str(client_dir or "").strip()
-                d = str(Path(d).expanduser()) if d else d
-                if not d or not Path(d, "kikivoice_client.py").is_file():
-                    raise SystemExit(
-                        "kikivoice: nie znalazlem kikivoice_client.py.\n"
-                        "  Ustaw voice.kikivoice.client_dir na katalog, w ktorym lezy ten plik,\n"
-                        "  albo skopiuj kikivoice_client.py obok kikivoice_backend.py."
-                    ) from None
-                if d not in sys.path:
-                    sys.path.append(d)
-                import kikivoice_client as mod  # noqa: F811
+                raise SystemExit(
+                    "kikivoice: nie znalazlem kikivoice_client.py.\n"
+                    "  Ten plik jest wersjonowany obok kikivoice.py - odtworz go z repozytorium\n"
+                    "  (git checkout wsl/lektorlib/backends/kikivoice_client.py)."
+                ) from None
         _CLIENT = mod
         return mod
 
@@ -305,7 +301,7 @@ class KikiVoiceBackend(Backend):
     # -- lifecycle ---------------------------------------------------------
 
     def prepare(self) -> None:
-        mod = _load_client(self.v.get("client_dir"))
+        mod = _load_client()
         self._mod = mod
 
         if self.mode not in ("library", "clone"):
@@ -412,12 +408,12 @@ class KikiVoiceBackend(Backend):
             try:
                 pause_ms = float(self.b_batch.get("pause_ms", 1200))
                 # The batcher lives in its own module: it needs numpy and an ffmpeg binary to cut
-                # the returned audio, and the client deliberately does not. _load_client has
-                # already put client_dir on sys.path by the time we get here.
+                # the returned audio, and the client deliberately does not. Found the same two
+                # ways as the client, and vendored beside it for the same reason.
                 try:
                     from . import kikivoice_batch as bmod  # copied into the package
                 except ImportError:
-                    import kikivoice_batch as bmod  # found via client_dir
+                    import kikivoice_batch as bmod  # same directory, standalone
                 self._batcher = bmod.KikiBatcher(
                     limits=mod.BatchLimits(
                         char_budget=int(self.b_batch.get("char_budget", 850)),

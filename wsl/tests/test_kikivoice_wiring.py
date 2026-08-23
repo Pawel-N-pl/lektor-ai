@@ -16,6 +16,7 @@ None of this touches the network, the session file or a single credit.
 """
 import ast
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -274,8 +275,9 @@ def test_the_client_and_the_batcher_both_sit_next_to_the_backend():
 
 # -- the copies against the checkout they came from --------------------------
 
-UPSTREAM = pathlib.Path(
-    Config(CONFIG).raw["voice"]["kikivoice"]["client_dir"])
+# Where the client was taken from. A fact about one development machine, not a knob the pipeline
+# turns, so it lives in the environment rather than in the config that ships to everybody else.
+UPSTREAM = pathlib.Path(os.environ.get("KIKIVOICE_CHECKOUT", "~/projects/kikivoice")).expanduser()
 
 
 @pytest.mark.parametrize("name", ["kikivoice_client.py", "kikivoice_batch.py"])

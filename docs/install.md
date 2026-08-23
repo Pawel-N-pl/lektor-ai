@@ -168,10 +168,11 @@ on CPU and moving, because on a shared GPU the single contiguous 2.28 GiB warmup
 refused outright while a 1 GiB one succeeds. `voice.omnivoice.reference_wav` is the voice to clone,
 3–10 s, kept outside the repo on purpose: it is a recording of a real person, not source code.
 
-**kikivoice** – no venv, but the client lives in another repository. `voice.kikivoice.client_dir`
-must point at the directory holding `kikivoice_client.py` and `kikivoice_batch.py`; it is
-deliberately not vendored, so `--backend kikivoice`
-without it exits with a named error rather than an ImportError. `voice.kikivoice.clone.sample_path`
+**kikivoice** – no venv and nothing to install: the client grew up in another repository, but
+`kikivoice_client.py` and `kikivoice_batch.py` are vendored beside the backend and travel with
+this one, so there is no path to configure. They are held to their upstream by a test that
+byte-compares the two, which finds the checkout through `KIKIVOICE_CHECKOUT` and skips on a
+machine that has none. `voice.kikivoice.clone.sample_path`
 is the voice sample to clone from, 5–120 s. The budget is a **weekly bucket of 80 000 credits**,
 not money, and a render can **stop and exit 75** waiting for a human to solve a GeeTest challenge
 in a browser – roughly every 30 accepted tasks. Re-running the same command resumes from cache.

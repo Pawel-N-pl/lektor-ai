@@ -60,9 +60,6 @@ aligner_venv = ''
 backend = 'piper'
 
 [voice.kikivoice]
-# Where the kikivoice checkout lives. A fallback only - the client is copied into the package
-# beside the backend.
-client_dir = '~/projects/kikivoice'
 # 'clone' speaks with the sample below; 'library' speaks with a catalogue voice named by
 # voice_code and voice_id.
 mode = 'clone'
