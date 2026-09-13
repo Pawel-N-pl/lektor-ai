@@ -74,12 +74,17 @@ model_type = 'kiki_core'
 [voice.kikivoice.clone]
 # The recording the voice is cloned from, uploaded to the server once a day. 5 to 120 s, any
 # format ffmpeg reads. Changing it invalidates every cached line of that voice.
-sample_path = '~/voice-samples/lektor.m4a'
+#
+# Keep it OUTSIDE the repository. It is a recording of a voice - your own, which is the case this
+# was built around - and .gitignore refuses audio outright so a sample cannot reach the history by
+# accident.
+sample_path = '~/voice-samples/my-voice.m4a'
 
 [voice.elevenlabs]
-# The ElevenLabs voice. Changing it calls for a re-calibration and a re-measured presence shelf -
-# see the same key in the tuning file.
-voice_id = 'Ix8C14HEHgIQkJswik2o'
+# The ElevenLabs voice, copied from the voice's page in your own account - a voice id is account
+# scoped, so somebody else's is of no use to you and none ships here. Changing it calls for a
+# re-calibration and a re-measured presence shelf, see the same key in the tuning file.
+voice_id = ''
 # Which ElevenLabs model reads. flash and turbo cost half of the rest and get twice the
 # concurrency.
 model_id = 'eleven_flash_v2_5'
@@ -93,8 +98,19 @@ voice = 'pl_PL-darkman-medium'
 # A venv with torch and omnivoice. The model is held by a worker launched from it, so the pipeline
 # itself never imports torch.
 venv = '~/.cache/lektor-ai-omnivoice/venv-omnivoice'
-# A 3 to 10 s recording to clone the voice from. Shorter is both faster and a better clone - 5.2 s
-# measured 1.5x faster than 7.8 s.
+# A 3 to 10 s recording of the voice it should speak in - your own, recorded for the purpose, is
+# the case this was built around. Shorter is both faster and a better clone - 5.2 s measured 1.5x
+# faster than 7.8 s. Mono 24 kHz is what the model reads; anything ffmpeg opens will be converted,
+# but cutting it yourself is how you control WHICH five seconds it hears.
+#
+# Record it DRY, and cut it from CONTINUOUS speech. A clip taken from a finished mix carries
+# whatever sat under the speaker - music, effects, another language - and the model reproduces that
+# in every line it then speaks. Measured while searching a 28-minute mixed recording for a usable
+# five seconds: the cleanest window in the whole file still had the backing only 32 dB below the
+# speaker, and it was audible in the result. No amount of searching closes that gap; recording dry
+# does.
+#
+# Keep it OUTSIDE the repository: see the note on kikivoice's sample_path above.
 reference_wav = '~/.cache/lektor-ai-omnivoice/reference.wav'
 # Language code OmniVoice reads the text as. 'pl' for Polish.
 language = 'pl'
@@ -104,7 +120,9 @@ language = 'pl'
 venv = '~/.cache/lektor-ai-chatterbox/venv-chatterbox'
 # Language code Chatterbox reads the text as.
 language_id = 'pl'
-# An 8 to 20 s recording to clone from. Empty means the model's own built-in voice.
+# An 8 to 20 s recording to clone from. Empty means the model's own built-in voice, which is the
+# only setting here that involves nobody's voice but the model's. The same sourcing rules as
+# omnivoice apply to anything you put here.
 reference_wav = ''
 
 [mix]
