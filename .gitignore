@@ -1,36 +1,9 @@
-# ─── Node / React / TypeScript ───────────────────────────────
-node_modules/
-dist/
-build/
-.next/
-out/
-.cache/
-*.tsbuildinfo
-.eslintcache
-.vite/
-coverage/
-.turbo/
-
-# ─── Package managers ────────────────────────────────────────
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-.pnpm-store/
-
 # ─── Env / secrets ───────────────────────────────────────────
 .env
 .env.*
 !.env.example
 !.env.template
 *.local
-
-# ─── PHP / Composer ──────────────────────────────────────────
-/vendor/
-composer.phar
-.php-cs-fixer.cache
-.phpunit.result.cache
-.phpunit.cache/
 
 # ─── Python ──────────────────────────────────────────────────
 __pycache__/
@@ -42,20 +15,15 @@ env/
 .Python
 *.egg-info/
 .eggs/
+build/
+dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .tox/
 .ipynb_checkpoints/
-
-# ─── Docker ──────────────────────────────────────────────────
-docker-compose.override.yml
-*.env.docker
-
-# ─── Testing ─────────────────────────────────────────────────
-.nyc_output/
-playwright-report/
-test-results/
+coverage/
+.coverage
 *.lcov
 
 # ─── AI tool vendor dirs (ignore wholesale) ──────────────────
@@ -102,14 +70,49 @@ tmp/
 *.tmp
 *.pid
 
-# lektor-ai
-.venv/
+# ─── Audio, video, and model weights ─────────────────────────
+# NOTHING that carries a voice belongs in this repository. The clips this project clones from are
+# recordings of somebody's voice - the user's own, in the case it was built around - and that is
+# not the repository's business either way. A sample committed once stays in the history for good.
+#
+# The rule used to be `*.mp3` alone, which was the one format the project never produced: every
+# reference clip it actually uses is a .wav (mono 24 kHz, cut to 3-10 s) and the kikivoice clone
+# sample is whatever ffmpeg read, usually .m4a. So the guard covered the format nobody had and
+# missed both of the ones everybody does. Extensions, not paths, because the samples are kept
+# outside the tree on purpose and this only has to catch the day somebody forgets.
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.ogg
+*.opus
+*.aac
+*.wma
+*.mka
+*.mkv
+*.mp4
+*.m4v
+*.mov
+*.webm
+*.eac3
+*.ac3
+*.dts
+*.srt
+*.ass
+*.vtt
+# Model checkpoints: gigabytes, and none of them are ours to redistribute.
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.safetensors
+*.gguf
+
+# ─── lektor-ai ───────────────────────────────────────────────
+# Everything a run writes beside the episode: subtitles, the script, the cache, the finished
+# track. Reproducible from the source and the config, and measured in hundreds of megabytes.
 _lektor/
 
-# Voice reference recordings. Real people; keep them out of the repo.
-*.mp3
-
-# ─── lektor-ai local config ──────────────────────────────────
 # The working copy: paths, which engine, whose voice. Template: lektor.toml.example
 /lektor.toml
 
