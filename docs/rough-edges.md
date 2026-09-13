@@ -64,5 +64,22 @@ What does not work well, stated plainly.
 - **Two hardcoded thread counts are properties of this machine**, not of yours: `voice.piper.
   concurrency` = 14 and `speech.ffmpeg_threads` = 14, both capped at 14 of 16 by owner rule so other
   containers keep a core.
+- **Three numbers that guard short lines are judgement, not measurement.** Everything else in the
+  tuning file carries the measurement behind it; these three do not. `voice.trim.blip_gap_ms` (200,
+  raised from 100) and `voice.trim.blip_min_keep_ms` (350, new) were reasoned from Polish phonetics –
+  a final plosive's closure runs 60–130 ms and its release 20–40 ms – and from the one measured
+  artefact they still have to catch, which hid behind 200 ms of true silence. `voice.omnivoice.
+  duration_floor_ms` (550, raised from 400) is simply the length a short word plus its release
+  occupies. All three were changed on a report of one-syllable lines arriving cut short; **none has
+  been put through a listening test.** They affect every line of every backend, so if the lektor
+  starts drawling on short cards, `duration_floor_ms` is the first to put back.
+- **A clone reference cut from a finished mix carries whatever sat under the speaker.** Not a
+  hypothetical: searching a 28-minute mixed recording for the cleanest five seconds, the best
+  window available still had the backing only **32 dB below the speaker**, and the worst candidates
+  sat at 26 dB. The model clones what it hears, so that bed is reproduced in every line it then
+  speaks. Three separate window-scoring passes were needed to get an honest number, because a naive
+  score rewards windows whose "quiet background" is really a leading or trailing silence – a window
+  with 250 ms of digital silence at one end scores as 45 dB cleaner than it is. A **dry** recording
+  of the voice you want beats any careful cut from a mixed one, and no searching closes that gap.
 - Cached TTS lives in `_lektor/.cache/`, keyed by everything that changes the waveform. Delete it to
   force regeneration; keep it and reruns are free.

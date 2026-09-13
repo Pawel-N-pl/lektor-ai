@@ -59,6 +59,34 @@ speeds over the whole episode rather than line by line.
   `max_speed` 1.2 is simply allowed to run long into the silence that follows, which is what a real
   lektor does. kikivoice is the one documented exception, on its own 24 kHz output.
 
+## Trimming the ends of a clip
+
+Every engine pads an utterance with dead air – measured over 180 real lines, 44 ms before the speech
+and 323 ms after it. That tail is most of the fixed per-utterance cost, and here it is pure loss:
+the gap between two lektor lines is set by the subtitle timings, not by the engine. Trimming takes
+the overhead from 414 ms to about 47 ms and hands the difference back to every short cue, which is
+where the timing actually fails. `keep_ms` (40 ms) of padding stays on both ends, and a cosine taper
+as long as the edge is loud removes the click that trimming to an arbitrary sample would leave.
+
+One rule inside it needs care. A trailing run of voiced frames is thrown away when it looks like an
+artefact rather than the end of the line, and the artefact is real: on a measured clip the speech
+decayed to −60 dB by 2660 ms, sat in true silence for 200 ms, and the engine then appended 60 ms at
+−14 dB, which plays as a hiss cut off mid-way. But *short, and behind a stretch of silence* is also
+the exact shape of a Polish final plosive – the closure of a /k/, /t/ or /p/ is 60–130 ms of
+near-silence and the release that follows is 20–40 ms. With the gap threshold at 100 ms the rule
+could not tell the two apart, and on a one-syllable card it ate the release: "tak" played as "ta".
+
+Three keys in `[voice.trim]` now have to agree before anything is dropped, and they are shared by
+every backend that speaks, because this is a property of TTS rather than of one vendor:
+
+| key | value | what it decides |
+|---|---|---|
+| `blip_ms` | 150 ms | longest run that may be an artefact at all; the measured one was 60 ms |
+| `blip_gap_ms` | 200 ms | silence that must separate it from the speech. Raised from 100, which sat inside the range of an ordinary plosive closure. The measured artefact hid behind 200 ms of TRUE silence, so it is still caught with room to spare |
+| `blip_min_keep_ms` | 350 ms | how much speech must be left standing. Below this, what would remain is itself the length of a syllable – the rule is about to eat part of the word rather than something appended after it. The measured artefact had 2660 ms in front of it and is unaffected |
+
+Set `blip_min_keep_ms` to 0 to go back to trimming on the first two conditions alone.
+
 ## The mix
 
 The lektor lands on the **centre channel**, where dialogue lives and where a stereo downmix folds it

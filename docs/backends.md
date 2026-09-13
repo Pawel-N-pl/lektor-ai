@@ -66,6 +66,15 @@ than `min_fill_ratio` (0.95) of what the words need at `timing.max_speed` are re
 this model returns STUBS rather than failing: 100 of 759 takes on one episode came back under half
 the plausible length, and a stub fits any window, so they were being counted as lines that landed.
 
+A take that fails that gate three times is re-rolled on a fresh seed, then asked once more with **no
+duration at all** – the unconstrained regime is the one this model is most reliable in, and the line
+may then overrun its window, which the mix tolerates and the report counts. If even that comes back
+short the take is **kept anyway** rather than discarded. The floor is proportional to the TEXT, so
+on a one-syllable card a take failing the ratio is still most of the word, while the alternative is
+the whole card gone silently with nothing in the report to point at. Only a genuinely EMPTY take –
+the zero-length array this retry loop was written for – still ends as silence. The run summary
+counts all three outcomes separately: re-rolled, read unconstrained, kept short.
+
 **kikivoice** is billed in a weekly credit bucket instead of money, which changes every decision.
 `billable = False` on purpose, so `pricing.py` does not value its characters at the ElevenLabs rate
 and print a dollar figure that is simply untrue; the backend reports credits itself. It never buys

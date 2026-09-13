@@ -41,7 +41,8 @@ def decode_mono(cfg, data: bytes, sr: int, atempo: float | None = None) -> np.nd
 
 def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
                  keep_ms: float = 40.0, fade_ms: float = 8.0,
-                 blip_ms: float = 150.0, blip_gap_ms: float = 100.0) -> np.ndarray:
+                 blip_ms: float = 150.0, blip_gap_ms: float = 200.0,
+                 blip_min_keep_ms: float = 350.0, cfg=None) -> np.ndarray:
     """Cut the dead air a TTS engine pads around an utterance.
 
     Measured over 180 real lines: 44 ms of silence before the speech and 323 ms after it. That
@@ -51,7 +52,18 @@ def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
     every short cue, which is where the timing actually fails.
 
     keep_ms of padding stays on both ends so nothing is clipped into a hard edge.
+
+    Every parameter can be overridden from [voice.trim] when a cfg is handed in, because the blip
+    rule below is the one part of this that a short line disagrees with the measurement about.
     """
+    if cfg is not None:
+        t = cfg["voice"].get("trim", {})
+        floor_db = float(t.get("floor_db", floor_db))
+        keep_ms = float(t.get("keep_ms", keep_ms))
+        fade_ms = float(t.get("fade_ms", fade_ms))
+        blip_ms = float(t.get("blip_ms", blip_ms))
+        blip_gap_ms = float(t.get("blip_gap_ms", blip_gap_ms))
+        blip_min_keep_ms = float(t.get("blip_min_keep_ms", blip_min_keep_ms))
     if audio.size == 0:
         return audio
     frame = max(1, int(0.01 * sr))
@@ -74,6 +86,15 @@ def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
     # So a final run of voiced frames is dropped when it is SHORT and SEPARATED from the speech by
     # real silence. Both conditions matter: a short run right after the speech is the end of a
     # word, and a long run after a gap is a second sentence.
+    #
+    # A third condition exists because the first two cannot tell a stray burst from the release of
+    # a Polish final plosive. The closure of a /k/, /t/ or /p/ is 60-130 ms of near-silence
+    # followed by a burst of 20-40 ms, which is exactly the shape this rule hunts, and on a
+    # one-syllable card that burst is the difference between "tak" and "ta". So the gap has to be
+    # WIDER than any closure - the measured stray burst sat behind 200 ms of true silence, well
+    # clear of one - and the speech left standing has to be long enough to be a line in its own
+    # right. Below blip_min_keep_ms what would remain is itself the length of a syllable, i.e. the
+    # rule is about to eat part of the word rather than something appended after it.
     runs: list[tuple[int, int]] = []
     for f in voiced:
         if runs and f == runs[-1][1] + 1:
@@ -82,8 +103,11 @@ def trim_silence(audio: np.ndarray, sr: int, floor_db: float = -45.0,
             runs.append((f, f))
     blip = max(1, int(blip_ms / 1000.0 / (frame / sr)))
     gap = max(1, int(blip_gap_ms / 1000.0 / (frame / sr)))
+    min_keep = int(blip_min_keep_ms / 1000.0 / (frame / sr))
     while len(runs) > 1:
         s0, e0 = runs[-1]
+        if (runs[-2][1] - runs[0][0] + 1) < min_keep:
+            break
         if (e0 - s0 + 1) <= blip and (s0 - runs[-2][1]) >= gap:
             runs.pop()
         else:

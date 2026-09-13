@@ -507,6 +507,39 @@ concurrency = 8
 # undone anyway, while volume above 100 risks clipping inside the returned 16-bit PCM. pitch
 # shifts the formants and destroys speaker identity between lines. pitch is also ignored on the
 # clone path – clone_task does not take it.
+[voice.trim]
+# How the dead air an engine pads around an utterance is cut off. Shared by every backend that
+# speaks – elevenlabs, kikivoice and omnivoice all hand their audio to the same trim_silence –
+# because the thing being removed is a property of TTS, not of one vendor.
+
+# Level, relative to the clip's own peak, under which a 10 ms frame counts as not speech.
+floor_db = -45.0
+# Padding left on both ends so the speech never starts or stops on a hard edge.
+keep_ms = 40.0
+# Shortest cosine taper laid over a trimmed end. Grows up to 25 ms when the edge is loud; see the
+# note in audio.py for why a fixed 8 ms is itself audible on the loud ones.
+fade_ms = 8.0
+
+# The three keys below decide when a final run of voiced frames is an artefact to be thrown away
+# rather than the end of the line. All three have to agree before anything is dropped.
+
+# Longest such run that may be treated as an artefact. The measured one was 60 ms.
+blip_ms = 150.0
+# Silence that must sit between the speech and that run before it counts as detached. Raised from
+# 100 to 200 because 100 cannot tell a stray burst from a Polish final plosive: the closure of a
+# /k/, /t/ or /p/ is 60–130 ms of near-silence and the release that follows is 20–40 ms, which is
+# precisely the shape this rule hunts. On a one-syllable card that release is not decoration – it
+# is the difference between "tak" and "ta", and dropping it is what makes short lines sound cut
+# off. The artefact this rule was written for sat behind 200 ms of TRUE silence, so it is still
+# caught here with room to spare; no closure reaches that far.
+blip_gap_ms = 200.0
+# How much speech has to be left standing for the drop to go ahead at all. Below this, whatever
+# would remain is itself no longer than a syllable, which means the rule is about to eat part of
+# the word instead of something appended after it. The measured artefact had 2660 ms of speech in
+# front of it and is unaffected; a one-syllable card has a few hundred and is protected. Set 0 to
+# go back to trimming on the two conditions above alone.
+blip_min_keep_ms = 350.0
+
 [voice.kikivoice]
 # Empty = the client's own default, ~/.config/kikivoice/session.json. There is no API key for this
 # service: identity is the uuid cookie lifted from a browser session, and that file also carries
@@ -829,7 +862,15 @@ num_step = 32
 
 seed = 1234
 duration_pad_ms = 0.0
-duration_floor_ms = 400.0
+# Shortest duration ever asked for, whatever the window says. It binds on exactly one kind of cue:
+# a one- or two-word card whose subtitle slot is tight, where the ask would otherwise come out
+# under half a second and the model answers by clipping the word rather than by speaking briskly.
+# Raised from 400 to 550 on the owner's report of one-syllable lines arriving cut short. Unlike
+# every other number in this file that is a JUDGEMENT, not a measurement – nothing here has been
+# fitted against a listening test, and 550 is simply the length a short Polish word plus its
+# release actually occupies. It costs nothing anywhere else: any cue with a real window already
+# asks for far more than this, so the floor never enters the calculation there.
+duration_floor_ms = 550.0
 # Lines generated per call by the prewarm hook, each with its own duration. This is the single
 # number that decides whether this engine is usable: measured on six lines, batched ran 4.4x
 # faster than one at a time (RTF 0.317 against 1.38), i.e. an episode in about five minutes of GPU

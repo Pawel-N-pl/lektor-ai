@@ -181,7 +181,8 @@ class ElevenLabsBackend(Backend):
         an utterance that is then rewritten underneath the decision.
         """
         audio = decode_mono(self.cfg, blob, self.sample_rate, atempo=atempo)
-        return trim_silence(shorten_pauses(self.cfg, audio, self.sample_rate), self.sample_rate)
+        return trim_silence(shorten_pauses(self.cfg, audio, self.sample_rate),
+                            self.sample_rate, cfg=self.cfg)
 
     def render(self, u: Utterance) -> Rendered:
         # A speed planned across the whole episode wins over one computed from this line alone:

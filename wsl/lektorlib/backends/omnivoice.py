@@ -130,6 +130,7 @@ class OmniVoiceBackend(Backend):
         self.audio_seconds = 0.0
         self.empty_takes = 0
         self.unconstrained = 0
+        self.kept_short = 0
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -438,9 +439,23 @@ class OmniVoiceBackend(Backend):
                         say(f"    omnivoice: {u.text[:40]!r} would not fit its window at all, "
                             f"read at natural length instead")
                         break
+                    # Everything above has failed, and the choice left is between a line that is
+                    # too short and no line at all. Keep the take. The gate exists to catch a stub
+                    # standing in for a whole sentence, but its floor is proportional to the TEXT,
+                    # and on a one-syllable card the text predicts so little that a take failing
+                    # the ratio is still most of the word - while a hole is the whole card gone,
+                    # silently, with nothing in the report to point at it. The same reasoning the
+                    # unconstrained attempt above already follows: an overrun is recoverable, a
+                    # silent line is not, and so is a short one. Only a genuinely EMPTY take, which
+                    # is the failure this retry loop was written for, still ends as silence.
+                    if path.exists() and path.stat().st_size > 0:
+                        self.kept_short += 1
+                        say(f"    omnivoice: {u.text[:40]!r} came back short {attempts + 1}x, "
+                            f"kept anyway rather than dropped")
+                        break
                     path.unlink(missing_ok=True)
-                    say(f"    !! omnivoice truncated {attempts + 1}x for {u.text[:48]!r}, including "
-                        f"once with no length constraint -- this line will be silent")
+                    say(f"    !! omnivoice returned nothing {attempts + 1}x for {u.text[:48]!r}, "
+                        f"including once with no length constraint -- this line will be silent")
                     return Rendered(audio=np.zeros(0, dtype=np.float32),
                                     sample_rate=self.sample_rate, speed=1.0, atempo=1.0,
                                     cached=False, billable_chars=0)
@@ -449,7 +464,7 @@ class OmniVoiceBackend(Backend):
         # The 200 ms tail is silence the model pads with, not speech. It has to go before the mix
         # measures anything: assemble_voice places clips by their length, so a padded clip would
         # push its own neighbours and widen every gap by a fifth of a second.
-        audio = trim_silence(audio, self.sample_rate)
+        audio = trim_silence(audio, self.sample_rate, cfg=self.cfg)
 
         return Rendered(
             audio=audio,
@@ -468,7 +483,9 @@ class OmniVoiceBackend(Backend):
                 f"of speech (RTF {rtf:.2f})"
                 + (f", {self.empty_takes} empty take(s) re-rolled" if self.empty_takes else "")
                 + (f", {self.unconstrained} read unconstrained after repeated failures"
-                   if self.unconstrained else ""))
+                   if self.unconstrained else "")
+                + (f", {self.kept_short} kept short rather than dropped"
+                   if self.kept_short else ""))
             self.generated = 0
 
         self._reader = None

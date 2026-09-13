@@ -1156,7 +1156,8 @@ class KikiVoiceBackend(Backend):
         the material is 24 kHz whatever the header says - but the pipeline mixes at one rate.
         """
         audio = decode_mono(self.cfg, blob, self.sample_rate, atempo=atempo)
-        return trim_silence(shorten_pauses(self.cfg, audio, self.sample_rate), self.sample_rate)
+        return trim_silence(shorten_pauses(self.cfg, audio, self.sample_rate),
+                            self.sample_rate, cfg=self.cfg)
 
     def render(self, u: Utterance) -> Rendered:
         # A cue that is empty after cleaning is not worth a request, and asking for one would
