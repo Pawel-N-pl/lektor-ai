@@ -382,6 +382,14 @@ centre_filter = 'pan=mono|c0=FC,highpass=120,lowpass=7500,dynaudnorm'
 # downmix carries the music and effects that the centre channel does not.
 downmix_filter = 'highpass=120,lowpass=7500,dynaudnorm'
 
+# Mean level, in dBFS, below which the extracted centre channel is not a dialogue stem at all and
+# the downmix is taken instead. A 5.1 tag does not promise FC carries anything: the Netflix
+# release of Grand Theft Auto VI: An Extended Look measured FC at -114 dBFS against -31 for L and
+# R, and the aligner read 51 MB of silence and returned 0 of 468 cues without erroring. Speech
+# that is present sits far above this: the same film's downmix measured -27 dBFS. -60 is the gap
+# between those two worlds, not a threshold anything real sits near.
+centre_min_mean_db = -60.0
+
 # Aligner confidence below which a cue contributes no word times at all. Not decoration: cues
 # scoring under 0.35 were measured at 0.314 mean ASR token recall against 0.901 for cues at 0.7
 # and above, i.e. the low scorers are shouts over crowd noise where the times are guesses - and a
@@ -448,6 +456,27 @@ fa_timeout_s = 1800
 # further only against a measured count - a detector that fires on camera movement is worse than
 # one that misses cuts, because the merge gate then refuses seams for no reason.
 scene_threshold_scdet = 5
+
+# Which decoder reads the video for the shot-cut pass: 'auto' sends 4K to NVDEC and keeps
+# everything below it on the CPU, 'cpu' forces ffmpeg's own software decoder, and a decoder name
+# (hevc_cuvid) forces that one. Measured on one minute of 2160p HEVC 10-bit, three planes of scdet
+# each time: 47.3 s on the CPU, 12.1 s through NVDEC, 5.0 s with cuts_resize as well - and all
+# three found the same six cuts, to the millisecond. At 1080p H.264 the CPU is the faster of the
+# two (13.3 s against 20.7 s), so 'auto' leaves that where it was.
+cuts_decoder = 'auto'
+# Below this width 'auto' stays on the CPU. 2560 puts 2160p on the GPU and leaves 1080p and 1440p
+# on the side of the crossover where they were measured faster. Re-measured on 120 s of 1080p
+# H.264 (Silo, ATVP WEB-DL): CPU 3.49 s, NVDEC 5.27 s, NVDEC scaled 5.10 s - and all three found
+# the same 21 cuts, so 8-bit sources cost nothing in accuracy either way. What the GPU does buy
+# there is CORES: 93-134% against the CPU path's 965%, i.e. one core instead of ten. On a machine
+# sharing this WSL with other projects' containers, that can be worth 1.6 s a minute of film -
+# set speech.cuts_decoder to the decoder name (h264_cuvid) per config to take it.
+cuts_gpu_min_width = 2560
+# The size NVDEC scales to while it decodes, for the cut detector only - never for anything that
+# is heard or seen. Free on the GPU, and it is what turns 12.1 s into 5.0 s. A cut is a
+# whole-frame event, so 960x540 sees it. Empty keeps full size. The CPU path never scales: there
+# the frame is already decoded at full size by the time it could be, so scaling only adds work.
+cuts_resize = '960x540'
 
 [voice]
 # elevenlabs | piper | chatterbox. elevenlabs costs money and sounds like broadcast; piper is
@@ -948,6 +977,14 @@ sample_rate = 48000
 # picks the encode profile below.
 channel_layout = '5.1(side)'
 
+# Momentary loudness, in LUFS, above which the centre channel counts as carrying dialogue. The
+# speech gate asks "is anybody speaking under this cue" of FC alone, so an empty FC on a 5.1
+# source empties the gate and lets title cards into the dialogue reference. When the loudest 5% of
+# FC sits below this, the mid signal (0.5*FL+0.5*FR) answers the question instead - the same
+# substitution a stereo source already gets. Real dialogue peaks at -20 to -15 LUFS momentary; the
+# empty centre measured on Grand Theft Auto VI never rose above -70.
+centre_silent_lufs = -60.0
+
 # Output channels the lektor is laid onto, in ffmpeg's 5.1(side) order FL FR FC LFE SL SR. [2] is
 # FC. Ignored in stereo, where the lektor is laid on both channels at full level -- which is why
 # voice_channel_comp_db is 0 there: two correlated channels already sum the 3 dB the centre-only
@@ -1266,3 +1303,11 @@ idioms = ['od stóp do głów', 'u stóp', 'palców u stóp', 'na stopach', 'sto
 # would be stating a falsehood. A three-digit group after the separator is read as thousands, one
 # or two digits as cents.
 currency = true
+
+[pack]
+# The language tag written into the .mka. This is the whole reason the track is wrapped in
+# Matroska rather than handed over as a raw .eac3: a bare elementary stream carries no language,
+# so a player told to prefer Polish audio has nothing to prefer, and the file lands as "Track 2".
+language = 'pol'
+# The track name a player shows in its audio menu.
+title = 'Lektor AI (PL)'

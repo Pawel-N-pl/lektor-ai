@@ -84,6 +84,31 @@ Whisper is deliberately **not** called: its raw word timestamps measured 316 ms 
 starts, and skipping it takes the episode from ~3.5 min of GPU to ~10 s. One episode is ~18 s of
 audio extraction, ~9 s of alignment at 234x realtime, and ~58 s of scene detection.
 
+Three things about that stage are worth knowing, because each of them used to be a way for it to
+fail quietly.
+
+**The English reference comes out of the episode itself.** Alignment reads the verbatim English
+text, and supplying it used to be a hand step – which meant it was the step that got skipped, and
+the gate then ran on nothing. `speech` now pulls the English SDH stream out of the same mkv and
+writes it to `_lektor/subs/`, so the evidence is there whether or not anybody remembered.
+
+**A 5.1 tag does not promise the centre channel carries anything.** One release measured FC at
+−114 dBFS against −31 for L and R: the aligner read 51 MB of digital silence and returned 0 of 468
+cues **without erroring**, which looks exactly like an episode where alignment simply found nothing.
+`speech.centre_min_mean_db` (−60 dBFS) is the gap between those two worlds – speech that is present
+sits far above it, the same film's downmix measured −27 – and below it the downmix is taken instead.
+`mix.centre_silent_lufs` does the same job one stage later for the dialogue loudness reference, so
+an empty FC cannot quietly let title cards into the measurement either. Confirm from the log: the
+stage says **"centre audio"** when it read the real thing.
+
+**Shot cuts can decode on the GPU.** Measured on one minute of 2160p HEVC 10-bit, three planes of
+`scdet` each time: 47.3 s on the CPU, 12.1 s through NVDEC, and 5.0 s with `speech.cuts_resize`
+(960x540) as well – all three finding the same six cuts, to the millisecond. At 1080p H.264 the CPU
+is the faster of the two (13.3 s against 20.7 s), so `cuts_decoder = 'auto'` sends only 4K to the
+GPU, with `cuts_gpu_min_width` (2560) as the crossover. What the GPU buys below that is not speed
+but **cores**: 93–134 % against the CPU path's 965 %, i.e. one core instead of ten, which is worth
+having on a machine sharing the box with other work. Name a decoder (`h264_cuvid`) to force it.
+
 What that buys, measured over six episodes: of the 231 seams the text rules join into 211 merged
 utterances, **105 sit on a ≥ 300 ms silence in the delivery and 33 on a shot cut, 117 (51 %) on
 either.** Half of every merge glues together two things the actors said with a real pause between

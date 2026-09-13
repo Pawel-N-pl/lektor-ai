@@ -7,7 +7,12 @@ the work dir: a .srt, a stereo FLAC downmix, a JSON script.
 
 The whole thing, unattended
 ---------------------------
-  python3 wsl/lektor.py run --only S23E01
+  python3 wsl/lektor.py run --only S23E01     one episode
+  python3 wsl/lektor.py all                   every episode in the directory, one after another
+
+`all` takes the same --from/--to/--skip/--redo as `run` and applies them to each episode in
+turn, so a season is one command. Each episode is still resolved, run and summarised on its own,
+and one that fails does not stop the rest.
 
 `run` walks extract -> speech -> script -> retime -> voice -> mux for exactly ONE episode,
 skipping every step whose artefact is already on disk, and stops the chain where carrying on
@@ -39,8 +44,12 @@ Stages, one at a time
              text, and therefore costs nothing at all - no LLM draw, no TTS re-read.
   voice      Read the script with the configured backend, fit each line to its slot, duck the
              original audio underneath it, and encode the mix.
+  pack       Rewrap the encoded track as <base>.mka beside the film, tagged Polish and marked
+             default, which is what a player auto-loads. Stream copy, no video touched - and
+             where the chain stops unless --to says otherwise.
   mux        Copy the film and append the lektor track as a new default audio stream, keeping
-             every original stream, subtitle and chapter untouched.
+             every original stream, subtitle and chapter untouched. Writes a second copy of the
+             video, so it is opt-in: `--to mux`.
   sample     Render the same ~90 s of one episode several ways, into separate files, so the
              choice is made by ear: --backends piper,elevenlabs compares ENGINES, --models
              compares ElevenLabs models on the current one.
@@ -86,7 +95,7 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("stage", choices=["run", "extract", "calibrate", "speech", "script", "retime",
-                                      "voice", "mux", "all", "sample", "cost", "status"])
+                                      "voice", "pack", "mux", "all", "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")
@@ -106,7 +115,7 @@ def main(argv: list[str] | None = None) -> None:
     step_list = " | ".join(pipeline.STEPS)
     ap.add_argument("--from", dest="from_step", default=pipeline.STEPS[0], metavar="STEP",
                     help=f"run: first step of the chain ({step_list})")
-    ap.add_argument("--to", dest="to_step", default=pipeline.STEPS[-1], metavar="STEP",
+    ap.add_argument("--to", dest="to_step", default=pipeline.DEFAULT_LAST_STEP, metavar="STEP",
                     help=f"run: last step of the chain ({step_list})")
     ap.add_argument("--skip", default="", metavar="STEP,STEP",
                     help="run: steps to leave out of the range")
@@ -124,13 +133,13 @@ def main(argv: list[str] | None = None) -> None:
     # --dry-run` is the one that matters: silently ignored, it reads the whole episode and bills
     # for it under a flag whose entire promise is that it touches nothing.
     chain_only = [flag for flag, given in (("--from", args.from_step != pipeline.STEPS[0]),
-                                           ("--to", args.to_step != pipeline.STEPS[-1]),
+                                           ("--to", args.to_step != pipeline.DEFAULT_LAST_STEP),
                                            ("--skip", bool(args.skip)),
                                            ("--redo", bool(args.redo)),
                                            ("--require-speech", args.require_speech),
                                            ("--dry-run", args.dry_run)) if given]
-    if args.stage != "run" and chain_only:
-        ap.error(f"only `run` takes {', '.join(chain_only)}; the stage {args.stage!r} would "
+    if args.stage not in ("run", "all") and chain_only:
+        ap.error(f"only `run` and `all` take {', '.join(chain_only)}; the stage {args.stage!r} would "
                  f"ignore that and do the work anyway")
 
     cfg = Config(args.config)
@@ -142,6 +151,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(pipeline.stage_run(cfg, args.only, args))
     elif args.stage == "extract":
         media.stage_extract(cfg, args.only, args.force)
+    elif args.stage == "pack":
+        media.stage_pack(cfg, args.only, args.force)
     elif args.stage == "mux":
         media.stage_mux(cfg, args.only, args.force)
     elif args.stage == "calibrate":
@@ -155,8 +166,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.stage == "voice":
         stages.stage_voice(cfg, args.only, args.force)
     elif args.stage == "all":
-        stages.stage_script(cfg, args.only, args.force, args.redraw, args.forget_edits)
-        stages.stage_voice(cfg, args.only, args.force)
+        raise SystemExit(pipeline.stage_run_all(cfg, args.only, args))
     elif args.stage == "sample":
         models = [m.strip() for m in args.models.split(",") if m.strip()] or [
             "eleven_flash_v2_5",

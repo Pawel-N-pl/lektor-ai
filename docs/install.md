@@ -119,14 +119,19 @@ same `_lektor` directory seen from both worlds.
 winget install Gyan.FFmpeg          # paths.ffmpeg_windows / ffprobe_windows: the exe, or a bare
                                     # 'ffmpeg' when winget has put it on PATH
 .\windows\lektor.ps1 -Stage extract
-.\windows\lektor.ps1 -Stage mux
+.\windows\lektor.ps1 -Stage pack     # the deliverable: <base>.mka beside the film
 .\windows\lektor.ps1 -Stage status
 ```
 
 WSL still needs its own ffmpeg (`sudo apt install ffmpeg`) and its own venv, exactly as in (a):
 `paths.input_dir_windows` and `paths.input_dir_wsl` are two hand-maintained strings that must name
 the same directory, and nothing verifies that they do. `<base>.source.json` carries both spellings
-of the source path, so a work dir produced by either extract can be finished by either mux.
+of the source path, so a work dir produced by either extract can be finished by either side.
+
+`pack` is the last step of a plain `run`, and it is the one that produces something to play: the
+encoded track stream-copied into a `.mka` beside the film, tagged `language=pol`. `mux` still
+exists for a single self-contained `.mkv`, on an explicit `--to mux`, and costs a full second copy
+of the video for it.
 
 ### Optional pieces, and what stops working without them
 

@@ -9,7 +9,7 @@ python3 wsl/lektor.py run --only S01E01
 ```
 
 Jedno polecenie przechodzi całą drogę: napisy → pomiar mowy → skrócenie tekstu → dosunięcie do
-aktora → synteza → miks → remux. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
+aktora → synteza → miks → **gotowa ścieżka `.mka` obok filmu**. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
 przed startem, a na końcu mówi co zrobił, co pominął, ile kosztowało i gdzie leży plik.
 
 ---
@@ -192,11 +192,20 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |
 | `retime` | dosuwa wczesne kwestie na pierwsze słowo aktora; nic nie kosztuje |
 | `voice` | synteza, dopasowanie do okien, ducking, miks 5.1, enkodowanie |
-| `mux` | remux do nowego `.mkv`, sam stream copy |
+| `pack` | zapakowanie ścieżki w `.mka` z tagiem języka – **domyślny koniec łańcucha** |
+| `mux` | remux do nowego `.mkv`, sam stream copy; **tylko na jawne `--to mux`** |
 | `cost` | ile znaków i ile dolarów, bez dotykania API |
 | `status` | co już leży na dysku |
 
 Podgląd bez skutków ubocznych: `run --dry-run`. Zakres: `--from`, `--to`, `--skip`, `--redo`.
+
+**Dlaczego łańcuch kończy się na `pack`, a nie na `mux`.** Odtwarzacz sam podnosi ścieżkę leżącą
+obok filmu, więc remux nic nie kupuje, a kosztuje drugą kopię całego wideo – 3.6 GB przy odcinku
+3.5 GB. `pack` robi stream copy samego dźwięku do Matroski, nadaje `language=pol`, tytuł i
+dyspozycję domyślną. Kontener, a nie surowy `.eac3`, bo elementarny strumień nie niesie tagu
+języka – a to właśnie tag sprawia, że odtwarzacz ustawiony na polski dźwięk wybiera tę ścieżkę
+sam, zamiast pokazać bezimienne „Track 2". Plik musi nosić nazwę bazową filmu i leżeć w jego
+katalogu, bo po tym działa automatyczne podnoszenie.
 
 ---
 

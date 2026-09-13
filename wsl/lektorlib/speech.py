@@ -469,6 +469,73 @@ def find_reference_srt(cfg, base: str) -> Path | None:
     return None
 
 
+# "English [SDH]", "English CC", "English (Hearing Impaired)" - the near-verbatim transcript, under
+# whichever of its names this release used.
+_SDH_RE = re.compile(r"\bsdh\b|\bcc\b|hearing[ _-]?impaired", re.I)
+
+
+def reference_srt_path(cfg, base: str) -> Path:
+    """Where an extracted reference lands: the first configured pattern that names the base."""
+    pats = [p for p in cfg["speech"]["reference_srt_patterns"] if "{base}" in p]
+    return cfg.work_dir / (pats[0] if pats else "subs/{base}.eng.srt").format(
+        tag=episode_tag(base), base=base)
+
+
+def reference_stream(cfg, video: Path):
+    """The English subtitle stream worth aligning against, or None if the file carries none.
+
+    SDH first, for the reason `find_reference_srt` gives: it keeps the stutters and the reaction
+    sounds, so it matches what was actually uttered. A forced track is never a candidate - it
+    carries signage, not dialogue.
+    """
+    # Imported here rather than at the top: media imports speech.find_video, so a module-level
+    # import would close the loop.
+    from . import media
+
+    try:
+        streams = media.probe_streams(media.ffprobe_bin(cfg), video, "s", strict=True)
+    except Exception as exc:  # noqa: BLE001 - no reference is a degradation, never a stop
+        say(f"  !! could not read the subtitle streams of {video.name}: {exc}")
+        return None
+    cands = [s for s in streams
+             if s.language.lower() in ("eng", "en") and s.disposition.get("forced") != 1]
+    if not cands:
+        return None
+    cands.sort(key=lambda s: (0 if (s.disposition.get("hearing_impaired") == 1
+                                    or _SDH_RE.search(s.title)) else 1, s.index))
+    return cands[0]
+
+
+def extract_reference_srt(cfg, base: str, video: Path) -> Path | None:
+    """Pull the English reference out of the mkv, when no one has put one beside the subtitles.
+
+    Nothing in this pipeline used to create these files. The season's Polish subtitles extracted
+    fine, `speech` printed one line about a missing reference, and the run carried on with shot
+    cuts alone - which costs the lektor its alignment to the actor's first word without costing it
+    an error. A warning that has to be remembered once per episode is a warning that gets missed.
+
+    SDH is preferred over the plain English track for the reason `find_reference_srt` gives: it
+    keeps the stutters and the reaction sounds, so it matches what was actually uttered. A forced
+    track is never a candidate - it carries signage, not dialogue.
+    """
+    pick = reference_stream(cfg, video)
+    if pick is None:
+        return None
+    out = reference_srt_path(cfg, base)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    from . import media
+    try:
+        media.extract_subtitles(cfg.ffmpeg, video, pick.index, out)
+    except Exception as exc:  # noqa: BLE001
+        say(f"  !! could not extract the English reference: {exc}")
+        return None
+    if not out.is_file() or out.stat().st_size < 64:
+        return None
+    say(f"  reference subtitle taken from stream {pick.index} "
+        f"({pick.title or pick.language}) -> {out.name}")
+    return out
+
+
 def find_video(cfg, base: str) -> Path | None:
     for ext in (".mkv", ".mp4", ".m4v"):
         p = cfg.input_dir / f"{base}{ext}"
@@ -481,22 +548,114 @@ def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _mean_volume_db(cfg, wav: Path) -> float:
+    """Mean level of a local wav in dBFS, or -inf when ffmpeg reports digital silence."""
+    r = _run([cfg.ffmpeg, "-hide_banner", "-v", "info", "-i", str(wav),
+              "-af", "volumedetect", "-f", "null", "-"], timeout=600)
+    m = re.search(r"mean_volume:\s*(-?[0-9.]+|-inf) dB", r.stderr)
+    if not m:
+        return 0.0
+    return float("-inf") if m.group(1) == "-inf" else float(m.group(1))
+
+
 def extract_centre(cfg, video: Path, wav: Path) -> str:
     """The dialogue stem, for free: on a 5.1 track the centre channel is where the voices are.
 
     No source separation. Demucs was measured to HURT alignment in the sibling project and was
     dropped there; the band-pass below is what survived. Falls back to a plain mono downmix when
     the track is not 5.1, and says which one it used.
+
+    A 5.1 track is not a promise that FC carries anything. `Grand.Theft.Auto.VI.An.Extended.Look`
+    (Netflix, eac3 5.1) measured FC at -114 dBFS against -31 for L and R: six channels, the whole
+    dialogue in the fronts, the centre empty. ffmpeg does not fail on that - it writes 51 MB of
+    silence, the aligner reads it, reports 0 of 468 cues aligned at 257x realtime, and the run
+    carries on having quietly lost every word time. Hence the level check: a stem this quiet is
+    not a stem, whatever the channel count says.
     """
     s = cfg["speech"]
+    floor = float(s.get("centre_min_mean_db", -60.0))
     for filt, kind in ((s["centre_filter"], "centre"), (s["downmix_filter"], "downmix")):
         cmd = [cfg.ffmpeg, "-v", "error", "-y", "-i", str(video), "-map", s["audio_stream"],
                "-af", filt, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)]
         r = _run(cmd, timeout=s["ffmpeg_timeout_s"])
         if r.returncode == 0 and wav.is_file() and wav.stat().st_size > 1024:
-            return kind
+            level = _mean_volume_db(cfg, wav) if kind == "centre" else 0.0
+            if level >= floor:
+                return kind
+            say(f"  centre channel is silent ({level:.1f} dBFS mean, floor {floor:.0f}) – "
+                f"this 5.1 keeps its dialogue in the fronts; taking the downmix instead")
+            continue
         say(f"  !! ffmpeg {kind} extraction failed: {r.stderr.strip().splitlines()[-1:] or ''}")
     raise RuntimeError("could not extract audio")
+
+
+# Nvidia's decoders, by the codec name ffprobe reports. Only the ones this project has ever been
+# handed a file in; an unknown codec simply stays on the CPU.
+_CUVID = {"hevc": "hevc_cuvid", "h264": "h264_cuvid", "av1": "av1_cuvid", "vp9": "vp9_cuvid",
+          "mpeg2video": "mpeg2_cuvid", "vc1": "vc1_cuvid"}
+
+
+def _video_shape(cfg, video: Path) -> tuple[str, int, str]:
+    """Codec, pixel width and pixel format of the first video stream, or empties if ffprobe won't say."""
+    r = _run([cfg.ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",
+              "stream=codec_name,width,pix_fmt", "-of", "default=noprint_wrappers=1", str(video)],
+             timeout=60)
+    if r.returncode != 0:
+        return "", 0, ""
+    found = dict(re.findall(r"^(\w+)=(.*)$", r.stdout, re.M))
+    try:
+        width = int(found.get("width") or 0)
+    except ValueError:
+        width = 0
+    return found.get("codec_name", ""), width, found.get("pix_fmt", "")
+
+
+def _has_decoder(ffmpeg: str, name: str) -> bool:
+    r = _run([ffmpeg, "-v", "error", "-hide_banner", "-decoders"], timeout=60)
+    return bool(re.search(rf"^\s*\S+\s+{re.escape(name)}\s", r.stdout, re.M))
+
+
+def _cuts_decoder(cfg, video: Path) -> tuple[list[str], str, str]:
+    """Input flags for the shot-cut decode, the filter that has to precede split, and a label.
+
+    Which processor decodes is a property of the SOURCE, not a preference, and the crossover was
+    measured on this machine, one minute of film, three planes of scdet each time:
+
+      1080p H.264   CPU 13.3 s   GPU 20.7 s  - the frames have to come back over the bus anyway
+      2160p HEVC10  CPU 47.3 s   GPU 12.1 s  - and 5.0 s when the decoder also scales
+
+    All three found the same six cuts on that minute, to the millisecond, so the speed is not
+    bought with accuracy. Hence the rule: 4K goes to NVDEC, everything below it stays on the CPU
+    where it was already the faster of the two, and `speech.cuts_decoder` overrides the lot.
+
+    NVDEC hands back a semi-planar frame (nv12, or p010le for 10-bit), which `extractplanes` cannot
+    take apart, so that path pays for one `format=yuv420p` - already counted in the numbers above.
+    """
+    s = cfg["speech"]
+    want = str(s.get("cuts_decoder", "auto") or "auto").strip()
+    if want in ("cpu", "off", "none"):
+        return [], "", "cpu"
+    codec, width, pix_fmt = _video_shape(cfg, video)
+    decoder = _CUVID.get(codec, "") if want == "auto" else want
+    if not decoder:
+        return [], "", "cpu"
+    if want == "auto" and width < int(s.get("cuts_gpu_min_width", 2560)):
+        return [], "", "cpu"
+    if not _has_decoder(cfg.ffmpeg, decoder):
+        say(f"  {decoder} is not in this ffmpeg – decoding the cuts pass on the CPU")
+        return [], "", "cpu"
+    args = ["-c:v", decoder]
+    size = str(s.get("cuts_resize", "") or "").strip()
+    if size:
+        args += ["-resize", size]
+    # The bit depth has to survive the trip, and this is not a matter of purity: converting a
+    # 10-bit source down to yuv420p put THREE cuts into 801 s of this film that the CPU never saw,
+    # from mafd scores the quantisation pushed over a threshold of 5. Keeping the depth reproduced
+    # the CPU's 108 cuts exactly, at the same speed. A list of formats is not a way out - ffmpeg
+    # negotiates `format=yuv420p10le|yuv420p` into a graph that writes nothing at all.
+    bits = re.search(r"p0?(\d\d)(le|be)?$", pix_fmt)
+    depth = f"yuv420p{bits.group(1)}le" if bits and bits.group(1) != "08" else "yuv420p"
+    return args, f"format={depth},", f"{decoder}{' ' + size if size else ''}"
 
 
 def shot_cuts(cfg, video: Path, tmp: Path) -> tuple[list[int], float]:
@@ -509,22 +668,34 @@ def shot_cuts(cfg, video: Path, tmp: Path) -> tuple[list[int], float]:
     # not their content do score high - but both look at LUMINANCE only, so a cut from a red scene
     # to an equally bright green one is invisible to them. Hence three detectors, one per plane.
     #
-    # Three costs the same as one: 13.5 s per ten minutes either way, because decoding H.264 is the
-    # whole bill and the filters are noise beside it. Two things that look like savings and are
-    # not, both measured: decoding on the 3090 took 20.7 s against the CPU's 13.3, because every
-    # frame has to come back over the bus for a CPU filter; and scaling down first changes nothing,
-    # because the frame has already been decoded at full size by the time it can be scaled.
+    # Three costs the same as one: 13.5 s per ten minutes either way, because decoding is the whole
+    # bill and the filters are noise beside it. Which is also why `_cuts_decoder` exists - at 2160p
+    # that bill is four times the size and the GPU can take it.
     logs = {p: log.with_name(f"cuts_{p}.txt") for p in "yuv"}
-    graph = "[0:v]split=3[y][u][v];" + ";".join(
-        f"[{p}]extractplanes={p},scdet=threshold={s.get('scene_threshold_scdet', 5)},"
-        f"metadata=print:file={logs[p]}[o{p}]" for p in "yuv")
-    cmd = [cfg.ffmpeg, "-v", "error", "-y", "-threads", str(s.get("ffmpeg_threads", 14)),
-           "-i", str(video), "-an", "-sn", "-filter_complex", graph]
-    for p in "yuv":
-        cmd += ["-map", f"[o{p}]", "-f", "null", "-"]
-    t0 = time.perf_counter()
-    r = _run(cmd, timeout=s["ffmpeg_timeout_s"])
-    took = time.perf_counter() - t0
+
+    def run(dec_args: list[str], pre: str) -> tuple[subprocess.CompletedProcess, float]:
+        graph = f"[0:v]{pre}split=3[y][u][v];" + ";".join(
+            f"[{p}]extractplanes={p},scdet=threshold={s.get('scene_threshold_scdet', 5)},"
+            f"metadata=print:file={logs[p]}[o{p}]" for p in "yuv")
+        cmd = [cfg.ffmpeg, "-v", "error", "-y", *dec_args,
+               "-threads", str(s.get("ffmpeg_threads", 14)),
+               "-i", str(video), "-an", "-sn", "-filter_complex", graph]
+        for p in "yuv":
+            cmd += ["-map", f"[o{p}]", "-f", "null", "-"]
+        t0 = time.perf_counter()
+        return _run(cmd, timeout=s["ffmpeg_timeout_s"]), time.perf_counter() - t0
+
+    dec_args, pre, label = _cuts_decoder(cfg, video)
+    if label != "cpu":
+        say(f"  cuts: decoding on {label}")
+    r, took = run(dec_args, pre)
+    if r.returncode != 0 and label != "cpu":
+        # A driver that is not there, a container holding the GPU, a codec the card's generation
+        # does not do: none of that is a reason to lose the cuts, and the CPU path is the one every
+        # measurement in this file was taken on.
+        say(f"  !! {label} failed ({r.stderr.strip()[-160:]}) – decoding the cuts pass on the CPU")
+        r2, took2 = run([], "")
+        r, took = r2, took + took2
     found = {p: f for p, f in logs.items() if f.is_file()}
     if r.returncode != 0 or not found:
         say(f"  !! scene detection failed ({r.stderr.strip()[-200:]}) – continuing without cuts")
@@ -704,6 +875,8 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
         say(f"\n{base}")
         video = find_video(cfg, base)
         ref = find_reference_srt(cfg, base)
+        if ref is None and video is not None:
+            ref = extract_reference_srt(cfg, base, video)
         if video is None:
             say(f"  !! no video beside the subtitles in {cfg.input_dir} – nothing to measure")
             continue

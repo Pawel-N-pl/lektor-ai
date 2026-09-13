@@ -6,7 +6,8 @@
     Two stages, both pure ffmpeg:
 
       extract  For every .mkv in the input dir, pull out the Polish subtitle track (selected by
-               language tag, never by index) and a stereo FLAC downmix of the original audio.
+               language tag, never by index) and, in a stereo layout only, a FLAC downmix
+               of the original audio - a surround mix reads the film's own track instead.
                Both land in the work dir next to the source files, which WSL reads directly
                through /mnt/e -- nothing is ever copied between Windows and WSL.
 
@@ -360,7 +361,15 @@ function Invoke-Extract {
                 '-y', '-i', $f.FullName, '-map', "0:$($sub.Index)", '-c:s', 'srt', $srtPath)
         } else { Write-Step "srt exists, skipping (use -Force to redo)" }
 
-        if ($Force -or -not (Test-Path $wavPath)) {
+        $layout = $cfg.mix.channel_layout
+        $surround = $layout -and $layout -notin @('stereo', '2.0', '')
+        if ($surround) {
+            # Mirrors lektorlib.media.stage_extract: pick_source rejects any source under six
+            # channels, so in a surround layout nothing ever reads this file, and it is the
+            # 300-400 MB, minutes-long half of the step. Flip mix.channel_layout to stereo and
+            # the next extract writes it, because that is the one layout that mixes over it.
+            Write-Step "no stereo downmix: mix.channel_layout is '$layout' and only a stereo mix reads that file"
+        } elseif ($Force -or -not (Test-Path $wavPath)) {
             # Stereo downmix so WSL never has to read the 2.7 GB source over 9p.
             Invoke-Ffmpeg -What 'audio downmix' -FfArgs @(
                 '-y', '-i', $f.FullName,

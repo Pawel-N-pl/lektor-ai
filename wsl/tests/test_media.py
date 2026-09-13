@@ -18,6 +18,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 from tempfile import TemporaryDirectory
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -507,3 +508,84 @@ class TestBinaryResolution(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExtractSkipsTheDeadDownmix(unittest.TestCase):
+    """A surround render never reads <base>.orig.flac, so extract must stop writing it.
+
+    `pick_source` rejects any source under six channels, so in 5.1 the two-channel downmix loses
+    to <base>.orig.mka every time - and it is the 300-400 MB, minutes-long half of the step, on a
+    drive that sits at 100%. Stereo is the one layout that mixes over it, and there it still gets
+    written.
+    """
+
+    class Cfg:
+        def __init__(self, tmp, layout):
+            self.raw = {
+                "paths": {"work_subdir": "_lektor"},
+                "extract": {"subtitle_language": "pol"},
+                "mix": {"channel_layout": layout},
+            }
+            self.input_dir = Path(tmp)
+            self.work_dir = Path(tmp) / "_lektor"
+            self.work_dir.mkdir(parents=True, exist_ok=True)
+
+        def __getitem__(self, key):
+            return self.raw[key]
+
+        @staticmethod
+        def binary(name):
+            return name
+
+    def run_extract(self, layout):
+        with TemporaryDirectory() as td:
+            video = Path(td) / "ep.mkv"
+            video.write_bytes(b"not really an mkv")
+            cfg = self.Cfg(td, layout)
+            calls = []
+            choice = M.SubtitleChoice(index=30, title="Polski", codec="subrip")
+            with mock.patch.object(M, "probe_streams", return_value=[]), \
+                 mock.patch.object(M, "pick_subtitle", return_value=choice), \
+                 mock.patch.object(M, "extract_subtitles",
+                                   side_effect=lambda *a, **k: calls.append("srt") or True), \
+                 mock.patch.object(M, "extract_downmix",
+                                   side_effect=lambda *a, **k: calls.append("flac") or True), \
+                 mock.patch.object(M, "write_source_json", return_value={}):
+                M.stage_extract(cfg)
+            return calls
+
+    def test_surround_writes_the_subtitle_and_not_the_downmix(self):
+        self.assertEqual(self.run_extract("5.1(side)"), ["srt"])
+
+    def test_stereo_still_writes_both(self):
+        self.assertEqual(self.run_extract("stereo"), ["srt", "flac"])
+
+
+class TestPackArgv(unittest.TestCase):
+    """The deliverable is a .mka beside the film, and the tags are the reason it is a container."""
+
+    def test_pack_argv_is_a_stream_copy_with_language_and_default(self):
+        self.assertEqual(
+            M.pack_args(Path("/w/ep.lektor.eac3"), Path("/f/ep.mka"), "pol", "Lektor AI (PL)"),
+            ["-y", "-i", "/w/ep.lektor.eac3", "-c", "copy",
+             "-metadata:s:a:0", "language=pol",
+             "-metadata:s:a:0", "title=Lektor AI (PL)",
+             "-disposition:a:0", "default", "/f/ep.mka"])
+
+    def test_it_lands_next_to_the_video_even_one_directory_down(self):
+        with TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "S01E01").mkdir()
+            video = root / "S01E01" / "ep.mkv"
+            video.write_bytes(b"x")
+
+            class Cfg:
+                input_dir = root
+                work_dir = root / "_lektor"
+
+                @staticmethod
+                def get(key, default=None):
+                    return default
+
+            with mock.patch.object(M, "resolve_source", return_value=video):
+                self.assertEqual(M.pack_path(Cfg, "ep"), root / "S01E01" / "ep.mka")

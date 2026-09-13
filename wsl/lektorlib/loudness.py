@@ -61,6 +61,21 @@ def _parse(path: Path) -> np.ndarray:
     return np.where(np.isfinite(out), out, -np.inf)
 
 
+def _dialogue_channel(cfg, fc: np.ndarray, mid: np.ndarray) -> np.ndarray:
+    """Whichever of the centre channel and the mid signal actually carries the dialogue.
+
+    The speech gate reads this profile to ask whether anybody is speaking under a cue, so a
+    channel that was tagged but never mixed into answers "nobody, ever" and the gate stops
+    excluding anything. The test is the loudest 5% rather than the mean: dialogue is intermittent
+    by nature, and a film that talks for a fifth of its length still has a quiet median.
+    """
+    floor = float(cfg["mix"].get("centre_silent_lufs", -60.0))
+    live = fc[np.isfinite(fc)]
+    if mid.size and (live.size == 0 or float(np.percentile(live, 95)) < floor):
+        return mid
+    return fc
+
+
 def profiles(cfg, source: Path, centre_channel: str = "FC",
              cache_dir: Path | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(whole mix, centre only) momentary loudness, one value per 100 ms, from ONE decode.
@@ -93,22 +108,34 @@ def profiles(cfg, source: Path, centre_channel: str = "FC",
         channels = int((probe.stdout.strip().splitlines() or ["2"])[0])
     except ValueError:
         channels = 2
-    centre = f"c0={centre_channel}" if channels >= 6 else "c0=0.5*FL+0.5*FR"
-
+    mid_pan = "c0=0.5*FL+0.5*FR"
+    centre = f"c0={centre_channel}" if channels >= 6 else mid_pan
+    # Six channels is a claim about the layout, not about what was mixed into it: this Netflix
+    # 2160p release tags 5.1(side) and leaves FC empty, with the whole dialogue in L and R. So the
+    # mid signal is measured ALONGSIDE FC rather than instead of it - one more ebur128 on a decode
+    # that is already paid for - and the one that actually carries dialogue is kept below.
+    want_mid = channels >= 6
     with tempfile.TemporaryDirectory(prefix="lektor-lufs-") as tmp:
         mix_txt, fc_txt = Path(tmp) / "mix.txt", Path(tmp) / "fc.txt"
+        mid_txt = Path(tmp) / "mid.txt"
         graph = (
-            f"[0:a]asplit=2[m][c];"
+            f"[0:a]asplit={3 if want_mid else 2}[m][c]{'[d]' if want_mid else ''};"
             f"[m]ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file={mix_txt}[mo];"
             f"[c]pan=mono|{centre},"
             f"ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file={fc_txt}[co]"
         )
+        maps = ["-map", "[mo]", "-f", "null", "-", "-map", "[co]", "-f", "null", "-"]
+        if want_mid:
+            graph += (f";[d]pan=mono|{mid_pan},"
+                      f"ebur128=metadata=1,ametadata=mode=print:key=lavfi.r128.M:file={mid_txt}[do]")
+            maps += ["-map", "[do]", "-f", "null", "-"]
         subprocess.run(
             [cfg.ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-threads", str(WORKERS),
-             "-i", str(source), "-filter_complex", graph,
-             "-map", "[mo]", "-f", "null", "-", "-map", "[co]", "-f", "null", "-"],
+             "-i", str(source), "-filter_complex", graph, *maps],
             capture_output=True, check=False)
         mix, fc = _parse(mix_txt), _parse(fc_txt)
+        if want_mid:
+            fc = _dialogue_channel(cfg, fc, _parse(mid_txt))
     if key is not None and mix.size:
         key.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(key, mix=mix, fc=fc)

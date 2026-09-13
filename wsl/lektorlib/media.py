@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import say
-from .mix import encode_profile
+from .mix import encode_profile, is_surround
 from .speech import find_video
 
 # `-c:s srt` transcodes the chosen stream into SubRip, which works for subrip/ass/ssa/mov_text and
@@ -447,11 +447,23 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
         flac = work_dir / f"{base}.orig.flac"
         if not extract_subtitles(ffmpeg, video, choice.index, srt, force):
             say("  -> srt exists, skipping (--force to redo)")
-        if not extract_downmix(ffmpeg, video, flac, ex.get("audio_stream", "a:0"),
-                               ex.get("downmix_channels", 2), ex.get("downmix_rate", 48000), force):
+        # The downmix is the 300-400 MB half of this step, and in a surround layout nothing ever
+        # reads it: `pick_source` rejects any source under six channels, so the two-channel FLAC
+        # loses to <base>.orig.mka every time. `satisfied()` has said so for a while and called
+        # extract done on the .srt alone; writing the file anyway just filled a disk that runs at
+        # 100%. Alignment does not want it either - `speech` cuts its own 16 kHz mono centre
+        # channel out of the film. Flip mix.channel_layout to stereo and the next extract writes
+        # it, because that is the one layout that mixes over it.
+        if is_surround(cfg):
+            was = " (one is already there and is not refreshed)" if flac.exists() else ""
+            say(f"  -> no stereo downmix: mix.channel_layout is "
+                f"{cfg['mix']['channel_layout']!r} and only a stereo mix reads that file{was}")
+        elif not extract_downmix(ffmpeg, video, flac, ex.get("audio_stream", "a:0"),
+                                 ex.get("downmix_channels", 2), ex.get("downmix_rate", 48000),
+                                 force):
             say("  -> downmix exists, skipping (--force to redo)")
         write_source_json(work_dir / f"{base}.source.json", base, video, choice, language)
-        say(f"  OK  {srt.name} + {flac.name}")
+        say(f"  OK  {srt.name}" + (f" + {flac.name}" if flac.exists() else ""))
 
     say(f"\nWork dir: {work_dir}")
     say("Next:  python3 wsl/lektor.py script  &&  python3 wsl/lektor.py voice\n")
@@ -541,6 +553,57 @@ def mux(ffmpeg: str, ffprobe: str, source: Path, track: Path, dest: Path,
     n_audio = count_audio_streams(ffprobe, source)
     run_ffmpeg(ffmpeg, mux_args(source, track, n_audio, dest), "mux")
     return dest
+
+
+def pack_path(cfg, base: str, suffix: str = "") -> Path:
+    """Where the finished lektor track is handed over: a .mka beside the film itself.
+
+    Beside the FILM, not in the work dir and not in an output dir, because that is where a player
+    looks for an external track: MPC-HC, mpv and VLC all match an audio file carrying the video's
+    own name in the video's own folder. `find_sources` is recursive, so a season laid out one
+    directory per episode gets the .mka in that directory rather than at the season root.
+    """
+    video = resolve_source(cfg, base)
+    parent = video.parent if video is not None else cfg.input_dir
+    return parent / f"{base}{suffix}.mka"
+
+
+def pack_args(track: Path, dest: Path, language: str, title: str) -> list[str]:
+    """Stream copy into Matroska, with the two tags that decide what a player does with it.
+
+    The language tag is the whole point of the container: a raw .eac3 beside the film carries no
+    language, so a player set to prefer Polish has nothing to prefer. `default` marks it as the
+    track to start on when it is loaded alongside the film's own.
+    """
+    return ["-y", "-i", str(track), "-c", "copy",
+            "-metadata:s:a:0", f"language={language}",
+            "-metadata:s:a:0", f"title={title}",
+            "-disposition:a:0", "default", str(dest)]
+
+
+def stage_pack(cfg, only: str | None = None, force: bool = False, suffix: str = "") -> None:
+    """Repack the encoded track as the deliverable, next to the film. No video is touched."""
+    ffmpeg = ffmpeg_bin(cfg)
+    ext = track_extension(cfg)
+    pk = cfg.get("pack", {})
+    tracks = find_tracks(cfg.work_dir, ext, only, suffix)
+    if not tracks:
+        say(f"no *.lektor{suffix}.{ext} in {cfg.work_dir} – run the voice stage first")
+        return
+
+    say(f"\nPACK – {len(tracks)} track(s)\n")
+    for base, track in tracks:
+        say(base)
+        dest = pack_path(cfg, base, suffix)
+        if dest.exists() and not force:
+            say("  -> .mka exists, skipping (--force to redo)")
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        run_ffmpeg(ffmpeg, pack_args(track, dest, pk.get("language", "pol"),
+                                     pk.get("title", "Lektor AI (PL)")), "pack")
+        say(f"  OK  {dest.name} ({round(dest.stat().st_size / 1048576)} MB) beside {dest.parent}")
+
+    say("")
 
 
 def stage_mux(cfg, only: str | None = None, force: bool = False, suffix: str = "") -> None:

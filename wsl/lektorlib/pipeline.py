@@ -39,11 +39,16 @@ from . import media, say, stages
 from .config import Config, cps_path
 from .mix import encode_profile, is_surround
 from .script import read_spend
-from .speech import find_reference_srt, find_video
+from .speech import find_reference_srt, find_video, reference_stream
 
 __all__ = ["STEPS", "stage_run", "select_steps", "resolve_episode", "satisfied"]
 
-STEPS = ("extract", "speech", "script", "retime", "voice", "mux")
+STEPS = ("extract", "speech", "script", "retime", "voice", "pack", "mux")
+# Where a chain stops when nobody says otherwise. `pack`, not `mux`: the deliverable is the lektor
+# track as a .mka beside the film, which a player loads by itself, while `mux` writes a second copy
+# of the video - 3.6 GB against 300 MB on a 45-minute episode - for a file the viewer already has.
+# `--to mux` is still there for whoever wants one file.
+DEFAULT_LAST_STEP = "pack"
 
 OK, SKIPPED, WARNED, FAILED = "ok", "skipped", "warned", "failed"
 
@@ -165,6 +170,7 @@ def artefact(cfg: Config, base: str, step: str) -> Path | None:
         "script": work / f"{base}.lektor.json",
         "retime": None,
         "voice": work / f"{base}.lektor.{encode_profile(cfg)['extension']}",
+        "pack": media.pack_path(cfg, base),
         "mux": media.output_path(cfg, base),
     }[step]
 
@@ -255,9 +261,15 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
                    f"({cfg['timing']['ms_per_char']}) and are unaffected – `calibrate` is "
                    f"optional, and it costs six TTS calls.")
     if "speech" in will_run and find_reference_srt(cfg, base) is None:
-        out.append("no English reference subtitle under speech.reference_srt_patterns: forced "
-                   "alignment cannot run, so this episode gets shot cuts only and the pause gate "
-                   "stays off.")
+        video = video_for(cfg, base)
+        pick = reference_stream(cfg, video) if video is not None else None
+        if pick is None:
+            out.append("no English reference subtitle beside the episode and none in the file "
+                       "either: forced alignment cannot run, so this episode gets shot cuts only "
+                       "and the pause gate stays off.")
+        else:
+            out.append(f"no English reference subtitle yet; `speech` will pull stream "
+                       f"{pick.index} ({pick.title or pick.language}) out of the episode itself.")
     track = artefact(cfg, base, "voice")
     if "voice" in will_run and track.exists():
         # <base>.lektor.<ext> carries no backend tag, so the file gives no hint of what made it.
@@ -357,7 +369,11 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
         # produces nothing at all and must not claim a downmix it never wrote.
         have = " + ".join(p.name for p in (art, flac) if p.exists())
         if not flac.exists():
-            have += f" (no {flac.name}: no video here to downmix from)"
+            # Two different absences, and calling the deliberate one "no video here" sent the
+            # reader looking for a file that was sitting right next to the subtitles.
+            why = ("nothing reads a 2-channel downmix in this layout"
+                   if is_surround(cfg) else "no video here to downmix from")
+            have += f" (no {flac.name}: {why})"
         return OK, have
 
     if step == "speech":
@@ -411,6 +427,18 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
         stages.stage_voice(cfg, base, force)
         if not art.exists():
             raise HardFail(_no_audio_reason(cfg, base))
+        return OK, f"{art.name} ({_mb(art)})"
+
+    if step == "pack":
+        if existed and not force:
+            return SKIPPED, f"{art.name} was already there ({_mb(art)})"
+        track = artefact(cfg, base, "voice")
+        if not track.exists():
+            raise HardFail(f"nothing to pack: {track.name} was never written, and pack only "
+                           f"rewraps a track that already exists")
+        media.stage_pack(cfg, base, force)
+        if not art.exists():
+            raise HardFail(f"pack produced no {art.name}")
         return OK, f"{art.name} ({_mb(art)})"
 
     if step == "mux":
@@ -525,6 +553,41 @@ def _predicts_duration(cfg) -> bool:
         return bool(get_backend(cfg.backend_name, cfg).needs_calibration)
     except Exception:
         return True          # unknown engine: say the cautious thing rather than stay silent
+
+def stage_run_all(cfg: Config, only: str | None, args) -> int:
+    """Every episode the filter matches, one after another, through the chain `run` walks.
+
+    `run` refuses a filter that matches two episodes, and that refusal is right: the stages each
+    re-glob on their own, so one loose `--only` would interleave two renders and leave a cost
+    footer describing neither. Sequencing them here keeps that guarantee - each episode is
+    resolved, run and summarised on its own, in file-name order - and gives a season a single
+    command.
+
+    A failing episode does not stop the ones behind it. On a season the usual cause is local to
+    the file (no Polish track, no video beside the subtitles), and the episodes that can be
+    rendered should be; the exit code still reports that something failed.
+    """
+    bases = candidate_bases(cfg)
+    if not bases:
+        raise UsageError(f"nothing to run: no *.srt in {cfg.work_dir} and no video under "
+                         f"{cfg.input_dir}")
+    hits = [b for b in bases if only in b] if only else list(bases)
+    if not hits:
+        raise UsageError(f"--only {only!r} matched nothing. Candidates:\n  " + "\n  ".join(bases))
+    say(f"\n{len(hits)} episode(s) to run, in this order:")
+    for i, base in enumerate(hits, 1):
+        say(f"  {i}. {base}")
+    codes = []
+    for i, base in enumerate(hits, 1):
+        say(f"\n{'#' * 78}\n### {i}/{len(hits)}  {base}\n{'#' * 78}")
+        codes.append(stage_run(cfg, base, args))
+    done = sum(1 for c in codes if c == 0)
+    say(f"\n{'=' * 78}\nALL  {done} of {len(hits)} episode(s) finished without a failed step")
+    for base, code in zip(hits, codes):
+        say(f"  {'ok  ' if code == 0 else 'FAIL'}  {base}")
+    say("=" * 78)
+    return 0 if all(c == 0 for c in codes) else 1
+
 
 def stage_run(cfg: Config, only: str | None, args) -> int:
     """Walk the pipeline for exactly one episode. Returns the process exit code.
