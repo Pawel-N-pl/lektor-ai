@@ -42,7 +42,8 @@ from . import media, say, stages, transcribe, translate
 from .config import Config, cps_path
 from .mix import encode_profile, is_surround
 from .script import read_spend
-from .speech import find_reference_srt, find_video, reference_stream
+from .speech import (find_reference_srt, find_video, multilingual, reference_problem,
+                     reference_stream)
 
 __all__ = ["STEPS", "stage_run", "select_steps", "resolve_episode", "satisfied"]
 
@@ -333,13 +334,14 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
                    f"of a measured one. The budgets come from timing.ms_per_char "
                    f"({cfg['timing']['ms_per_char']}) and are unaffected – `calibrate` is "
                    f"optional, and it costs six TTS calls.")
-    # A film still waiting for its transcript has no reference YET, and an English one will be its
-    # own: warning that alignment cannot run would describe a state transcribe is about to end.
+    # A film still waiting for its transcript has no reference YET, and an English one - any one,
+    # with speech.multilingual_aligner on - will be its own: warning that alignment cannot run
+    # would describe a state transcribe is about to end.
     # Before extract has run that is only a possibility - the film may yet turn out to have a
     # subtitle in another language, or audio that is not English - so the warning stays, said as
     # what it depends on.
-    heard_ref = "transcribe" in will_run \
-        and transcribe.requested_language(cfg, translate.source_info(cfg, base))[0] in ("en", "")
+    code = transcribe.requested_language(cfg, translate.source_info(cfg, base))[0]
+    heard_ref = "transcribe" in will_run and (code in ("en", "") or multilingual(cfg))
     org = translate.origin(cfg, base)
     if "speech" in will_run and not (heard_ref and org == "asr") \
             and find_reference_srt(cfg, base) is None:
@@ -348,13 +350,16 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
         if pick is None and heard_ref and org == "":
             out.append("no English reference subtitle beside the episode and none in the file "
                        "either: if extract sends the film to transcribe and Whisper hears "
-                       "English, that transcript is the reference; otherwise forced alignment "
+                       + ("a language, " if multilingual(cfg) else "English, ")
+                       + "that transcript is the reference; otherwise forced alignment "
                        "cannot run, so this episode gets shot cuts only and the pause gate stays "
                        "off.")
         elif pick is None:
+            why = reference_problem(cfg, base)
             out.append("no English reference subtitle beside the episode and none in the file "
                        "either: forced alignment cannot run, so this episode gets shot cuts only "
-                       "and the pause gate stays off.")
+                       "and the pause gate stays off."
+                       + (f" The reason it is not the film's own text: {why}." if why else ""))
         else:
             out.append(f"no English reference subtitle yet; `speech` will pull stream "
                        f"{pick.index} ({pick.title or pick.language}) out of the episode itself.")

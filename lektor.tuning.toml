@@ -270,9 +270,10 @@ linger_ms = 300
 # not corrected here by default: an ENGLISH transcript's cues are only the grid, `speech` aligns it
 # against the audio afterwards and `retime` moves each line onto its aligned first word - the same
 # as for an authored subtitle, which leads speech on purpose. A transcript in any other language is
-# not aligned (the acoustic model is English; a multilingual aligner is phase 3), so its cues ship
-# as early as Whisper placed them unless this is set. A value here shifts every cue start later by
-# that much; 0 leaves the placement to alignment where there is one.
+# aligned the same way only with speech.multilingual_aligner on (off by default, for MMS_FA's
+# licence); otherwise its cues ship as early as Whisper placed them unless this is set. A value
+# here shifts every cue start later by that much; 0 leaves the placement to alignment where there
+# is one.
 onset_shift_ms = 0
 
 [script]
@@ -682,6 +683,25 @@ aligner = 'auto'
 # is found at bin/python or Scripts/python.exe, whichever exists, because the layout follows the
 # venv that was created rather than the machine reading it.
 aligner_venv = ''
+
+# Forced alignment for a reference that is NOT English: the transcript of a film whose audio is
+# German, or the German subtitle a German-speaking film was translated from. The English model
+# above cannot read either, so without this such an episode keeps shot cuts only, as it did before
+# this key existed - and says why in the plan and the log.
+#
+# true aligns it with torchaudio's MMS_FA, which reads ~1100 languages through romanised text.
+# OFF BY DEFAULT FOR ITS LICENCE: the MMS_FA weights are CC-BY-NC 4.0, non-commercial, where the
+# English model is MIT. Setting this is accepting those terms for whatever you make with it; no
+# default should do that for you. English never uses it either way - WAV2VEC2_ASR_LARGE_LV60K_960H
+# beat MMS_FA 88 to 57 of 97 cues on this project's English material (see reference_srt_patterns).
+#
+# Romanising: a Latin-script reference (German, French, Polish...) is folded to a-z here, accents
+# dropped as uroman would drop them, and needs nothing installed. Any other script needs the
+# `uroman` package in the aligner's interpreter - torchaudio does not ship one - and without it the
+# episode keeps shot cuts only, said loudly in the log. NOTHING HERE IS MEASURED: MMS_FA has not
+# aligned one non-English episode on this machine, and min_score above was measured on the English
+# model's scores, which MMS_FA's need not share.
+multilingual_aligner = false
 
 # The container forced alignment runs INSIDE, by name. It is borrowed, not owned: it belongs to
 # ~/projects/yt-translator, it holds a resident faster-whisper large-v3, and this stage neither

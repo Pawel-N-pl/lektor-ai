@@ -86,6 +86,10 @@ aligner = 'auto'
 # A venv with torch and torchaudio, nothing else. Leave empty to use the container instead. With
 # neither, the stage keeps the shot cuts and drops the word timings.
 aligner_venv = ''
+# Align a reference that is not English - a German film's transcript or German subtitle - with
+# torchaudio's MMS_FA. Off: its weights are CC-BY-NC 4.0 (non-commercial), and true accepts that.
+# Off, such an episode keeps shot cuts only, as before. English always uses the English model.
+multilingual_aligner = false
 
 [voice]
 # Which engine speaks: elevenlabs, piper, chatterbox, omnivoice or kikivoice. piper is free,

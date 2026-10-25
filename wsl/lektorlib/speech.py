@@ -16,6 +16,9 @@ It produces one free local artefact per episode, `<base>.speech.json`:
 
 Nothing here is paid and nothing here is installed. Forced alignment runs inside the `asr`
 container that is already up, because torchaudio 2.6 ships the aligner; shot detection is ffmpeg.
+The aligner is English (WAV2VEC2_ASR_LARGE_LV60K_960H). A reference in another language - the
+transcript of a German film, or its German subtitle - is aligned with torchaudio's MMS_FA only
+when speech.multilingual_aligner says so, because those weights are CC-BY-NC; see aligner_for.
 
 Deliberately NOT here: Whisper. The running ASR service is not called at all. Its raw word
 timestamps were measured 316 ms early at utterance starts (p50), which makes them useless for
@@ -32,6 +35,7 @@ import re
 import shutil
 import subprocess
 import time
+import unicodedata
 from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +49,10 @@ from .venvs import venv_python
 # because it is not our code's environment: it needs the container's torch, and shipping it as a
 # file would invite someone to import it from the pipeline, where torch does not exist.
 #
+# One script, two acoustic models. With four arguments it is the English aligner it always was;
+# the multilingual call adds the bundle (MMS_FA), whether words still need romanising in there
+# (uroman, for a script that is not Latin), and the language for uroman. See aligner_for.
+#
 # Long sequential windows, not per-cue padding: with a short pad and no <star> token the aligner is
 # free to drag a cue's first word backwards onto whatever speech sits in the pad, which fabricates
 # exactly the statistic we care about. 30 s windows measured better than 120 s on a real episode -
@@ -55,7 +63,26 @@ import numpy as np, torch, torchaudio
 
 WAV, CUES_JSON, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
 WINDOW_S = float(sys.argv[4])
+# The English call passes nothing after the window, and runs exactly as it always has.
+BUNDLE = sys.argv[5] if len(sys.argv) > 5 else "WAV2VEC2_ASR_LARGE_LV60K_960H"
+ROMANISE = sys.argv[6] if len(sys.argv) > 6 else "none"
+LANG = sys.argv[7] if len(sys.argv) > 7 else ""
 PAD = 0.35
+
+if ROMANISE == "uroman":
+    # Before the model loads: a missing romaniser is a missing runtime, said with its own exit.
+    try:
+        import uroman
+        _UROMAN = uroman.Uroman()
+    except Exception as exc:
+        print(f"uroman cannot be imported: {exc}", file=sys.stderr)
+        sys.exit(4)
+
+    def roman(word):
+        return _UROMAN.romanize_string(word, lcode=LANG or None)
+else:
+    def roman(word):
+        return word
 
 def read_wav(path):
     with wave.open(path, "rb") as w:
@@ -65,9 +92,15 @@ def read_wav(path):
     return torch.from_numpy(x.copy()).unsqueeze(0), sr
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-bundle = torchaudio.pipelines.WAV2VEC2_ASR_LARGE_LV60K_960H
-model = bundle.get_model().to(device)
-lut = {c: i for i, c in enumerate(bundle.get_labels())}
+bundle = getattr(torchaudio.pipelines, BUNDLE)
+if BUNDLE == "MMS_FA":
+    # No <star> token: the windows are long and contiguous, as for the English model.
+    model = bundle.get_model(with_star=False).to(device)
+    labels, fold = bundle.get_labels(star=None), str.lower
+else:
+    model = bundle.get_model().to(device)
+    labels, fold = bundle.get_labels(), str.upper
+lut = {c: i for i, c in enumerate(labels)}
 
 wav, sr = read_wav(WAV)
 assert sr == bundle.sample_rate, (sr, bundle.sample_rate)
@@ -89,7 +122,7 @@ with torch.inference_mode():
         tokens, owner, kept = [], [], []
         for c in g:
             for w in c["words"]:
-                tw = [lut[ch] for ch in w.upper() if ch in lut]
+                tw = [lut[ch] for ch in fold(roman(w)) if ch in lut]
                 if tw:
                     tokens.append(tw); owner.append(c["i"])
             kept.append(c)
@@ -129,7 +162,7 @@ with torch.inference_mode():
             })
 align_s = time.perf_counter() - t0
 
-json.dump({"meta": {"bundle": "WAV2VEC2_ASR_LARGE_LV60K_960H", "device": str(device),
+json.dump({"meta": {"bundle": BUNDLE, "romaniser": ROMANISE, "device": str(device),
                     "audio_dur_s": round(dur, 2), "window_s": WINDOW_S, "n_groups": len(groups),
                     "n_rows": len(rows), "n_group_errors": errs,
                     "align_s": round(align_s, 2),
@@ -457,37 +490,80 @@ def episode_tag(base: str) -> str:
 
 
 def find_reference_srt(cfg, base: str) -> Path | None:
-    """The English text the aligner is given. English, because the acoustic model is English.
+    """The text the aligner is given. English, unless the multilingual aligner is on (aligner_for).
 
     Stream 3 is the near-verbatim transcript - it keeps "Ooh", the stutters and the reaction
     sounds - which is what is actually uttered, so it aligns better than the cleaned reading
     version in stream 2. Stream 2 is the fallback, and the Polish track is never a candidate.
 
-    A film transcribed from its audio is the exception, and its English transcript comes FIRST:
-    retime matches the Polish cards to the aligned ones by start time, and the Polish cards of
-    such a film sit on the transcript's grid, which no authored English subtitle shares.
+    The translation's own source comes FIRST when it is a transcript of the audio, or a text in a
+    language other than English that the actors speak: retime matches the Polish cards to the
+    aligned ones by start time, and the Polish cards sit on that source's grid, which no English
+    subtitle shares - and an English subtitle of a German film is a translation, not what is
+    said. An English subtitle the film was translated from comes last, after every pattern.
     """
-    asr = translation_reference(cfg, base, "asr")
-    if asr is not None:
-        return asr
+    own = translation_reference(cfg, base)
+    if own is not None and (_origin(cfg, base) == "asr" or _source_language(cfg, base) != "eng"):
+        return own
     tag = episode_tag(base)
     for pat in cfg["speech"]["reference_srt_patterns"]:
         p = cfg.work_dir / pat.format(tag=tag, base=base)
         if p.is_file():
             return p
-    return translation_reference(cfg, base)
+    return own
+
+
+def _info(cfg, base: str) -> dict:
+    # Lazy, as everywhere in this module: translate imports script, which imports this module.
+    from . import translate
+    return translate.source_info(cfg, base)
+
+
+def _origin(cfg, base: str) -> str:
+    return str(_info(cfg, base).get("subtitle_origin") or "track")
+
+
+def _source_language(cfg, base: str) -> str:
+    from .media import language_key
+    return language_key(str(_info(cfg, base).get("source_language") or ""))
+
+
+def multilingual(cfg) -> bool:
+    """speech.multilingual_aligner: MMS_FA for a reference that is not English. Off unless set,
+    because its weights are CC-BY-NC 4.0 - see lektor.tuning.toml."""
+    return bool((cfg["speech"] or {}).get("multilingual_aligner", False))
+
+
+ENGLISH_BUNDLE = "WAV2VEC2_ASR_LARGE_LV60K_960H"
+MULTILINGUAL_BUNDLE = "MMS_FA"
+# The aligner script's exit when it was asked to romanise and uroman will not import.
+NO_ROMANISER_EXIT = 4
+
+
+def aligner_for(cfg, language: str) -> str:
+    """The torchaudio bundle that can align text in `language`, or '' when none here may.
+
+    English - and a reference of unknown language, which only an English pattern can be - always
+    gets WAV2VEC2_ASR_LARGE_LV60K_960H, untouched: it beat MMS_FA 88 to 57 of 97 cues on this
+    material and is MIT. Anything else gets MMS_FA, and only with speech.multilingual_aligner on.
+    """
+    from .media import language_key
+    key = language_key(language)
+    if key in ("eng", ""):
+        return ENGLISH_BUNDLE
+    return MULTILINGUAL_BUNDLE if multilingual(cfg) else ""
 
 
 def translation_reference(cfg, base: str, kind: str | None = None) -> Path | None:
-    """The English text a translation was made from - extract's subtitle, or the transcript of the
-    audio - when that is what it was made from. `kind` keeps only one of the two origins.
+    """The text a translation was made from - extract's subtitle, or the transcript of the audio -
+    when an aligner here can read it and it is what the actors say. `kind` keeps only one of the
+    two origins.
 
-    The last candidate for a subtitle, after every configured pattern: a film translated from
-    English already has the verbatim English text on disk, on the very grid the Polish cues
-    inherit, and asking the film for it a second time would only re-read the same stream. Any
-    other source language is not a candidate - the acoustic model is English.
+    English always qualifies, as before. Another language qualifies only with the multilingual
+    aligner on, and a subtitle in it only when it is the language of the audio track: a Spanish
+    subtitle on an English film is a translation, and aligning it would time nothing. A transcript
+    is in the language of the audio by construction.
     """
-    # Lazy, as everywhere in this module: translate imports script, which imports this module.
     from . import translate
     from .media import language_key
 
@@ -495,20 +571,51 @@ def translation_reference(cfg, base: str, kind: str | None = None) -> Path | Non
     org = info.get("subtitle_origin") or "track"
     if org not in translate.TRANSLATED or (kind is not None and org != kind):
         return None
-    if language_key(str(info.get("source_language") or "")) != "eng":
+    lang = language_key(str(info.get("source_language") or ""))
+    if not lang:
         return None
+    if lang != "eng":
+        if not aligner_for(cfg, lang):
+            return None
+        if org == "subs" and language_key(str(info.get("audio_language") or "")) != lang:
+            return None
     return translate.source_srt(cfg, base, info)
 
 
-def choose_reference(cfg, base: str, video: Path | None) -> Path | None:
-    """The English text to align against, extracting one from the film when nothing is on disk.
+def reference_language(cfg, base: str, ref: Path | None) -> str:
+    """The language of the text `ref` holds: the translation source's, or English - every
+    configured pattern and every extracted reference is an English stream."""
+    if ref is not None and ref == translation_reference(cfg, base):
+        return _source_language(cfg, base) or "eng"
+    return "eng"
 
-    One exception to "whatever is on disk wins": the translation source was chosen for the
+
+def reference_problem(cfg, base: str) -> str:
+    """Why the film's own foreign text is not a reference, said for the log, or ''.
+
+    The one case worth a sentence: a source in a language other than English, which the English
+    model cannot read and the multilingual aligner was not allowed to.
+    """
+    from . import translate
+    org = _origin(cfg, base)
+    lang = _source_language(cfg, base)
+    if org not in translate.TRANSLATED or lang in ("", "eng") or multilingual(cfg):
+        return ""
+    return (f"the film's own text is '{lang}', and only the English aligner is enabled – "
+            f"speech.multilingual_aligner = true aligns it with MMS_FA, whose weights are "
+            f"CC-BY-NC 4.0 (non-commercial; see lektor.tuning.toml)")
+
+
+def choose_reference(cfg, base: str, video: Path | None) -> Path | None:
+    """The text to align against, extracting an English one from the film when nothing is on disk.
+
+    One exception to "whatever is on disk wins": an English translation source was chosen for the
     OPPOSITE reason. Translation prefers the plain dialogue track; alignment prefers SDH, which
     keeps the stutters and the reaction sounds and so matches what was actually uttered. When the
     film carries an SDH stream that is not the one translated from, that is extracted and used
     instead, and from then on the configured pattern finds it first. Without one, the
-    translation source is the reference - the same text, already extracted.
+    translation source is the reference - the same text, already extracted. A source in another
+    language is not swapped for an English stream: that would be a translation of what is said.
     """
     ref = find_reference_srt(cfg, base)
     if video is None:
@@ -520,7 +627,8 @@ def choose_reference(cfg, base: str, video: Path | None) -> Path | None:
     from . import translate
 
     info = translate.source_info(cfg, base)
-    if info.get("source_sdh") or info.get("subtitle_origin") == "asr":
+    if info.get("source_sdh") or info.get("subtitle_origin") == "asr" \
+            or _source_language(cfg, base) != "eng":
         # SDH on another grid would cost a transcribed film its onsets; see find_reference_srt.
         return ref
     pick = reference_stream(cfg, video)
@@ -785,19 +893,65 @@ def shot_cuts(cfg, video: Path, tmp: Path) -> tuple[list[int], float]:
     return cuts, took
 
 
-def cues_for_alignment(srt: Path) -> list[dict]:
-    """Subtitle text reduced to what a CTC character model can be given: bare English words."""
+def cues_for_alignment(srt: Path, language: str = "eng") -> list[dict]:
+    """Subtitle text reduced to what a CTC character model can be given: bare words.
+
+    English as it always was - ASCII letters and apostrophes. Any other language keeps every
+    letter of every script, for `romanise` to fold or to hand on to uroman.
+    """
+    from .media import language_key
+    english = language_key(language) in ("eng", "")
     out = []
     for c in parse_srt(srt):
         body = re.sub(r"<[^>]+>|\[[^\]]*\]|\([^)]*\)", " ", c.raw)
-        words = _WORD_RE.findall(body)
+        words = (_WORD_RE if english else _ANY_WORD_RE).findall(body)
         if words:
             out.append({"i": c.idx, "start": c.start_ms, "end": c.end_ms, "words": words})
     return out
 
 
-def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
-    """Word times for the English reference, from whichever aligner this machine can offer.
+# A word in any script: letters, with an apostrophe inside it ("l'homme", "geht's").
+_ANY_WORD_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
+# Latin letters NFKD does not take apart into a base letter and a mark.
+_LATIN_EXTRA = str.maketrans({"ß": "ss", "ẞ": "ss", "ł": "l", "Ł": "l", "æ": "ae", "Æ": "ae",
+                              "œ": "oe", "Œ": "oe", "ø": "o", "Ø": "o", "đ": "d", "Đ": "d",
+                              "ð": "d", "Ð": "d", "þ": "th", "Þ": "th", "ı": "i", "ħ": "h",
+                              "Ħ": "h", "’": "'"})
+
+
+def latin_fold(word: str) -> str:
+    """A Latin-script word in MMS_FA's alphabet - a-z and the apostrophe - or '' if it is not one.
+
+    Accents go (é -> e, ü -> u, ą -> a) and the handful of letters that are not an accented base
+    letter are spelled out (ß -> ss, ł -> l). That is what uroman does to Latin script too, so a
+    German or Polish reference needs no romaniser installed anywhere. Whether MMS_FA aligns a
+    folded German word as well as uroman's would is not measured; the rule is uroman's own.
+    """
+    s = unicodedata.normalize("NFKD", word.translate(_LATIN_EXTRA))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).lower()
+    return s if re.fullmatch(r"[a-z]+(?:'[a-z]+)*", s) else ""
+
+
+def romanise(cues: list[dict]) -> tuple[list[dict], str]:
+    """(cues, romaniser) for the multilingual aligner.
+
+    Every word folds to a-z here (`latin_fold`) - a Latin-script language - and the script is told
+    'none'. One word that does not - Cyrillic, Greek, kana, a name in Hangul - and the words go as
+    they are with 'uroman', which the aligner's interpreter must then have; torchaudio does not
+    ship it. Per episode, not per word, so one file is never romanised two ways.
+    """
+    folded = [[latin_fold(w) for w in c["words"]] for c in cues]
+    if all(all(ws) for ws in folded):
+        return [dict(c, words=ws) for c, ws in zip(cues, folded)], "none"
+    return cues, "uroman"
+
+
+def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path, bundle: str = ENGLISH_BUNDLE,
+                 romaniser: str = "none", language: str = "") -> dict:
+    """Word times for the reference, from whichever aligner this machine can offer.
+
+    `bundle` is aligner_for's answer. The English one is called with exactly the arguments it
+    always was; MMS_FA gets the romaniser and the language after them.
 
     The alignment itself is one script (`_FA_SCRIPT`) taking four arguments, and it does not care
     where it runs. Only the delivery differs, so `speech.aligner` picks between two:
@@ -820,12 +974,23 @@ def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
     s = cfg["speech"]
     choice = str(s.get("aligner", "auto")).strip().lower()
     venv = str(s.get("aligner_venv", "") or "")
-    if choice == "local" or (choice == "auto" and venv and venv_python(venv).is_file()):
-        return _align_local(cfg, wav, cues, tmp)
-    return _align_docker(cfg, wav, cues, tmp)
+    extra = [str(s["fa_window_s"])]
+    if bundle != ENGLISH_BUNDLE:
+        extra += [bundle, romaniser, language]
+    try:
+        if choice == "local" or (choice == "auto" and venv and venv_python(venv).is_file()):
+            return _align_local(cfg, wav, cues, tmp, extra)
+        return _align_docker(cfg, wav, cues, tmp, extra)
+    except ScriptFailed as exc:
+        if exc.code == NO_ROMANISER_EXIT:
+            raise RuntimeError(
+                f"this reference is not in Latin script and needs uroman to romanise it, which "
+                f"the aligner's interpreter does not have ({exc.stderr.strip()[-200:]}) – "
+                f"`pip install uroman` there (docs/install.md)") from exc
+        raise
 
 
-def _align_local(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
+def _align_local(cfg, wav: Path, cues: list[dict], tmp: Path, extra: list[str]) -> dict:
     """Same script, this machine, no container. Paths are local, so nothing is copied."""
     s = cfg["speech"]
     venv = str(s.get("aligner_venv", "") or "")
@@ -841,10 +1006,10 @@ def _align_local(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
     cues_json = tmp / "fa_cues.json"
     cues_json.write_text(json.dumps(cues), encoding="utf-8")
     return run_script_local(python, _FA_SCRIPT, [wav, cues_json], tmp / "fa.json",
-                            [str(s["fa_window_s"])], s["fa_timeout_s"], "forced alignment")
+                            extra, s["fa_timeout_s"], "forced alignment")
 
 
-def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
+def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path, extra: list[str]) -> dict:
     """Run the aligner inside the container that is already up. Nothing is installed anywhere.
 
     The container is treated as read-only apart from one scratch directory under its /tmp, which
@@ -855,7 +1020,7 @@ def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
     cues_json = tmp / "fa_cues.json"
     cues_json.write_text(json.dumps(cues), encoding="utf-8")
     return run_script_docker(s["asr_container"], _FA_SCRIPT, [wav, cues_json], tmp / "fa.json",
-                             [str(s["fa_window_s"])], s["fa_timeout_s"], s["docker_timeout_s"],
+                             extra, s["fa_timeout_s"], s["docker_timeout_s"],
                              "forced alignment")
 
 
@@ -992,27 +1157,42 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
 
         tmp = tmp_root(cfg) / f"lektor-speech-{base[:40]}"
         tmp.mkdir(parents=True, exist_ok=True)
+        language = reference_language(cfg, base, ref)
+        bundle = aligner_for(cfg, language) if ref is not None else ""
         payload: dict = {
             "base": base,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "source": {"video": video.name, "reference_srt": ref.name if ref else None},
+            "source": {"video": video.name, "reference_srt": ref.name if ref else None,
+                       "reference_language": language if ref else None},
             "words": [], "gaps": [], "cuts": [], "cues": [],
         }
         try:
             # Each signal fails on its own and costs only itself. An episode that ends up with
             # neither is not written at all, so a half-built artefact can never gate a merge.
             if ref is None:
-                say("  !! no English reference subtitle – no pause signal for this episode")
+                why = reference_problem(cfg, base)
+                say("  !! no reference subtitle an aligner here can read – no pause signal for "
+                    "this episode" + (f": {why}" if why else ""))
+            elif not bundle:
+                # Not reached by anything find_reference_srt picks today; kept so a reference in
+                # a language nothing here may read is said, never sent to the English model.
+                say(f"  !! {ref.name} is '{language}' and only the English aligner is enabled "
+                    f"(speech.multilingual_aligner) – no pause signal for this episode")
             else:
                 try:
                     wav = tmp / "centre16k.wav"
                     t0 = time.perf_counter()
                     kind = extract_centre(cfg, video, wav)
                     extract_s = time.perf_counter() - t0
-                    cues = cues_for_alignment(ref)
-                    say(f"  {kind} audio in {extract_s:.1f} s, aligning {len(cues)} English cues "
-                        f"in the '{s['asr_container']}' container")
-                    fa = forced_align(cfg, wav, cues, tmp)
+                    cues = cues_for_alignment(ref, language)
+                    romaniser = "none"
+                    if bundle != ENGLISH_BUNDLE:
+                        cues, romaniser = romanise(cues)
+                    say(f"  {kind} audio in {extract_s:.1f} s, aligning {len(cues)} '{language}' "
+                        f"cues with {bundle}"
+                        + (" (romanised by uroman)" if romaniser == "uroman" else "")
+                        + f" in the '{s['asr_container']}' container")
+                    fa = forced_align(cfg, wav, cues, tmp, bundle, romaniser, language)
                 except Exception as exc:  # noqa: BLE001 - every failure here is recoverable
                     say(f"  !! no alignment for this episode: {exc}")
                     say("     the artefact will carry shot cuts only, and the pause gate is off")
@@ -1021,6 +1201,8 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
                         fa, float(s["min_score"]), int(s["store_min_gap_ms"]))
                     payload["words"], payload["gaps"], payload["cues"] = words, gaps, rows
                     meta = fa.get("meta", {})
+                    # min_score was measured on the English model's scores (see the tuning
+                    # file); MMS_FA's are on a scale nobody here has looked at.
                     payload["fa"] = dict(meta, min_score=s["min_score"],
                                          n_aligned=sum(1 for r in rows
                                                        if r["score"] >= s["min_score"]),

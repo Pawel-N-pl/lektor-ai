@@ -31,9 +31,9 @@ What it does, in the order it matters:
     these cues are a GRID, not a placement: `speech` aligns an English transcript against the
     audio afterwards, and `retime` moves a line onto the aligned first word exactly as it does
     for an authored subtitle, which leads speech on purpose anyway. A transcript in any other
-    language is not aligned - the acoustic model is English, and a multilingual aligner is left
-    to phase 3 - so it ships Whisper's early grid as it is. transcribe.onset_shift_ms can shift
-    every cue start later, and ships at 0.
+    language is aligned the same way only with speech.multilingual_aligner on (MMS_FA, whose
+    weights are CC-BY-NC); off, it ships Whisper's early grid as it is.
+    transcribe.onset_shift_ms can shift every cue start later, and ships at 0.
 """
 
 from __future__ import annotations
@@ -48,8 +48,8 @@ from pathlib import Path
 from . import say
 from .media import (NO_LANGUAGE, language_key, resolve_source, translate_mode,
                     translate_settings, translate_source)
-from .speech import (ScriptFailed, docker_problem, extract_centre, run_script_docker,
-                     run_script_local, tmp_root)
+from .speech import (ScriptFailed, aligner_for, docker_problem, extract_centre,
+                     run_script_docker, run_script_local, tmp_root)
 from .srt import SENTENCE_END
 from .translate import _ts, _write_atomic, candidate_bases, file_sha256, set_aside, source_info
 from .venvs import venv_python
@@ -917,10 +917,11 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
                                key=lambda s: (s.get("start", 0), s.get("id", 0))),
             "_note": ("Written by the transcribe stage. Cue timings come from Whisper's word "
                       "times, which run early at utterance starts; "
-                      + ("speech aligns this English transcript against the audio and retime "
-                         "moves lines onto the first aligned word." if got == "eng" else
-                         "only an English transcript is aligned, so these stay as Whisper "
-                         "placed them.")),
+                      + (f"speech aligns this transcript against the audio "
+                         f"({aligner_for(cfg, got)}) and retime moves lines onto the first "
+                         f"aligned word." if aligner_for(cfg, got) else
+                         "speech.multilingual_aligner is off, so a transcript in this language "
+                         "is not aligned and these stay as Whisper placed them.")),
         }
         _write_atomic(asr_json_path(cfg, base), json.dumps(payload, ensure_ascii=False, indent=1))
         say(f"  -> {srt.parent.name}/{srt.name} ({len(tr.cues)} cues) + "
