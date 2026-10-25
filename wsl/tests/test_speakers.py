@@ -62,7 +62,8 @@ class TestLabels(unittest.TestCase):
     def test_a_bracket_is_a_name_only_when_something_says_it_is_one(self):
         cs = cues("[Mary] Hello.", "[Laughs] Very funny.", "(JOHN) Hi.", "JOHN: Bye.")
         h = SP.harvest(cs, GLOSSARY)
-        # Mary by the glossary, JOHN because he is labelled the SDH way elsewhere; Laughs is a sound.
+        # Mary by the glossary, JOHN because he is labelled the SDH way elsewhere; Laughs is a
+        # sound.
         self.assertEqual(h.text, {1: "{mówi: Mary, kobieta}", 3: "{mówi: JOHN}", 4: "{mówi: JOHN}"})
         self.assertEqual([c.text for c in cs], ["Hello.", "[Laughs] Very funny.", "Hi.", "Bye."])
 

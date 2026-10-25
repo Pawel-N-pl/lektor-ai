@@ -273,8 +273,8 @@ class TestStage(StageBase):
     def test_a_german_film_is_aligned_with_mms_fa_on_its_own_text(self):
         self.subs("ger", audio="ger")
         calls, data = self.run_stage()
-        self.assertEqual(calls, [("MMS_FA", "none", "ger",
-                                  [["wo", "warst", "du", "jurgen"], ["in", "der", "strasse", "schon"]])])
+        self.assertEqual(calls, [("MMS_FA", "none", "ger", [["wo", "warst", "du", "jurgen"],
+                                                             ["in", "der", "strasse", "schon"]])])
         self.assertEqual(data["source"]["reference_language"], "ger")
         self.assertEqual(data["fa"]["bundle"], "MMS_FA")
         self.assertEqual(data["words"], [[1100, 1300], [1400, 1700]])

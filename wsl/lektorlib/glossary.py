@@ -177,7 +177,8 @@ class Glossary:
         return json.dumps([cast, sorted(terms.items())], ensure_ascii=False)
 
     def fingerprint(self) -> str:
-        """All of it, hashed: what the provenance records, so a change is seen as one. '' if empty."""
+        """All of it, hashed: what the provenance records, so a change is seen as one. '' if
+        empty."""
         if not self:
             return ""
         blob = json.dumps([self.cast_fingerprint(), sorted(self.terms.items())],
@@ -526,7 +527,8 @@ def stage_glossary(cfg, only: str | None, force: bool = False) -> Path | None:
         f"# DRAFT by {s['openrouter_model']} from {base}, {time.strftime('%Y-%m-%d')}.",
         "# Nothing in this file is used. Read it, correct it - genders and forms of address were",
         "# guessed from one episode's text - and save what is right as lektor.glossary.toml in",
-        "# this directory (or wherever translate.glossary points). docs/translate.md has the format.",
+        "# this directory (or wherever translate.glossary points). docs/translate.md has the",
+        "# format.",
     ])
     out.write_text(dump_glossary(got, header), encoding="utf-8")
     try:
