@@ -63,11 +63,11 @@ Szczegóły, liczby i przypadki brzegowe: **[docs/](docs/)**.
 
 ## Instalacja
 
-Konfiguracja to **dwa pliki**. `lektor.toml` ma 171 linii i trzyma to, co zmieniasz przy każdym
+Konfiguracja to **dwa pliki**. `lektor.toml` ma 179 linii i trzyma to, co zmieniasz przy każdym
 serialu i po uchu: ścieżki, silnik, głos, poziom, model. W repo leży jako
 `lektor.toml.example`; skopiuj go pod właściwą nazwą, bo ta jest w `.gitignore` i twoje
-ścieżki nigdy nie wylądują w commicie. Dopóki kopii nie ma, pipeline czyta sam szablon. `lektor.tuning.toml` trzyma wszystkie 302
-klucze wraz z pomiarem, który za każdym stoi. Pierwszy nadpisuje drugi, więc **skasowanie linijki
+ścieżki nigdy nie wylądują w commicie. Dopóki kopii nie ma, pipeline czyta sam szablon. `lektor.tuning.toml` trzyma wszystkie 305
+kluczy wraz z pomiarem, który za każdym stoi. Pierwszy nadpisuje drugi, więc **skasowanie linijki
 cofa cię do zmierzonej wartości domyślnej, a nie do pustki**.
 
 TOML, a nie JSON, z jednego powodu: 84% starego pliku było prozą trzymaną w kluczach `_note`,
@@ -161,6 +161,7 @@ wymagają i co przestaje działać bez nich.
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
 | **Transkrypcja** (faster-whisper) – tylko dla filmu bez żadnych napisów | venv z `faster-whisper` wskazany w `transcribe.venv` ([komendy](docs/install.md)), **albo** kontener, który go ma | film bez napisów nie dostaje lektora: brak venv, dockera albo działającego kontenera etap zgłasza, zanim cokolwiek wytnie z dźwięku; brak samego faster-whisper wychodzi dopiero przy pierwszym odcinku, po wycięciu dźwięku |
 | **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv` ([komendy](docs/install.md)), **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
+| **Alignment filmu nie po angielsku** (MMS_FA) | `speech.multilingual_aligner = true` – świadomie, bo wagi MMS_FA są na licencji **CC-BY-NC 4.0**; dla pisma innego niż łacińskie także `uroman` w interpreterze alignera ([komendy](docs/install.md)) | film mówiony po niemiecku, japońsku itd. dostaje same cięcia montażowe, jak dotąd |
 
 ---
 
@@ -193,7 +194,8 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 |---|---|
 | `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą; gdy polskich nie ma – najlepsze obcojęzyczne tekstowe, do tłumaczenia, a gdy nie ma żadnych – kieruje film do `transcribe` |
 | `transcribe` | tylko dla filmu bez żadnych napisów (a przy `translate.source = "asr"` – dla każdego, który `translate` bierze na siebie): kanał centralny przez faster-whisper (lokalnie, za darmo), filtr halucynacji, podział na karty jak w napisach – `subs/<base>.asr.<lang>.srt` |
-| `translate` | tylko dla filmów bez polskich napisów: obcojęzyczne napisy albo transkrypcję, cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ręcznych poprawek nie nadpisuje bez `--force` |
+| `translate` | tylko dla filmów bez polskich napisów: obcojęzyczne napisy albo transkrypcję, cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ze słownikiem serii (`lektor.glossary.toml` obok filmów: płeć postaci, ty/pan, stałe terminy) i podpisami mówiących z napisów SDH, jeśli są; ręcznych poprawek nie nadpisuje bez `--force` |
+| `glossary` | szkic słownika serii z jednego odcinka, jednym wywołaniem LLM, do `lektor.glossary.suggested.toml` – do poprawienia i zapisania pod właściwą nazwą; dopóki tego nie zrobisz, nic z niego nie jest używane |
 | `speech` | forced alignment, ciszę między słowami, cięcia montażowe – lokalnie, za darmo |
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |
 | `retime` | dosuwa wczesne kwestie na pierwsze słowo aktora; nic nie kosztuje |

@@ -42,7 +42,9 @@ używa angielskiego SRT jako referencji do forced alignmentu.
   `{id: tekst}`, walidacja każdej odpowiedzi, retry i fallback model, cache po hashu, koszt z
   `usage.cost` do `spend.json`. Tłumaczenie jest **wierne, w stylu napisów, nieskracane** – skraca
   dalej istniejący `condense`, którego promptu nie ruszamy. Ten sam plik jest więc też polskimi
-  napisami. Ręczne poprawki w `<base>.srt` są wykrywane i nigdy nadpisywane.
+  napisami. Ręczne poprawki w `<base>.srt` są wykrywane i nigdy nadpisywane. Model dostaje też
+  słownik serii i podpisy mówiących z napisów SDH, jeśli są (niżej). Odcinek za długi na jedno
+  wywołanie idzie kawałkami, a każdy kawałek widzi po `context_cues` kwestii sąsiadów.
 
 ## Napisy: czasem tak, czasem nie
 
@@ -60,7 +62,82 @@ source = "auto"            # auto: napisy > asr; subs; asr
 source_language = "auto"   # tag strumienia, potem detekcja Whispera
 openrouter_model = '...'
 subtitles = "off"          # off | sidecar | mux
+glossary = "auto"          # auto: <input_dir>/lektor.glossary.toml, jeśli jest; ścieżka; off
+context_cues = 20          # tylko dla odcinka ciętego na kawałki: kontekst z sąsiadów
+
+[speech]
+multilingual_aligner = false   # MMS_FA dla referencji nie po angielsku; licencja CC-BY-NC
 ```
+
+## Słownik serii
+
+Jeden plik na serial, `lektor.glossary.toml` obok filmów (albo inny, wskazany w
+`translate.glossary`). Rozstrzyga raz to, co model musiałby zgadywać w każdym odcinku od nowa –
+i co zgadywałby różnie: płeć postaci, `ty` czy `pan`/`pani` między parą postaci, stały przekład
+terminu.
+
+```toml
+[characters.Ted]
+gender = 'm'                      # 'm' albo 'f'; pomiń, gdy serial tego nie mówi
+aliases = ['Coach', 'Lasso']
+note = 'amerykański trener, do wszystkich mówi po imieniu'
+
+[address]
+default = 'ty'
+'Nate -> Ted' = 'pan'             # jak pierwszy zwraca się do drugiego
+'Ted -> Rebecca' = 'pani'
+
+[terms]
+'Greyhounds' = 'Charty'
+```
+
+- Do promptu odcinka idzie tylko to, czego odcinek może użyć: postać, której imię (alias, podpis
+  SDH) w nim pada, para dwóch takich postaci, termin, który w nim pada.
+- **Koszt zmiany jest częścią klucza cache.** Zmieniony termin tłumaczy od nowa tylko kwestie, w
+  których pada. Zmieniona postać albo forma zwracania się – cały odcinek, w którym ta postać jest:
+  kto mówi do kogo, model ustala z kontekstu, nie ze słów kwestii, więc węższa reguła byłaby
+  zgadywaniem. Wpis, którego odcinek nie używa, nie kosztuje go nic. Odcinek bez słownika ma
+  klucze dokładnie takie jak przed fazą 3.
+- Tłumaczenie zrobione z inną wersją używanej części słownika jest nieaktualne jak tłumaczenie z
+  podmienionego źródła: `translate` i `run` robią je jeszcze raz, płacąc tylko za to, co zmiana
+  dosięga. Ręcznie poprawiony `<base>.srt` dalej wymaga `--force`.
+- Plik, którego nie da się przeczytać – zły TOML, płeć `male`, forma `sir`, nieznana tabela –
+  zatrzymuje etap, zanim cokolwiek zostanie kupione.
+- `lektor.py glossary [--only X] [--force]` prosi model raz o szkic z jednego odcinka i zapisuje go
+  do `lektor.glossary.suggested.toml`. **Szkic nie jest używany**, dopóki człowiek go nie poprawi i
+  nie zapisze jako `lektor.glossary.toml`; istniejący szkic jest nadpisywany tylko z `--force`.
+
+## Kto mówi: podpisy SDH i myślniki
+
+Polski pokazuje płeć mówiącego w czasowniku. Gdzie źródło samo to mówi, model dostaje to wprost:
+
+- Podpis `JOHN:` (wielkimi literami, też `TED (V.O.):`), `Mary:` dla imienia ze słownika i
+  `[Mary]` albo `(Mary)` dla imienia, które zna słownik albo inny podpis w odcinku, jest wyjmowany z
+  tekstu kwestii i pokazywany przed nią jako wskazówka `{mówi: Mary, kobieta}`. Wcześniej `JOHN:`
+  szedł do tłumaczenia i lektor go czytał.
+- Nawias na początku linii to znacznie częściej dźwięk niż imię, więc `[Laughs]` zostaje tekstem.
+- Karta z dwoma podpisami: `{mówią po kolei: Ted (mężczyzna), Rebecca (kobieta)}`; podpisy w
+  liniach bez myślników dostają myślniki w prompcie i w układzie polskiej karty. Karta, której rip
+  zgubił pierwszy myślnik: `{mówiących: 2}`.
+- Prompt każe trzymać rodzaj konsekwentnie i brać płeć ze słownika. Odcinek bez podpisów i bez
+  zgubionych myślników idzie bez żadnej wskazówki i z tymi samymi kluczami cache co przedtem.
+
+## Alignment poza angielskim
+
+Aligner `speech` jest angielski (WAV2VEC2_ASR_LARGE_LV60K_960H, MIT; na tym materiale wygrał z
+MMS_FA 88 do 57 z 97 kwestii) i taki zostaje dla angielskiego. Referencja w innym języku –
+transkrypt niemieckiego filmu albo niemieckie napisy filmu mówionego po niemiecku – idzie do
+torchaudio MMS_FA, **tylko gdy `speech.multilingual_aligner = true`**:
+
+- Domyślnie wyłączone, bo wagi MMS_FA są na licencji **CC-BY-NC 4.0** (niekomercyjnej); włączenie
+  klucza to świadoma zgoda na te warunki. Wyłączone – film nie po angielsku dostaje same cięcia
+  montażowe, jak dotąd, a plan i log mówią dlaczego.
+- Język bierze się z `source.json` (napisy) albo `asr.json` (transkrypt). Napisy są referencją
+  tylko w języku ścieżki audio – hiszpańskie napisy angielskiego filmu to tłumaczenie – i wtedy
+  przed angielskimi wzorcami.
+- Romanizacja: pismo łacińskie składane do a–z tutaj (bez akcentów, `ß` → `ss`, `ł` → `l`), bez
+  instalowania czegokolwiek. Inne pismo wymaga pakietu `uroman` w interpreterze alignera (torchaudio
+  go nie ma); bez niego odcinek dostaje same cięcia, z głośnym komunikatem.
 
 ## Fazy
 
@@ -68,7 +145,8 @@ subtitles = "off"          # off | sidecar | mux
    `satisfied()` i plan w `pipeline.py`, napisy w `mux_args`, testy.
 2. **ASR (ścieżka 3).** `transcribe`, segmentacja, filtry halucynacji, plik ASR jako referencja.
 3. **Jakość.** Słownik serii (imiona, ty/pan), wskazówki rodzaju gramatycznego mówiącego,
-   aligner wielojęzyczny (MMS_FA) dla oryginałów spoza angielskiego.
+   aligner wielojęzyczny (MMS_FA) dla oryginałów spoza angielskiego – za kluczem, z powodu
+   licencji – i kontekst sąsiadów dla odcinka ciętego na kawałki.
 
 ---
 

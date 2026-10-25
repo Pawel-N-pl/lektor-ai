@@ -197,9 +197,28 @@ delivery routes, chosen by `speech.aligner` (`auto` by default):
 Without either, the stage says so and writes an artefact carrying **shot cuts only**: the merge
 gate degrades to cut-only, `retime` has no onsets to move anything onto, and the pipeline is
 otherwise byte-identical to a run without the artefact. Shot detection itself is plain ffmpeg
-(`scdet`) and always works. Alignment also needs an English reference subtitle under
-`speech.reference_srt_patterns` – the acoustic model is English – and without one the stage says
-`no English reference subtitle` and skips straight to the cuts.
+(`scdet`) and always works. Alignment also needs a reference subtitle it can read: an English one
+under `speech.reference_srt_patterns` (or the English text a film was translated from) – the
+acoustic model is English – and without one the stage says so and skips straight to the cuts.
+
+**alignment of a film that is not in English** – opt-in. The transcript of a German film, or the
+German subtitle a German-speaking film was translated from, is aligned with torchaudio's `MMS_FA`
+only when `speech.multilingual_aligner = true`. It is off by default because the MMS_FA weights
+are **CC-BY-NC 4.0** – non-commercial – and turning it on is accepting that for what you make
+with it; English keeps its own model either way. Nothing new is needed for a language written in
+Latin script: the words are folded to a–z (accents dropped, `ß` → `ss`, `ł` → `l`) before they
+reach the aligner. Any other script – Cyrillic, Greek, Japanese – needs the `uroman` romaniser in
+the aligner's interpreter, which torchaudio does not ship:
+
+```bash
+uv pip install --python <speech.aligner_venv>/bin/python uroman
+```
+
+Without it the episode keeps shot cuts only, and the log says `needs uroman`. In the borrowed
+`asr` container nothing is installed, so there a non-Latin reference stays cuts-only. MMS_FA's
+weights download on first use into torch's hub cache. None of this has run here: no GPU, no
+torch and no MMS_FA on the machine it was written on, so its alignment quality, speed and VRAM are
+unmeasured, and `uroman`'s Python API was taken from its documentation, not exercised.
 
 **transcription for `transcribe`** – only for a film with no text subtitle at all (or
 `translate.source = 'asr'`), and the only way such a film gets a lektor. It runs faster-whisper,
@@ -244,4 +263,4 @@ checks less still, because printing a plan must not wait on a daemon: only that 
 interpreter, or that a docker binary is on PATH.
 
 Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
-a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 171 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 302 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either. Only the second is tracked: `lektor.toml` is gitignored and ships as `lektor.toml.example`, which the loader falls back to until you make the copy.
+a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 179 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 305 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either. Only the second is tracked: `lektor.toml` is gitignored and ships as `lektor.toml.example`, which the loader falls back to until you make the copy.

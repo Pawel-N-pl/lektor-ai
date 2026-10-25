@@ -64,12 +64,45 @@ model, the effort and a hash of the prompt. A translation whose source extract h
 – another `source_language`, or `extract --force` landing on another stream – is translated again
 rather than skipped as "exists"; `translate --redraw` ignores the book and implies `--force`.
 
+**What the model is told beyond the cues.** Two things, each only when there is one, so an episode
+with neither is sent and keyed byte for byte as before:
+
+* **The series glossary** – `lektor.glossary.toml` beside the films (`translate.glossary`):
+  characters with their gender and aliases, the form of address between pairs (`ty`, `pan`,
+  `pani`, `wy`, `państwo`) and a default, and terms rendered the same way every episode. Only what
+  an episode can use goes into its prompt. What an edit costs is part of the cache key: a changed
+  term retranslates only the lines that say it, a changed character or form of address
+  retranslates every line of an episode that character is in (who speaks to whom is read from
+  context, not from a line's words), and an entry an episode cannot use costs it nothing. A
+  translation made under another version of the part it uses counts as stale, like one made from
+  a replaced source. A glossary that will not parse stops the stage before anything is paid for.
+  `lektor.py glossary` drafts one from an episode into `lektor.glossary.suggested.toml`, never
+  into the file that is read. Format: `wsl/lektorlib/glossary.py` and
+  [translate.md](translate.md).
+* **Speaker hints** from the source itself (`speakers.py`). SDH labels – `JOHN:`, `TED (V.O.):`,
+  `Mary:` or `[Mary]` for a name the glossary or another label knows – are taken out of the line
+  and shown in front of it as `{mówi: ...}`; before, `JOHN:` was translated and read out by the
+  lektor, since `clean.strip_patterns` only knows brackets. A bracket at the start of a line is a
+  sound far more often than a name, so `[Laughs]` stays text. A card whose rip dropped the first
+  speaker's dash is hinted `{mówiących: N}`, and labels on lines with no dashes get the dashes, in
+  the prompt and in the Polish card's layout.
+
+An episode too long for one call (`translate.max_prompt_chars`) is cut into chunks, and each chunk
+now reads `translate.context_cues` (20) of its neighbours' cues on either side without being asked
+to return them.
+
 **The English it was translated from doubles as the alignment reference.** `find_reference_srt`
 takes it after every configured pattern. Translation prefers the plain track and alignment
 prefers SDH, so when the film carries an SDH stream other than the one translated from, `speech`
 still extracts that one; without one it reuses the source rather than reading the same stream out
-of the film twice. Any source language other than English is not a reference: the acoustic model
-is English.
+of the film twice. A source in another language is a reference only with
+`speech.multilingual_aligner = true`, and only when it is the language of the audio track: it is
+then aligned with torchaudio's MMS_FA, and it comes **first**, before the English patterns – an
+English subtitle of a German film is a translation of what is said, not what is said, and the
+Polish cards sit on the German source's grid. Off – the default, because MMS_FA's weights are
+CC-BY-NC 4.0 – nothing changes from before, and the plan and the log say why there is no
+alignment. Latin-script text is folded to a–z here; other scripts need `uroman` in the aligner's
+interpreter, and without it the episode keeps shot cuts only ([install.md](install.md)).
 
 **Polish subtitles, only when asked and only for a translation.** `translate.subtitles` (or
 `--subs` for one run): `sidecar` writes `<film>.pl.srt` beside the film and the `.mka`, re-synced
@@ -147,9 +180,10 @@ utterance starts (see `speech`), and the cards inherit that. They are not correc
 anyway, and the same machinery fixes both – an English transcript is `speech`'s alignment
 reference (before any configured pattern, and never swapped for an SDH stream, since only the
 transcript shares the Polish cards' grid and `retime` matches cards by start time), and `retime`
-moves each line onto its aligned first word. A transcript in another language has no reference,
-as with a translation from one, so its cards ship as early as Whisper placed them unless
-`onset_shift_ms` is set. Snapping cards to the shot cuts is not done: `speech` measures the
+moves each line onto its aligned first word. A transcript in another language is the reference in
+the same way with `speech.multilingual_aligner` on (MMS_FA); off, it has none, as with a
+translation from one, so its cards ship as early as Whisper placed them unless `onset_shift_ms` is
+set. Snapping cards to the shot cuts is not done: `speech` measures the
 cuts after this stage runs.
 
 ## The mux

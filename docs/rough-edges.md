@@ -40,7 +40,14 @@ What does not work well, stated plainly.
   constructed segments only. Nobody has listened to a lektor read from a transcript, nor counted
   how many of Whisper's segments the filters drop on real audio, nor checked how often its
   language detection is wrong when the audio track has no tag. Whisper gives no speakers either,
-  so a transcribed card never carries the speaker dash a subtitle would.
+  so a transcribed card never carries the speaker dash a subtitle would, nor a speaker hint.
+
+- **The series glossary, the speaker hints and MMS_FA have never met a real episode.** All three
+  are unit-tested against stand-ins only: no model has been shown a glossary or a `{mówi: ...}`
+  hint, so whether it follows them, and how often, is unmeasured; the SDH label rule was not
+  checked against how many real cards it misreads (`WARNING:` is taken for a name); MMS_FA has
+  aligned no non-English episode, its scores are filtered by a `speech.min_score` measured on the
+  English model, and the aligner script ran only against a stand-in torch.
 
 - **piper is the one engine allowed to gabble.** `timing.max_speed` is 1.2 and every other backend
   obeys it - omnivoice has an explicit floor that lets a line overrun rather than be compressed past

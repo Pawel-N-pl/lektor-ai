@@ -53,7 +53,10 @@ still the episode's whole OpenRouter bill; `cost` and the `run` footer report th
 than a handful of shortened lines, so it should cost more than a condensation draw, but how much
 more is unknown, and `translate.measured_usd_per_episode` ships at 0 so that `cost` says
 "unmeasured" instead of printing a guess. A rerun reuses `<base>.translated.json` and pays only for
-lines whose source, model or prompt changed.
+lines whose source, model or prompt changed - or whose part of the series glossary did: a changed
+term reaches the lines that say it, a changed character every line of an episode it is in. The
+`glossary` command's one draft call is billed to the episode it read, as `"stage": "glossary"`:
+in `usd_total`, and in neither the translation nor the condensation figure. Also unmeasured.
 
 **Transcription** costs no money: a film with no text subtitle at all is transcribed by
 faster-whisper on the local GPU before it is translated: `cost` and the `run` footer say `$0.00`
