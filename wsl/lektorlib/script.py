@@ -918,11 +918,16 @@ def _condense_once(cues, target_ids: set[int], cfg: Config, api_key: str) -> Con
 
 
 def _ask(s: dict, api_key: str, messages: list[dict], use_schema: bool, out: CondenseOutcome,
-         purpose: str) -> tuple[dict[int, str], bool, str]:
-    """Call with json_schema, degrade to json_object once if the provider refuses it."""
+         purpose: str, schema: dict = CUES_SCHEMA) -> tuple[dict[int, str], bool, str]:
+    """Call with json_schema, degrade to json_object once if the provider refuses it.
+
+    `schema` is the one thing the translate stage changes: its reply has the same
+    {"cues": [{"id", "text"}]} shape, so the parsing, the retries and the degradation are this
+    function's and not a second copy of it.
+    """
     if use_schema:
         try:
-            got, stats = call_openrouter(s, api_key, messages, CUES_SCHEMA, purpose)
+            got, stats = call_openrouter(s, api_key, messages, schema, purpose)
             out.calls.append(stats)
             return got, True, ""
         except SchemaRejected as exc:
@@ -948,6 +953,34 @@ def spend_path(cfg: Config, base: str) -> Path:
 
 def write_spend(cfg: Config, base: str, out: CondenseOutcome) -> Path:
     """Append this run to the episode's spend record. Reruns really do cost more; say so."""
+    return append_spend(cfg, base, {
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "model": cfg["script"]["openrouter_model"],
+        "reasoning_effort": cfg["script"].get("reasoning_effort", "medium"),
+        "context_mode": out.path,
+        "response_format": out.response_format,
+        "usd": round(out.usd, 6),
+        "cues_marked": out.marked,
+        "cues_returned": out.returned,
+        "cues_accepted": out.accepted,
+        "cues_in_budget": out.accepted - len(out.over_budget),
+        "cues_over_budget": len(out.over_budget),
+        "cues_missing": len(out.missing),
+        "cues_rejected": out.rejected,
+        "error": out.error,
+        "calls": [c.as_dict() for c in out.calls],
+    })
+
+
+def append_spend(cfg: Config, base: str, run: dict) -> Path:
+    """Add one run to `<base>.spend.json`, whichever stage paid for it.
+
+    One file per episode for every OpenRouter bill, because the question it answers is "what has
+    this episode cost", and a second file per stage is a second total somebody forgets to add.
+    Runs from the translate stage carry `"stage": "translate"`; a run with no `stage` is a
+    condensation run, which is every run this file held before translation existed. Merged, never
+    rewritten: the history already on disk is read back and this run appended to it.
+    """
     p = spend_path(cfg, base)
     record = {"base": base, "cost_source": "openrouter usage.cost", "runs": []}
     if p.exists():
@@ -962,25 +995,7 @@ def write_spend(cfg: Config, base: str, out: CondenseOutcome) -> Path:
             keep = p.with_suffix(f".corrupt-{time.strftime('%Y%m%dT%H%M%S')}.json")
             p.replace(keep)
             say(f"  !! {p.name} would not parse – kept as {keep.name}, starting a new record")
-    record["runs"].append(
-        {
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "model": cfg["script"]["openrouter_model"],
-            "reasoning_effort": cfg["script"].get("reasoning_effort", "medium"),
-            "context_mode": out.path,
-            "response_format": out.response_format,
-            "usd": round(out.usd, 6),
-            "cues_marked": out.marked,
-            "cues_returned": out.returned,
-            "cues_accepted": out.accepted,
-            "cues_in_budget": out.accepted - len(out.over_budget),
-            "cues_over_budget": len(out.over_budget),
-            "cues_missing": len(out.missing),
-            "cues_rejected": out.rejected,
-            "error": out.error,
-            "calls": [c.as_dict() for c in out.calls],
-        }
-    )
+    record["runs"].append(run)
     record["usd_total"] = round(sum(r.get("usd", 0.0) for r in record["runs"]), 6)
     # Written aside and renamed: a kill or a full disk part-way through a plain write leaves a
     # truncated file, and the truncated file is the whole billing history.
@@ -990,14 +1005,23 @@ def write_spend(cfg: Config, base: str, out: CondenseOutcome) -> Path:
     return p
 
 
-def read_spend(cfg: Config, base: str) -> float:
-    """Everything this episode has cost in condensation so far, or 0 if it has never run."""
+def read_spend(cfg: Config, base: str, stage: str | None = None) -> float:
+    """What this episode has cost on OpenRouter so far, or 0 if nothing has run.
+
+    With no `stage` it is the whole bill - condensation and translation together, the number
+    `usd_total` has always held. `stage="script"` or `"translate"` sums only that stage's runs, so
+    a chain can say what each of the two cost this time without one swallowing the other.
+    """
     p = spend_path(cfg, base)
     if not p.exists():
         return 0.0
     try:
-        return float(json.loads(p.read_text(encoding="utf-8")).get("usd_total") or 0.0)
-    except (ValueError, TypeError):
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if stage is None:
+            return float(data.get("usd_total") or 0.0)
+        return float(sum(float(r.get("usd") or 0.0) for r in data.get("runs") or []
+                         if isinstance(r, dict) and (r.get("stage") or "script") == stage))
+    except (ValueError, TypeError, AttributeError):
         return 0.0
 
 
