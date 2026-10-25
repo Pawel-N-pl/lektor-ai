@@ -309,6 +309,75 @@ class TestRunAsr(Base):
             self.assertNotIn(f"\nfrom {heavy}", head)
 
 
+# A stand-in for the faster-whisper package, with the shapes the script reads and nothing else.
+FAKE_FASTER_WHISPER = {
+    "__init__.py": """
+from types import SimpleNamespace as N
+
+class WhisperModel:
+    def __init__(self, name, device, compute_type):
+        self.model = N(device="cpu")
+
+    def transcribe(self, wav, language=None, beam_size=5, vad_filter=True, vad_parameters=None,
+                   word_timestamps=False, condition_on_previous_text=True):
+        assert word_timestamps and not condition_on_previous_text
+        words = [N(start=1.0, end=1.4, word=" Hello", probability=0.9),
+                 N(start=1.5, end=2.0, word=" there.", probability=0.8)]
+        seg = N(id=1, start=1.0, end=2.0, text=" Hello there.", avg_logprob=-0.2,
+                no_speech_prob=0.01, compression_ratio=1.1, temperature=0.0, words=words)
+        info = N(language=language or "en", language_probability=0.97, duration=10.0,
+                 duration_after_vad=4.0)
+        return iter([seg]), info
+""",
+    "audio.py": "def decode_audio(path, sampling_rate=16000):\n    return [0.0] * 160000\n",
+    "vad.py": ("class VadOptions:\n    def __init__(self, **kw):\n        self.kw = kw\n\n"
+               "def get_speech_timestamps(audio, opts):\n"
+               "    return [{'start': 16000, 'end': 32000}]\n"),
+}
+
+
+class TestTheScriptItself(Base):
+    """The real _ASR_SCRIPT, run by this interpreter against a stand-in faster_whisper."""
+
+    def run_script(self, fake: bool):
+        import os
+        lib = Path(self.tmp.name) / "lib"
+        if fake:
+            (lib / "faster_whisper").mkdir(parents=True)
+            for name, text in FAKE_FASTER_WHISPER.items():
+                (lib / "faster_whisper" / name).write_text(text, encoding="utf-8")
+        wav = Path(self.tmp.name) / "a.wav"
+        wav.write_bytes(b"RIFF")
+        out = Path(self.tmp.name) / "asr.json"
+        opts = [json.dumps(TR.script_options(self.cfg, "en"))]
+        env = {"PYTHONPATH": str(lib)} if fake else {"PYTHONPATH": ""}
+        with mock.patch.dict(os.environ, env):
+            return SP.run_script_local(Path(sys.executable), TR._ASR_SCRIPT, [wav], out, opts,
+                                       60, "transcription")
+
+    def test_it_writes_the_json_the_pipeline_reads(self):
+        raw = self.run_script(fake=True)
+        self.assertEqual(raw["meta"]["language"], "en")
+        self.assertEqual(raw["meta"]["device"], "cpu")
+        self.assertEqual(raw["speech"], [[1000, 2000]])
+        (seg,) = raw["segments"]
+        self.assertEqual((seg["start"], seg["end"], seg["text"]), (1000, 2000, " Hello there."))
+        self.assertEqual(seg["words"][0], [1000, 1400, " Hello", 0.9])
+        tr = TR.build_transcript(raw, TR.settings(self.cfg))
+        self.assertEqual([c.text for c in tr.cues], ["Hello there."])
+
+    def test_without_faster_whisper_it_exits_with_the_code_that_means_not_installed(self):
+        try:
+            import faster_whisper  # noqa: F401
+            self.skipTest("faster-whisper is installed in this interpreter")
+        except ImportError:
+            pass
+        with self.assertRaises(SP.ScriptFailed) as cm:
+            self.run_script(fake=False)
+        self.assertEqual(cm.exception.code, TR.NO_RUNTIME_EXIT)
+        self.assertIn("faster-whisper is not importable", cm.exception.stderr)
+
+
 class TestAlignmentReference(Base):
     def transcribed(self, language="eng"):
         self.sidecar(audio_language=language)
