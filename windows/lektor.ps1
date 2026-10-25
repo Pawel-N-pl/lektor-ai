@@ -424,8 +424,16 @@ function Invoke-Mux {
         $nfoPath = Join-Path $workDir "$base.source.json"
         if (-not (Test-Path $nfoPath)) { Write-Warn2 "$base -- no source.json, skipped"; continue }
 
-        $src = (Get-Content -Path $nfoPath -Raw -Encoding UTF8 | ConvertFrom-Json).source_windows
+        $nfo = Get-Content -Path $nfoPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $src = $nfo.source_windows
         if (-not (Test-Path $src)) { Write-Warn2 "$base -- source gone: $src"; continue }
+        # Said, not done: the WSL mux (lektorlib.media.mux_args) appends a translated film's
+        # <base>.srt as a 'Polski (AI)' stream when translate.subtitles is 'mux'. This one does
+        # not, and nobody has a PowerShell box here to test a third input against, so it warns
+        # rather than ship a .mkv the user believes carries those subtitles.
+        if ($nfo.subtitle_origin -eq 'subs' -and "$($cfg.translate.subtitles)" -eq 'mux') {
+            Write-Warn2 "$base -- translate.subtitles is 'mux', but this mux does not add the Polish subtitles; run 'python3 wsl/lektor.py mux' for them"
+        }
 
         $dest = Join-Path $outDir "${base}_PL_LEKTOR.mkv"
         Write-Host $base -ForegroundColor White

@@ -75,3 +75,47 @@ subtitles = "off"          # off | sidecar | mux
 ## Dziennik
 
 _Każda faza dopisuje tu, co zrobiła, co zmierzyła i czego nie dało się sprawdzić._
+
+### Faza 1 – napisy → napisy + opcjonalne napisy: zrobiona
+
+**Co jest.**
+
+- `extract`: gdy nie ma polskiego tracku tekstowego (albo `mode = "always"`), wybiera obcojęzyczny
+  track tekstowy – najpierw w języku audio, potem angielski, potem reszta; zwykły dialog przed
+  SDH; nigdy forced ani bitmapa – i zapisuje go do `subs/<base>.src.<lang>.srt`, a w
+  `<base>.source.json` `subtitle_origin = "subs"`, język, codec i flagę SDH. Film z polskim
+  trackiem idzie starą ścieżką i dostaje dokładnie stary sidecar.
+- `translate` (`lektorlib/translate.py`): cały odcinek w jednym wywołaniu przez maszynerię
+  `script.py` (`_ask`, `CallStats`, `spend.json`), walidacja każdej linii, jeden celowany retry
+  (`retry_misses`), potem fallback model; odcinek z choć jedną nieprzetłumaczoną kwestią nie
+  dostaje `<base>.srt` wcale. Timingi 1:1 ze źródła. Linie raz kupione leżą w
+  `<base>.translated.json`; hash zapisanego pliku w `<base>.translate.json` chroni ręczne
+  poprawki przed nadpisaniem bez `--force`.
+- `run`: krok między `extract` a `speech`, plan mówi, czy i czym tłumaczy, stopka rozdziela
+  rachunek na tłumaczenie i skracanie. `speech` bierze źródło tłumaczenia jako referencję do
+  alignmentu. `cost` i `status` pokazują tłumaczenie osobno.
+- Napisy: `translate.subtitles` / `--subs` – `sidecar` i `mux` jak w planie, tylko dla pliku,
+  który napisał `translate`.
+
+**Odstępstwa od planu.**
+
+- `source_language = "auto"` to nie „tag, potem Whisper”, tylko ranking tracków: język audio,
+  angielski, reszta. Whisper wchodzi dopiero w fazie 2.
+- Źródło leży w `subs/<base>.src.<lang>.srt`, nie obok `<base>.srt`: każdy etap globuje `*.srt`
+  w katalogu roboczym i wziąłby źródło za osobny odcinek.
+- `translate.source = "asr"` jest przyjmowane, zgłaszane jako niezaimplementowane i odcinek jest
+  pomijany – nie podmieniane po cichu na `subs`.
+- `mode = "always"` bez niczego do tłumaczenia bierze jednak polski track filmu i mówi to
+  głośno, zamiast gubić odcinek. W tym trybie film zachowuje swój polski track, a tłumaczenie
+  idzie obok jako drugi, inny tekst.
+- Zmiana `mode` i ponowny `extract` odsuwa `<base>.srt` z poprzedniego trybu na
+  `<base>.srt.bak-*`, zamiast zostawić go pod nową etykietą.
+- Mux z PowerShella (`lektor.ps1 -Stage mux`) nie dokłada napisów; ostrzega i odsyła do muxa z
+  WSL.
+
+**Czego nie zmierzono.** Nic nie przeszło jeszcze przez prawdziwy odcinek: brak GPU, kontenera ASR
+i dostępu do LLM w środowisku, w którym to powstało, więc wszystko jest sprawdzone wyłącznie
+testami jednostkowymi na atrapach. Niezmierzone są: koszt odcinka (`measured_usd_per_episode = 0`
+i `cost` mówi to wprost), wybór modelu i fallbacku, `max_tokens`, granice `max_len_ratio` /
+`min_len_ratio`, `temperature`, to, co daje celowany retry, oraz jakość tłumaczenia dzielonego na
+kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).

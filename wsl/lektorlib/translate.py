@@ -44,7 +44,7 @@ from pathlib import Path
 from . import say
 from .media import read_source_json, translate_mode, translate_settings
 from .script import CallStats, Validation, _ask, append_spend, spend_path
-from .srt import Cue, parse_srt
+from .srt import SENTENCE_END, SPEAKER_DASH, Cue, parse_srt
 
 __all__ = ["stage_translate", "origin", "source_info", "source_srt", "srt_state"]
 
@@ -143,9 +143,11 @@ def source_cues(path: Path) -> list[Cue]:
     """The foreign cues as the model is shown them: markup gone, one line each, ids kept.
 
     Line breaks inside a card are joined with a space, and a leading speaker dash survives, so
-    "- Hi.\\n- Hello." is shown as "- Hi. - Hello." - the model sees the change of speaker and puts
-    it back. Cards with no text left once the markup is stripped are dropped here: there is
-    nothing to translate in them and nothing for the lektor to read.
+    "- Hi.\\n- Hello." is shown as "- Hi. - Hello." - the model sees the change of speaker and keeps
+    the dash. `c.raw` is left as it was, so `format_srt` can still read the card's own layout off
+    it rather than guess it from the translation. Cards with no text left once the markup is
+    stripped are dropped here: there is nothing to translate in them and nothing for the lektor
+    to read.
     """
     out = []
     for c in parse_srt(path):
@@ -525,17 +527,48 @@ def _ts(ms: int) -> str:
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
-def wrap_subtitle(text: str, width: int = 42) -> str:
+# Where a speaker's line may begin inside a joined card: whitespace, then a dash, with or without
+# a space after it - "-Hi. -Hello." is a house style of its own on some rips.
+_TURN_RE = re.compile(r"\s+(?=[-\u2013\u2014])")
+
+
+def speaker_turns(raw: str) -> int:
+    """How many speakers a source card holds, read off its own line breaks; 0 for a plain card.
+
+    `source_cues` joins the lines for the model, so this is the one place the card's layout is
+    still known. A card whose later lines start with a dash is a dialogue card even when the first
+    line carries no dash of its own, which some rips leave off.
+    """
+    lines = [ln for ln in _TAG_RE.sub("", raw).split("\n") if ln.strip()]
+    dashed = sum(1 for ln in lines if SPEAKER_DASH.match(ln))
+    if not any(SPEAKER_DASH.match(ln) for ln in lines[1:]):
+        return 0
+    return dashed + (0 if SPEAKER_DASH.match(lines[0]) else 1)
+
+
+def wrap_subtitle(text: str, width: int = 42, speakers: int = 0) -> str:
     """Lay one translated line out the way a subtitle card is laid out.
 
-    A speaker change goes back onto its own line, dash first, which is the convention every
-    Polish track on this disk follows and the one clean_text undoes when it joins them for the
-    lektor. Otherwise a line over `width` is broken once, at the space nearest the middle: two
-    balanced lines read better than a full one and a stub, and nothing here ever needs three.
+    A card the SOURCE laid out as `speakers` lines, one per speaker, gets them back, dash first,
+    which is the convention every Polish track on this disk follows and the one clean_text undoes
+    when it joins them for the lektor. Only the source can say so: guessed from the translation
+    alone, "- Ja - to znaczy, ja." grows a third speaker. Of the dashes in the line, the ones after
+    the end of a sentence are taken first, since a dash inside a speaker's line follows a word.
+    Otherwise a line over `width` is broken once, at the space nearest the middle: two balanced
+    lines read better than a full one and a stub, and nothing here ever needs three.
     """
     text = re.sub(r"\s+", " ", text).strip()
-    if text.startswith("-") and re.search(r"\s-\s", text):
-        return "\n".join(p.strip() for p in re.split(r"\s(?=-\s)", text) if p.strip())
+    if speakers >= 2:
+        cuts = [m for m in _TURN_RE.finditer(text) if m.start() > 0]
+        cuts.sort(key=lambda m: (not SENTENCE_END.search(text[:m.start()]), m.start()))
+        chosen = sorted(cuts[:speakers - 1], key=lambda m: m.start())
+        if chosen:
+            parts, at = [], 0
+            for m in chosen:
+                parts.append(text[at:m.start()])
+                at = m.end()
+            parts.append(text[at:])
+            return "\n".join(p.strip() for p in parts if p.strip())
     if len(text) <= width or " " not in text:
         return text
     mid = len(text) // 2
@@ -548,8 +581,18 @@ def format_srt(cues, texts: dict[int, str]) -> str:
     """The Polish SubRip: the source's timings untouched, renumbered from 1, one card per cue."""
     blocks = []
     for n, c in enumerate(cues, 1):
-        blocks.append(f"{n}\n{_ts(c.start_ms)} --> {_ts(c.end_ms)}\n{wrap_subtitle(texts[c.idx])}\n")
+        card = wrap_subtitle(texts[c.idx], speakers=speaker_turns(c.raw))
+        blocks.append(f"{n}\n{_ts(c.start_ms)} --> {_ts(c.end_ms)}\n{card}\n")
     return "\n".join(blocks)
+
+
+def set_aside(path: Path) -> Path:
+    """Move a file out of the way under a dated name, for when it may not be overwritten but may
+    not stay either. `<base>.srt.bak-*` does not end in .srt, so no stage takes it for an
+    episode."""
+    keep = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%dT%H%M%S')}")
+    path.replace(keep)
+    return keep
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -687,7 +730,8 @@ def stage_translate(cfg, only: str | None, force: bool = False,
                     f"({len(drawn.calls)} call(s), usage.cost)")
             say(f"  -> {write_spend_run(cfg, base, drawn, language, len(cues), len(hits)).name}")
             # Filed before the verdict, so an episode that fails on three lines pays for three
-            # lines next time and not for the whole episode again.
+            # lines next time and not for the whole episode again - as long as reuse_previous is
+            # on. Off, the book is neither written nor read, the way script treats its own.
             by_id = {c.idx: c for c in cues}
             fresh = {cache_key(by_id[i], language, s): {
                          "text": text, "id": i, "start_ms": by_id[i].start_ms, "src": by_id[i].text,
@@ -709,8 +753,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             continue
 
         if state in ("edited", "foreign"):
-            keep = out_srt.with_name(f"{out_srt.name}.bak-{time.strftime('%Y%m%dT%H%M%S')}")
-            out_srt.replace(keep)
+            keep = set_aside(out_srt)
             say(f"  previous {out_srt.name} copied aside as {keep.name}")
         _write_atomic(out_srt, format_srt(cues, texts))
         _write_atomic(provenance_path(cfg, base), json.dumps({
@@ -739,9 +782,14 @@ def stage_translate(cfg, only: str | None, force: bool = False,
     if spent:
         say(f"\ntranslation cost this run: ${spent:.4f}")
     if failed:
+        # Said from the setting, not assumed: with reuse_previous off the next run reads no book,
+        # so promising that nothing is paid for twice would be wrong about the next bill.
+        kept = ("Lines that did come back are kept in <base>.translated.json and will not be paid "
+                "for again." if t.get("reuse_previous", True) else
+                "translate.reuse_previous is false, so the lines that did come back are not reused "
+                "and a rerun pays for every line again.")
         raise SystemExit(
             "\ntranslation did not finish for:\n  " + "\n  ".join(failed)
             + "\nNo Polish subtitle file was written for these episodes, so nothing downstream will "
-              "run on them. Lines that did come back are kept in <base>.translated.json and will "
-              "not be paid for again.")
+              "run on them. " + kept)
     return result

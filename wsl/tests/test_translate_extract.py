@@ -168,20 +168,27 @@ class Cfg:
 class TestExtractBranches(unittest.TestCase):
     """stage_extract over canned ffprobe output, with ffmpeg replaced by a file writer."""
 
-    def run_extract(self, subs, audio=(), translate=None, force=False):
-        td = TemporaryDirectory()
-        self.addCleanup(td.cleanup)
-        video = Path(td.name) / "ep.mkv"
+    def run_extract(self, subs, audio=(), translate=None, force=False, root=None):
+        """`root` reruns extract on the work dir an earlier call left, as after a config change."""
+        if root is None:
+            td = TemporaryDirectory()
+            self.addCleanup(td.cleanup)
+            root = td.name
+        video = Path(root) / "ep.mkv"
         video.write_bytes(b"not really an mkv")
-        cfg = Cfg(td.name, translate)
+        cfg = Cfg(root, translate)
         calls = []
 
         def probe(ffprobe, path, select=None, strict=False):
             return streams(*(subs if select == "s" else audio))
 
         def extract(ffmpeg, video, index, out, force=False):
+            # The real one's rule: a file already there is kept unless forced.
+            if out.exists() and not force:
+                return False
             calls.append((index, out))
-            out.write_text("1\n00:00:01,000 --> 00:00:02,000\nx\n", encoding="utf-8")
+            out.write_text(f"1\n00:00:01,000 --> 00:00:02,000\nstream {index}\n",
+                           encoding="utf-8")
             return True
 
         with mock.patch.object(M, "probe_streams", side_effect=probe), \
@@ -233,6 +240,57 @@ class TestExtractBranches(unittest.TestCase):
     def test_mode_always_translates_even_with_a_polish_track(self):
         cfg, calls = self.run_extract([sub(2, "eng"), sub(30, "pol")], translate={"mode": "always"})
         self.assertEqual(calls, [(2, cfg.work_dir / "subs" / "ep.src.eng.srt")])
+
+    def test_mode_always_with_nothing_to_translate_falls_back_to_the_polish_track(self):
+        # Losing an episode that extracts fine under 'auto' was never what 'always' asked for.
+        for tr in ({"mode": "always"}, {"mode": "always", "source": "asr"},
+                   {"mode": "always", "source_language": "ger"}):
+            with self.subTest(**tr):
+                cfg, calls = self.run_extract([sub(2, "eng", forced=1), sub(30, "pol")],
+                                              translate=tr)
+                self.assertEqual(calls, [(30, cfg.work_dir / "ep.srt")])
+                self.assertNotIn("subtitle_origin", self.sidecar(cfg))
+                # Not a failure, so not in the log a season run reads for the episodes it lost.
+                self.assertFalse((cfg.work_dir / "error_log.txt").exists())
+
+    def test_switching_auto_to_always_moves_the_polish_text_aside(self):
+        from lektorlib import translate as T
+        both = [sub(2, "eng"), sub(30, "pol")]
+        cfg, _ = self.run_extract(both, translate={"mode": "auto"})
+        root = cfg.input_dir
+        cfg, calls = self.run_extract(both, translate={"mode": "always"}, root=root)
+        self.assertEqual(calls, [(2, cfg.work_dir / "subs" / "ep.src.eng.srt")])
+        self.assertEqual(T.origin(cfg, "ep"), "subs")
+        # Gone from <base>.srt, so translate writes the translation instead of keeping the
+        # film's own track under the translated label; kept aside, not lost.
+        self.assertFalse((cfg.work_dir / "ep.srt").exists())
+        kept = list(cfg.work_dir.glob("ep.srt.bak-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn("stream 30", kept[0].read_text(encoding="utf-8"))
+
+    def test_switching_always_to_auto_puts_the_polish_track_back(self):
+        from lektorlib import translate as T
+        both = [sub(2, "eng"), sub(30, "pol")]
+        cfg, _ = self.run_extract(both, translate={"mode": "always"})
+        srt = cfg.work_dir / "ep.srt"
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nprzekład\n", encoding="utf-8")
+        T.provenance_path(cfg, "ep").write_text(json.dumps({"srt_sha256": T.file_sha256(srt)}),
+                                                encoding="utf-8")
+        cfg, calls = self.run_extract(both, translate={"mode": "auto"}, root=cfg.input_dir)
+        self.assertEqual(calls, [(30, srt)])
+        self.assertIn("stream 30", srt.read_text(encoding="utf-8"))
+        self.assertEqual(T.origin(cfg, "ep"), "track")
+        self.assertFalse(T.provenance_path(cfg, "ep").exists())
+        kept = list(cfg.work_dir.glob("ep.srt.bak-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn("przekład", kept[0].read_text(encoding="utf-8"))
+
+    def test_a_rerun_under_the_same_mode_moves_nothing(self):
+        both = [sub(2, "eng"), sub(30, "pol")]
+        cfg, _ = self.run_extract(both, translate={"mode": "auto"})
+        cfg, calls = self.run_extract(both, translate={"mode": "auto"}, root=cfg.input_dir)
+        self.assertEqual(calls, [])
+        self.assertEqual(list(cfg.work_dir.glob("ep.srt.bak-*")), [])
 
     def test_a_bitmap_only_polish_track_is_translated_around_under_auto(self):
         cfg, calls = self.run_extract([sub(2, "eng"), sub(30, "pol", codec="hdmv_pgs_subtitle")],

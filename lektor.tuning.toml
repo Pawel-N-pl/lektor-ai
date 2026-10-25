@@ -36,9 +36,12 @@ downmix_rate = 48000
 # auto    translate only when the film has no usable Polish text track - the Polish track, when
 #         there is one, is extracted exactly as before and nothing here runs;
 # always  translate even when a Polish track exists (to compare the two, or because it is bad);
+#         a film with nothing to translate from still gets its Polish track, with a warning;
 # never   the old behaviour: no Polish track, no episode.
 # A Polish track that exists only as a bitmap (PGS, VobSub) counts as absent under 'auto', since
-# the alternative is the same skipped episode it always was.
+# the alternative is the same skipped episode it always was. Changing this and rerunning extract
+# moves the <base>.srt the other mode left aside (<base>.srt.bak-*) rather than keep it under the
+# new label; whatever was built from the old text afterwards needs redoing.
 mode = 'auto'
 
 # Where the foreign text comes from. 'subs' is a text subtitle track in the film. 'asr' is
@@ -69,6 +72,11 @@ openrouter_model = 'openai/gpt-5.6-luna-pro'
 # model rather than a re-roll, so a model-specific failure - a refusal, an outage, a reply format
 # it keeps getting wrong - is not simply repeated. Also unmeasured on this task. Empty disables it.
 fallback_model = 'openai/gpt-5.6-terra'
+# Cues that came back missing or failed the checks below get ONE more call to the primary that
+# names them and says why, before the fallback is asked. The [script] key of the same name does
+# not reach this stage. What the retry buys on translation is unmeasured; false sends the misses
+# straight to the fallback model.
+retry_misses = true
 openrouter_base = 'https://openrouter.ai/api/v1'
 reasoning_effort = 'medium'
 # The condensation figure (206/210 in budget at 0.3 against 92/210 at the default) was about

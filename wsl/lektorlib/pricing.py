@@ -19,11 +19,10 @@ from __future__ import annotations
 
 import json
 
-from . import say
+from . import media, say, translate
 from .config import Config
 from .script import read_spend
 from .srt import load_cues
-from . import translate
 
 FLASH_USD_PER_1K = 0.05   # eleven_flash_*, eleven_turbo_*
 OTHER_USD_PER_1K = 0.10   # eleven_multilingual_v2, eleven_v3
@@ -157,7 +156,7 @@ def _translation_cost(cfg: Config, counted: set[str]) -> None:
     bases = translated_bases(cfg)
     if not bases:
         return
-    t = translate.translate_settings(cfg)
+    t = media.translate_settings(cfg)
     model = t.get("openrouter_model", "?")
     n_cues = n_chars = 0
     for base in bases:

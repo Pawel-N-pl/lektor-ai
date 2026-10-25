@@ -200,7 +200,29 @@ class TestSourceCues(unittest.TestCase):
 
 class TestWrapAndFormat(unittest.TestCase):
     def test_a_speaker_change_goes_back_on_its_own_line(self):
-        self.assertEqual(T.wrap_subtitle("- Byłem w pubie. - Znowu?"), "- Byłem w pubie.\n- Znowu?")
+        self.assertEqual(T.wrap_subtitle("- Byłem w pubie. - Znowu?", speakers=2),
+                         "- Byłem w pubie.\n- Znowu?")
+
+    def test_the_source_card_says_how_many_speakers_there_are(self):
+        self.assertEqual(T.speaker_turns("- I was at the pub.\n- Again?"), 2)
+        self.assertEqual(T.speaker_turns("-Hi.\n-Hello."), 2)
+        # Some rips leave the first speaker's dash off.
+        self.assertEqual(T.speaker_turns("Who?\n- Me."), 2)
+        self.assertEqual(T.speaker_turns("A long line that the\nripper wrapped."), 0)
+        self.assertEqual(T.speaker_turns("- A lone dash, one line."), 0)
+
+    def test_a_dash_inside_one_speakers_line_is_not_a_third_speaker(self):
+        src = "- Who did it?\n- I was - I mean, me."
+        self.assertEqual(T.wrap_subtitle("- Kto to zrobił? - Ja - to znaczy, ja.",
+                                         speakers=T.speaker_turns(src)),
+                         "- Kto to zrobił?\n- Ja - to znaczy, ja.")
+
+    def test_a_dash_with_no_space_after_it_still_splits(self):
+        turns = T.speaker_turns("-Hi.\n-Hello.")
+        self.assertEqual(T.wrap_subtitle("-Cześć. -Witaj.", speakers=turns), "-Cześć.\n-Witaj.")
+
+    def test_a_card_with_one_speaker_is_never_split_on_a_dash(self):
+        self.assertEqual(T.wrap_subtitle("- Ja - to znaczy, ja."), "- Ja - to znaczy, ja.")
 
     def test_a_long_line_breaks_once_near_the_middle(self):
         text = "Nie mam pojęcia, o czym mówisz, ale brzmi to całkiem rozsądnie."
@@ -392,6 +414,78 @@ class TestTranslateEpisode(WorkDir):
         self.assertEqual(out.response_format, "json_object")
         self.assertEqual(p.calls[1]["body"]["response_format"], {"type": "json_object"})
 
+    def test_retry_misses_off_goes_straight_to_the_fallback(self):
+        self.cfg.raw["translate"]["retry_misses"] = False
+
+        def answer(model, ids):
+            if model == "test/primary":
+                return {i: POLISH[i] for i in ids if i != 4}
+            return {i: POLISH[i] for i in ids}
+
+        p = Provider(answer)
+        out = self.go(p)
+        self.assertEqual(out.texts, POLISH)
+        self.assertEqual([(c["model"], c["ids"]) for c in p.calls],
+                         [("test/primary", [1, 2, 4, 5]), ("test/fallback", [4])])
+
+    def test_a_fallback_equal_to_the_primary_is_not_called_twice(self):
+        self.cfg.raw["translate"]["fallback_model"] = "test/primary"
+        p = Provider(lambda model, ids: {i: POLISH[i] for i in ids if i != 4})
+        out = self.go(p)
+        self.assertEqual(len(p.calls), 2)          # the call and its targeted retry
+        self.assertEqual(out.missing, [4])
+        self.assertEqual(out.error, "")
+
+    def chunked(self):
+        # Small enough that SOURCE's four cues go out as [1, 2] and [4, 5].
+        self.cfg.raw["translate"]["max_prompt_chars"] = 60
+        _, path = T.plan_chunks(self.cues(), 60)
+        self.assertEqual(path, "chunked:2")
+
+    def test_an_episode_over_the_limit_is_sent_in_contiguous_chunks(self):
+        self.chunked()
+        p = Provider()
+        out = self.go(p)
+        self.assertEqual(out.path, "chunked:2")
+        self.assertEqual(out.texts, POLISH)
+        self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [4, 5]])
+        # Each chunk sees only itself, and asks for all of it, so there is no request note.
+        second = p.calls[1]["body"]["messages"]
+        self.assertNotIn("[1]", second[1]["content"])
+        self.assertEqual(len(second), 2)
+
+    def test_a_chunk_with_nothing_wanted_is_not_sent(self):
+        self.chunked()
+        p = Provider()
+        out = self.go(p, todo={5})
+        self.assertEqual([c["ids"] for c in p.calls], [[5]])
+        # Its own chunk is the context: cue 4 is shown, only cue 5 is asked for.
+        self.assertIn("[4] I'm ready.", p.calls[0]["body"]["messages"][1]["content"])
+        self.assertEqual(out.texts, {5: POLISH[5]})
+
+    def test_an_outright_failure_in_one_chunk_stops_the_rest(self):
+        self.chunked()
+        dead = Resp(402, {"error": {"code": 402, "message": "no credits"}})
+        p = Provider(lambda model, ids: dead)
+        out = self.go(p)
+        # Chunk 1's primary and fallback only: chunk 2 would meet the same empty account.
+        self.assertEqual([(c["model"], c["ids"]) for c in p.calls],
+                         [("test/primary", [1, 2]), ("test/fallback", [1, 2])])
+        self.assertIn("402", out.error)
+        self.assertEqual(out.missing, [1, 2, 4, 5])
+
+    def test_a_validation_miss_in_one_chunk_does_not_stop_the_next(self):
+        self.chunked()
+        # Cue 1 comes back every time, untranslated: a reply that parses, with a line that fails
+        # validation. (A reply with no usable cue at all is an error to _ask, and does stop.)
+        p = Provider(lambda model, ids: {i: ("Where have you been?" if i == 1 else POLISH[i])
+                                         for i in ids})
+        out = self.go(p)
+        self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [1], [1], [4, 5]])
+        self.assertEqual(out.missing, [1])
+        self.assertIn(1, out.rejected)
+        self.assertEqual(out.error, "")
+
     def test_a_partial_send_shows_the_whole_episode_and_names_the_wanted_cues(self):
         p = Provider()
         out = self.go(p, todo={5})
@@ -476,6 +570,15 @@ class TestStage(WorkDir):
         self.assertEqual(got, {"ep": "foreign"})
         self.assertIn("Polski track", self.srt.read_text(encoding="utf-8"))
 
+    def test_force_on_a_foreign_srt_copies_it_aside_first(self):
+        self.srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nPolski track\n", encoding="utf-8")
+        got, _ = self.run_stage(force=True)
+        self.assertEqual(got, {"ep": "written"})
+        kept = list(self.work.glob("ep.srt.bak-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn("Polski track", kept[0].read_text(encoding="utf-8"))
+        self.assertEqual(T.srt_state(self.cfg, "ep"), "ours")
+
     def test_an_episode_from_a_polish_track_is_skipped_entirely(self):
         self.write_sidecar({})
         self.srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nPolski\n", encoding="utf-8")
@@ -504,6 +607,38 @@ class TestStage(WorkDir):
         got, p = self.run_stage()
         self.assertEqual(got, {"ep": "written"})
         self.assertEqual([c["ids"] for c in p.calls], [[4]])
+        # Merged, not replaced: the book holds what both runs bought, so no later run pays for
+        # cues 1, 2 and 5 again.
+        book = json.loads((self.work / "ep.translated.json").read_text(encoding="utf-8"))
+        self.assertEqual(len(book["entries"]), 4)
+        got, p = self.run_stage(force=True)
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual(p.calls, [])
+
+    def test_with_reuse_off_a_hole_says_the_rerun_pays_for_everything(self):
+        self.cfg.raw["translate"]["reuse_previous"] = False
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage(Provider(lambda model, ids: {i: POLISH[i] for i in ids if i != 4}))
+        self.assertNotIn("will not be paid for again", str(cm.exception))
+        self.assertIn("a rerun pays for every line again", str(cm.exception))
+        self.assertFalse((self.work / "ep.translated.json").exists())
+
+    def test_a_corrupt_book_is_kept_aside_and_the_episode_is_translated_fresh(self):
+        for bad in ("{not json", '{"base": "ep"}', "[1]"):
+            with self.subTest(book=bad):
+                for f in self.work.glob("ep.translate*"):
+                    f.unlink()
+                self.srt.unlink(missing_ok=True)
+                (self.work / "ep.translated.json").write_text(bad, encoding="utf-8")
+                got, p = self.run_stage()
+                self.assertEqual(got, {"ep": "written"})
+                self.assertEqual(len(p.calls), 1)
+                kept = list(self.work.glob("ep.translated.corrupt-*.json"))
+                self.assertEqual(len(kept), 1)
+                self.assertEqual(kept[0].read_text(encoding="utf-8"), bad)
+                kept[0].unlink()
+                book = json.loads((self.work / "ep.translated.json").read_text(encoding="utf-8"))
+                self.assertEqual(len(book["entries"]), 4)
 
     def test_no_key_writes_nothing_and_exits_non_zero(self):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):

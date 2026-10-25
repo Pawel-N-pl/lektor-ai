@@ -142,6 +142,13 @@ class TestPlan(Base):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             self.assertIn("OPENROUTER_API_KEY is not set: translate cannot run", self.plan())
 
+    def test_no_key_before_extract_is_said_as_conditional(self):
+        # A film with a Polish track never calls translate, so nothing is known to stop yet.
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            out = self.plan()
+        self.assertIn("OPENROUTER_API_KEY is not set: if extract finds no Polish text track", out)
+        self.assertNotIn("the chain will stop at that step", out)
+
     def test_subtitles_meant_for_a_remux_the_chain_will_not_do_are_flagged(self):
         self.translated()
         self.cfg.raw["translate"]["subtitles"] = "mux"
@@ -202,6 +209,64 @@ class TestRunStep(Base):
             status, note, _ = self.step("translate")
         self.assertEqual(status, P.SKIPPED)
         self.assertIn("edited by hand", note)
+
+    def test_redo_passes_force_to_the_stage(self):
+        self.translated(with_srt=True)
+        seen = {}
+
+        def fake(cfg, only, force=False, redraw=False):
+            seen["force"] = force
+            return {"ep": "written"}
+
+        with mock.patch.object(T, "stage_translate", side_effect=fake):
+            self.step("translate", force=True)
+        self.assertIs(seen["force"], True)
+
+    def test_a_foreign_srt_is_a_skip_that_says_so(self):
+        self.translated(with_srt=True)
+        with mock.patch.object(T, "stage_translate", return_value={"ep": "foreign"}):
+            status, note, _ = self.step("translate")
+        self.assertEqual(status, P.SKIPPED)
+        self.assertIn("translate did not write it", note)
+
+    def test_a_kept_translation_is_a_skip(self):
+        self.translated(with_srt=True)
+        with mock.patch.object(T, "stage_translate", return_value={"ep": "kept"}):
+            status, note, _ = self.step("translate")
+        self.assertEqual((status, note), (P.SKIPPED, "ep.srt was already there"))
+
+    def test_a_stage_that_writes_nothing_is_a_hard_fail(self):
+        self.translated()
+        with mock.patch.object(T, "stage_translate", return_value={"ep": "written"}):
+            with self.assertRaises(P.HardFail) as cm:
+                self.step("translate")
+        self.assertIn("translate wrote no ep.srt", str(cm.exception))
+
+    def test_translate_before_extract_is_a_hard_fail_not_a_skip(self):
+        # `--from translate` on a film extract never saw: no sidecar, no .srt.
+        with mock.patch.object(T, "stage_translate") as st:
+            with self.assertRaises(P.HardFail) as cm:
+                self.step("translate")
+        st.assert_not_called()
+        self.assertIn("extract has not run", str(cm.exception))
+
+    def test_a_hand_placed_srt_with_no_sidecar_is_still_taken(self):
+        (self.work / "ep.srt").write_text(SRT, encoding="utf-8")
+        status, note, _ = self.step("translate")
+        self.assertEqual(status, P.SKIPPED)
+        self.assertIn("is taken as the Polish text", note)
+
+    def test_a_skipped_pack_still_refreshes_the_sidecar(self):
+        self.cfg.raw["translate"]["subtitles"] = "sidecar"
+        self.translated(with_srt=True)
+        T.provenance_path(self.cfg, "ep").write_text(json.dumps(
+            {"srt_sha256": T.file_sha256(self.work / "ep.srt")}), encoding="utf-8")
+        P.artefact(self.cfg, "ep", "pack").write_bytes(b"mka")
+        with mock.patch.object(P.media, "say"):
+            status, note, _ = self.step("pack")
+        self.assertEqual(status, P.SKIPPED)
+        self.assertIn("ep.pl.srt up to date", note)
+        self.assertEqual(P.media.sidecar_srt_path(self.cfg, "ep").read_text(encoding="utf-8"), SRT)
 
     def test_extract_that_found_nothing_to_translate_either_says_so(self):
         with mock.patch.object(P.media, "stage_extract"):

@@ -275,8 +275,15 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
     """
     out: list[str] = []
     if "translate" in will_run and not os.environ.get("OPENROUTER_API_KEY"):
-        out.append("OPENROUTER_API_KEY is not set: translate cannot run, and a film with no Polish "
-                   "track has no Polish text without it – the chain will stop at that step.")
+        # Before extract has run nobody knows yet whether the film has a Polish track, and a film
+        # that has one never calls translate - so the stop is only certain for a translated film.
+        if translate.origin(cfg, base) == "subs":
+            out.append("OPENROUTER_API_KEY is not set: translate cannot run, and a film with no "
+                       "Polish track has no Polish text without it – the chain will stop at that "
+                       "step.")
+        else:
+            out.append("OPENROUTER_API_KEY is not set: if extract finds no Polish text track, "
+                       "translate cannot run and the chain will stop there.")
     # Gated on the ENGINE, not just on the missing file. Four of the five backends never predict a
     # duration - piper binary-searches length_scale, omnivoice is handed the length in seconds,
     # chatterbox measures after the fact and kikivoice meets the window locally - and all four
@@ -450,10 +457,17 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
 
     if step == "translate":
         org = translate.origin(cfg, base)
-        if org != "subs":
+        if org == "track":
             return SKIPPED, ("the Polish text comes from the film's own track – nothing to "
-                             "translate" if org == "track" else
-                             f"no {base}.source.json; {art.name} is taken as the Polish text")
+                             "translate")
+        if org != "subs":
+            if not art.exists():
+                # `--from translate` or `--skip extract` on a film extract never saw. Said here,
+                # not one step later as speech's "no .srt", and not as a skip that names a file
+                # nobody wrote.
+                raise HardFail(f"no {base}.source.json and no {art.name}: extract has not run for "
+                               f"this episode, and every later step needs its Polish text")
+            return SKIPPED, f"no {base}.source.json; {art.name} is taken as the Polish text"
         before = read_spend(cfg, base, "translate")
         try:
             what = translate.stage_translate(cfg, base, force).get(base, "")

@@ -24,12 +24,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import lektor  # noqa: E402
 from lektorlib import media as M  # noqa: E402
 from lektorlib import pipeline as P  # noqa: E402
+from lektorlib import translate as T  # noqa: E402
 
 SRT = "1\n00:00:01,000 --> 00:00:02,000\nCześć.\n"
 
 
 class Cfg:
-    def __init__(self, root, subtitles="off", origin="subs"):
+    """A work dir holding one episode. `ours` stamps `<base>.translate.json` the way the translate
+    stage does, so the `<base>.srt` counts as its own; without it the file is somebody else's."""
+
+    def __init__(self, root, subtitles="off", origin="subs", ours=True):
         self.input_dir = Path(root)
         self.work_dir = Path(root) / "_lektor"
         self.work_dir.mkdir(parents=True, exist_ok=True)
@@ -41,6 +45,9 @@ class Cfg:
             side["subtitle_origin"] = origin
         (self.work_dir / "ep.source.json").write_text(json.dumps(side), encoding="utf-8")
         (self.work_dir / "ep.srt").write_text(SRT, encoding="utf-8")
+        if origin == "subs" and ours:
+            (self.work_dir / "ep.translate.json").write_text(json.dumps(
+                {"srt_sha256": T.file_sha256(self.work_dir / "ep.srt")}), encoding="utf-8")
 
     def __getitem__(self, k):
         return self.raw[k]
@@ -94,6 +101,14 @@ class TestWhenSubtitlesExist(unittest.TestCase):
         self.assertIsNone(M.sync_sidecar(cfg, "ep"))
         self.assertFalse((cfg.input_dir / "ep.pl.srt").exists())
 
+    def test_an_srt_the_translate_stage_did_not_write_is_not_offered_as_the_translation(self):
+        # A Polish track left over from before translate.mode changed, or a file put there by
+        # hand: the sidecar says "translated", but this file is not the translation.
+        cfg = Cfg(self.tmp.name, "sidecar", ours=False)
+        self.assertEqual(T.srt_state(cfg, "ep"), "foreign")
+        self.assertIsNone(M.polish_subtitle_for(cfg, "ep"))
+        self.assertIsNone(M.sync_sidecar(cfg, "ep"))
+
     def test_sidecar_lands_beside_the_film_and_follows_later_edits(self):
         cfg = Cfg(self.tmp.name, "sidecar")
         side = M.sync_sidecar(cfg, "ep")
@@ -128,6 +143,41 @@ class TestWhenSubtitlesExist(unittest.TestCase):
                 self.assertEqual(mx.call_args.args[7], "Polski (AI)")
 
 
+class TestPackSyncsTheSidecar(unittest.TestCase):
+    """The two call sites that make a hand fix reach the copy beside the film: stage_pack, before
+    its own "exists, skipping", and the chain's pack step when it skips."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        mock.patch.object(M, "say").start()
+        mock.patch.object(M, "track_extension", return_value="eac3").start()
+        self.addCleanup(mock.patch.stopall)
+        self.cfg = Cfg(self.tmp.name, "sidecar")
+        (self.cfg.work_dir / "ep.lektor.eac3").write_bytes(b"a")
+        M.pack_path(self.cfg, "ep").write_bytes(b"mka")
+        self.side = M.sidecar_srt_path(self.cfg, "ep")
+
+    def test_a_skipped_pack_still_refreshes_the_sidecar(self):
+        with mock.patch.object(M, "run_ffmpeg") as ff:
+            M.stage_pack(self.cfg, "ep", False)
+            (self.cfg.work_dir / "ep.srt").write_text(SRT.replace("Cześć", "Hej"),
+                                                      encoding="utf-8")
+            M.stage_pack(self.cfg, "ep", False)
+        ff.assert_not_called()
+        self.assertIn("Hej", self.side.read_text(encoding="utf-8"))
+
+    def test_a_suffixed_pack_writes_no_sidecar(self):
+        (self.cfg.work_dir / "ep.lektor.b.eac3").write_bytes(b"a")
+        def fake_ffmpeg(ffmpeg, args, what):
+            Path(args[-1]).write_bytes(b"mka")
+
+        with mock.patch.object(M, "run_ffmpeg", side_effect=fake_ffmpeg):
+            M.stage_pack(self.cfg, "ep", True, ".b")
+        self.assertTrue(M.pack_path(self.cfg, "ep", ".b").exists())
+        self.assertFalse(self.side.exists())
+
+
 class TestCliFlag(unittest.TestCase):
     def test_subs_overrides_the_config_for_one_run(self):
         seen = {}
@@ -138,6 +188,15 @@ class TestCliFlag(unittest.TestCase):
         with mock.patch.object(lektor.media, "stage_pack", side_effect=fake_pack):
             lektor.main(["pack", "--subs", "sidecar"])
         self.assertEqual(seen["subs"], "sidecar")
+
+    def test_translate_hands_force_and_redraw_to_the_stage(self):
+        with mock.patch.object(lektor.translate, "stage_translate", return_value={}) as st:
+            lektor.main(["translate", "--only", "ep", "--force", "--redraw"])
+        cfg, only, force, redraw = st.call_args.args
+        self.assertEqual((only, force, redraw), ("ep", True, True))
+        with mock.patch.object(lektor.translate, "stage_translate", return_value={}) as st:
+            lektor.main(["translate", "--only", "ep", "--redraw"])
+        self.assertEqual(st.call_args.args[1:], ("ep", False, True))
 
     def test_a_stage_that_writes_no_subtitles_refuses_the_flag(self):
         with redirect_stdout(io.StringIO()), mock.patch("sys.stderr", io.StringIO()):

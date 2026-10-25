@@ -457,16 +457,22 @@ def subtitles_mode(cfg) -> str:
 
 
 def polish_subtitle_for(cfg, base: str) -> Path | None:
-    """`<base>.srt`, but only for an episode this pipeline translated.
+    """`<base>.srt`, but only when the translate stage wrote it.
 
-    A film whose Polish text came from its own track already carries that track - duplicating it
-    as an "AI" one would put two Polish subtitle streams side by side, one of them a copy. So the
-    sidecar and the muxed stream exist only where the translation is the only Polish text there is.
+    A film whose Polish text came from its own track already carries that track - shipping it
+    again as an "AI" one would put two Polish subtitle streams side by side, one of them a copy.
+    The sidecar saying "translated" is not enough on its own: a `<base>.srt` the stage did not
+    write (a Polish track left from before translate.mode changed, a file put there by hand) sits
+    under that sidecar too, and it is not the translation. So the file has to be the stage's own,
+    hand edits after it included. Under translate.mode 'always' the film keeps its Polish track
+    and the translation goes beside it - a different text, which is what 'always' asked for.
     """
     from . import translate     # translate imports this module
 
     srt = cfg.work_dir / f"{base}.srt"
     if translate.origin(cfg, base) != "subs" or not srt.is_file():
+        return None
+    if translate.srt_state(cfg, base) not in ("ours", "edited"):
         return None
     return srt
 
@@ -623,13 +629,16 @@ def _downmix(cfg, video: Path, flac: Path, force: bool) -> None:
         say("  -> downmix exists, skipping (--force to redo)")
 
 
-def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = False) -> Path | None:
+def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = False,
+                            polish_fallback: bool = False) -> Path | None:
     """The foreign half of extract: `subs/<base>.src.<lang>.srt`, the downmix, and the sidecar.
 
     Returns the source subtitle, or None when there is nothing to translate from - which is
     logged to error_log.txt exactly as a missing Polish track always was, so a season run still
-    names every episode it could not do.
+    names every episode it could not do. With `polish_fallback` the caller still has the film's
+    own Polish track to fall back on, so a miss is neither "skipped" nor logged.
     """
+    end = "" if polish_fallback else " – skipped"
     ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
     ex = cfg["extract"]
     tr = translate_settings(cfg)
@@ -641,8 +650,9 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
         # Said, not quietly swapped for 'subs': whoever set it asked for a transcription of the
         # audio, and a translation of a subtitle track is a different thing to hand them.
         say("  !! translate.source is 'asr': transcribing the audio is phase 2 of "
-            "docs/translate.md and not implemented yet – skipped")
-        log_extract_error(work_dir, base, "translate.source 'asr' is not implemented yet")
+            f"docs/translate.md and not implemented yet{end}")
+        if not polish_fallback:
+            log_extract_error(work_dir, base, "translate.source 'asr' is not implemented yet")
         return None
 
     audio = audio_language(probe_streams(ffprobe, video, "a"), ex.get("audio_stream", "a:0"))
@@ -656,8 +666,9 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
                 else f"no '{wanted}' text subtitle")
         tail = (" either, and transcribing the audio (translate.source 'asr') is not implemented "
                 "yet" if source == "auto" else "")
-        say(f"  !! {what} to translate from{tail} – skipped")
-        log_extract_error(work_dir, base, f"{what} to translate from")
+        say(f"  !! {what} to translate from{tail}{end}")
+        if not polish_fallback:
+            log_extract_error(work_dir, base, f"{what} to translate from")
         return None
 
     note = f" ({pick.title})" if pick.title else ""
@@ -687,6 +698,8 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
 
 
 def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
+    from . import translate     # translate imports this module
+
     ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
     ex = cfg["extract"]
     language = ex["subtitle_language"]
@@ -711,8 +724,14 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
             continue
         choice = pick_extractable_subtitle(subs, language, ex.get("reject_title_patterns"))
         # The translation branch, taken only when the Polish track is absent or unusable - or
-        # when translate.mode says always. Everything below it is the Polish path, untouched.
+        # when translate.mode says always and there is something to translate. Below it, the
+        # Polish path.
         polish_ok = choice is not None and is_text_subtitle(choice.codec)
+        srt = work_dir / f"{base}.srt"
+        # Read before this run rewrites the sidecar: a changed translate.mode can turn an episode
+        # extracted from its Polish track into a translated one, or back, and the <base>.srt left
+        # by the other branch must not carry on under the new label.
+        was = translate.origin(cfg, base)
         if mode == "always" or (mode == "auto" and not polish_ok):
             if choice is None:
                 say(f"  .. no '{language}' subtitle stream – looking for one to translate from")
@@ -722,8 +741,21 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
             else:
                 say(f"  .. translate.mode is 'always' – the '{language}' track at "
                     f"0:{choice.index} is left alone")
-            extract_for_translation(cfg, video, base, subs, force)
-            continue
+            if extract_for_translation(cfg, video, base, subs, force, polish_fallback=polish_ok):
+                # The Polish track's text, extracted under the old mode. Left in place, translate
+                # would see a file it did not write, keep it, and the film's own track would be
+                # read and shipped as the translation.
+                if was == "track" and translate.srt_state(cfg, base) == "foreign":
+                    keep = translate.set_aside(srt)
+                    say(f"  -> {srt.name} held the '{language}' track's text from an earlier "
+                        f"extract – moved aside as {keep.name}; translate writes the new one")
+                continue
+            if not polish_ok:
+                continue
+            # 'always' asked for a translation, but losing the episode was never part of it: the
+            # film's own track is what the lektor reads, said here and kept out of error_log.txt.
+            say(f"  !! nothing to translate from – the film's own '{language}' track at "
+                f"0:{choice.index} is used after all")
         if choice is None:
             say(f"  !! no '{language}' subtitle stream – skipped")
             log_extract_error(work_dir, base, f"no '{language}' subtitle stream")
@@ -736,7 +768,13 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
         flag = f" – rejected fallback: {choice.reason}" if choice.rejected else ""
         say(f"  -> subtitle stream 0:{choice.index} [{choice.codec}]{note}{flag}")
 
-        srt = work_dir / f"{base}.srt"
+        if was == "subs" and translate.srt_state(cfg, base) in ("ours", "edited"):
+            # The translation from the old mode. Skipped as "srt exists", it would be voiced as
+            # the film's own track from here on while that track went unused.
+            keep = translate.set_aside(srt)
+            translate.provenance_path(cfg, base).unlink(missing_ok=True)
+            say(f"  -> {srt.name} was a translation from an earlier extract – moved aside as "
+                f"{keep.name}; the '{language}' track replaces it")
         flac = work_dir / f"{base}.orig.flac"
         if not extract_subtitles(ffmpeg, video, choice.index, srt, force):
             say("  -> srt exists, skipping (--force to redo)")

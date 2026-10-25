@@ -74,7 +74,12 @@ is English.
 on every pack so a later fix to the translation reaches it; `mux` appends it to the remuxed `.mkv`
 as a `pol` stream titled `Polski (AI)`, after every original subtitle and **not** default, which
 only happens with `--to mux` – the plan says so when the chain stops at pack. A film that had a
-Polish track never gets a second, "AI" copy of it.
+Polish track never gets a second, "AI" copy of it: what ships is `<base>.srt` only when the
+translate stage wrote it (hand edits after it included), never a Polish track's text or a file put
+there by hand. Under `translate.mode = 'always'` the film keeps its own Polish track and the
+translation goes beside it – a different text, not a copy, and the one `always` asked for. The
+PowerShell mux (`windows/lektor.ps1 -Stage mux`) does not add the subtitle stream: it warns when
+`subtitles` is `mux` on a translated film, and `python3 wsl/lektor.py mux` is the one that does.
 
 ## The mux
 
