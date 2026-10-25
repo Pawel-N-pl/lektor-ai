@@ -129,3 +129,42 @@ testami jednostkowymi na atrapach. Niezmierzone są: koszt odcinka (`measured_us
 i `cost` mówi to wprost), wybór modelu i fallbacku, `max_tokens`, granice `max_len_ratio` /
 `min_len_ratio`, `temperature`, to, co daje celowany retry, oraz jakość tłumaczenia dzielonego na
 kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
+
+**Kluczowe decyzje.**
+
+- Film z polskim trackiem tekstowym (i `mode` inny niż `always`) nie zmienia się wcale: sidecar
+  bez `subtitle_origin` znaczy „polski track”, co obejmuje też każdy sidecar napisany przez
+  skrypty PowerShella. Polski track wyłącznie jako bitmapa w `auto` liczy się jak brak polskiego
+  – film idzie do tłumaczenia zamiast odpaść.
+- Kody języków dwu- i trzyliterowe oraz pary w rodzaju `ger`/`deu` są tym samym językiem, bo mkv
+  używają obu zapisów.
+- `translate` ma ten sam kształt odpowiedzi co skracanie, więc bierze `call_openrouter`, retry i
+  throttle bez kopii; `script._ask` dostał jeden argument na schemat odpowiedzi. Przebiegi
+  tłumaczenia trafiają do tego samego `<base>.spend.json` z etykietą etapu, a `read_spend` umie
+  zsumować jeden etap – wcześniej `cost` liczył cały plik jako skracanie.
+- Klucz linii w cache to tekst źródła, język, model, effort, hash promptu i czas startu. Czas
+  startu, bo to samo „I'm ready.” może powiedzieć kobieta i mężczyzna, a polski pokazuje rodzaj.
+- Plik spoza `translate` albo ręcznie poprawiony po tłumaczeniu nie jest nadpisywany bez
+  `--force`; z `--force` najpierw odkładany na `<base>.srt.bak-<czas>`.
+- Referencja do alignmentu: angielskie źródło tłumaczenia wchodzi dopiero po wszystkich
+  skonfigurowanych wzorcach, a angielski SDH, który nie był źródłem, `speech` nadal wyciąga i
+  woli, jak dotąd.
+- Napisy w muxie: strumień otagowany jako polski, tytuł „Polski (AI)”, nie domyślny. `.pl.srt`
+  obok filmu jest kopiowany przy każdym pakowaniu, żeby późniejsze poprawki do niego dochodziły.
+  Z wyłączonymi napisami komenda muxa jest dokładnie stara.
+- Literówka w `translate.mode` albo `translate.subtitles` to błąd użycia, nie wyjątek.
+
+**Co sprawdzono.** Pełny zestaw testów: 441 passed, 3 skipped (przed fazą 1: 283). Nowe testy w
+`test_translate*.py` idą offline na atrapach i fixture'ach; żaden nie dotyka sieci.
+
+**Otwarte.**
+
+- Fazy 2 i 3; `source = "asr"` czeka na fazę 2.
+- Odcinek za długi na jedno wywołanie jest cięty na kawałki, z których każdy widzi tylko siebie –
+  bez kontekstu sąsiadów. Do zrobienia, jeśli prawdziwy odcinek kiedyś się nie zmieści.
+- `mode = "always"` na filmie, którego polski `<base>.srt` był już wyciągnięty wcześniej, trzyma
+  ten plik do `--redo translate` (albo `--force`).
+- Pierwszy przebieg na prawdziwym filmie i prawdziwym API: zmierzyć koszt odcinka i wpisać go do
+  `measured_usd_per_episode`, sprawdzić granice długości, model i fallback.
+- README podaje liczbę linii `lektor.toml` i kluczy w `lektor.tuning.toml`, która była nieaktualna
+  już przed tą fazą; nie poprawiona.
