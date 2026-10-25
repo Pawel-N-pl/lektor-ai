@@ -181,6 +181,21 @@ class TestSkipping(Base):
         got, calls, _ = self.run_stage(reply(language="de", texts=("Hallo.",)))
         self.assertEqual((got, calls), ({"ep": "written"}, ["de"]))
 
+    def test_a_transcript_in_a_new_language_replaces_the_old_file(self):
+        self.sidecar(audio_language="eng")
+        self.run_stage()
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        self.run_stage(reply(language="de", texts=("Hallo.",)))
+        self.assertEqual(sorted(p.name for p in (self.work / "subs").iterdir()),
+                         ["ep.asr.ger.srt"])
+
+    def test_polish_audio_is_not_sent_on_to_be_translated_into_itself(self):
+        self.sidecar(audio_language="")
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage(reply(language="pl", texts=("Gdzie byłeś?",)))
+        self.assertIn("Whisper hears 'pol'", str(cm.exception))
+        self.assertFalse((self.work / "ep.asr.json").exists())
+
     def test_a_missing_srt_is_not_a_finished_transcript(self):
         self.sidecar(audio_language="eng")
         self.run_stage()

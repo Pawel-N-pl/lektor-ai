@@ -122,7 +122,7 @@ json.dump({"meta": {"model": opts["model"], "device": str(device),
                     "speech_dur_s": round(float(getattr(info, "duration_after_vad", info.duration)), 2),
                     "load_s": round(load_s, 2), "transcribe_s": round(transcribe_s, 2),
                     "rtf_x": round(info.duration / transcribe_s, 1) if transcribe_s else None},
-           "segments": rows, "speech": speech}, open(OUT, "w"), ensure_ascii=False)
+           "segments": rows, "speech": speech}, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
 print(json.dumps({"ok": True, "n_segments": len(rows)}))
 '''
 
@@ -744,9 +744,9 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             t0 = time.perf_counter()
             kind = extract_centre(cfg, video, wav)
             extract_s = time.perf_counter() - t0
-            kind_where = runtime(cfg)
+            runner = runtime(cfg)
             say(f"  {kind} audio in {extract_s:.1f} s, transcribing with faster-whisper "
-                f"{t.get('model', 'large-v3')} ({kind_where[0]}: {kind_where[1]}), language "
+                f"{t.get('model', 'large-v3')} ({runner[0]}: {runner[1]}), language "
                 + (f"'{language}' from the {how}" if language else "detected by Whisper"))
             raw = run_asr(cfg, wav, tmp, language)
         except RuntimeMissing as exc:
@@ -776,6 +776,14 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             failed.append(f"{base}: {why} – no transcript written")
             result[base] = "failed"
             continue
+        target = language_key(cfg["extract"]["subtitle_language"])
+        if got == target:
+            # A film spoken in the target language needs no lektor, and translating it into
+            # itself would only fail translate's own "came back untranslated" check line by line.
+            failed.append(f"{base}: Whisper hears '{got}', the language the lektor speaks – "
+                          f"nothing to translate (set translate.source_language if it is wrong)")
+            result[base] = "failed"
+            continue
 
         srt = asr_srt_path(cfg.work_dir, base, got)
         srt.parent.mkdir(parents=True, exist_ok=True)
@@ -787,11 +795,15 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             keep = set_aside(old_srt)
             say(f"  previous {old_srt.name} was edited by hand – copied aside as {keep.name}")
         _write_atomic(srt, format_srt(tr.cues, t))
+        if old_srt is not None and old_srt != srt and old_srt.is_file():
+            # The transcript of an earlier language, untouched: nothing reads it any more, and the
+            # glob translate falls back on must not find it first.
+            old_srt.unlink()
         payload = {
             "base": base,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "source": {"video": video.name, "audio": kind},
-            "runner": {"kind": kind_where[0], "where": kind_where[1]},
+            "runner": {"kind": runner[0], "where": runner[1]},
             "language": got,
             "language_requested": language,
             "language_source": how if language else "detected",
@@ -799,7 +811,7 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             "srt": srt.relative_to(cfg.work_dir).as_posix(),
             "srt_sha256": file_sha256(srt),
             "cues": len(tr.cues),
-            "settings": {k: v for k, v in t.items() if k not in ("venv", "container")},
+            "settings": t,
             "meta": meta,
             "speech": raw.get("speech"),
             # Every segment Whisper returned, in time order, a dropped one with its reason - so a
