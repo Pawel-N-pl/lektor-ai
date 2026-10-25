@@ -112,6 +112,7 @@ tmp/
 # Everything a run writes beside the episode: subtitles, the script, the cache, the finished
 # track. Reproducible from the source and the config, and measured in hundreds of megabytes.
 _lektor/
+.zrodla/
 
 # The working copy: paths, which engine, whose voice. Template: lektor.toml.example
 /lektor.toml
