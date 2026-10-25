@@ -221,6 +221,10 @@ class SubtitleChoice:
     codec: str = ""
     rejected: bool = False
     reason: str = ""
+    # Set only by `pick_translation_source`. The Polish path never reads them, and leaving them at
+    # their defaults there is what keeps its sidecar byte-for-byte what it was.
+    language: str = ""
+    sdh: bool = False
 
 
 def _compile_rejects(patterns) -> list[tuple[str, re.Pattern]]:
@@ -318,6 +322,131 @@ def is_text_subtitle(codec_name: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# A foreign subtitle to translate from - only when there is no Polish one
+# ---------------------------------------------------------------------------
+
+# ISO 639-2 spells some languages twice - a bibliographic code (ger, fre, dut, chi) and a
+# terminology one (deu, fra, nld, zho) - and mkv muxers write either, or the two-letter 639-1 code.
+# Folded to one key, or `source_language = 'ger'` would miss a track tagged `deu` and a film whose
+# audio is tagged `en` would not count its own `eng` subtitles as the audio's language.
+_LANGUAGE_ALIASES = {
+    "en": "eng", "de": "ger", "deu": "ger", "fr": "fre", "fra": "fre", "es": "spa", "it": "ita",
+    "pt": "por", "nl": "dut", "nld": "dut", "ru": "rus", "ja": "jpn", "ko": "kor", "zh": "chi",
+    "zho": "chi", "sv": "swe", "da": "dan", "no": "nor", "nb": "nor", "fi": "fin", "cs": "cze",
+    "ces": "cze", "pl": "pol", "uk": "ukr", "tr": "tur", "hu": "hun", "el": "gre", "ell": "gre",
+}
+# Tags that name no language at all. Such a track is not a candidate, for the reason rule 1 of
+# `pick_subtitle` gives: on these releases an untagged stream is anybody's guess.
+NO_LANGUAGE = frozenset({"", "und", "zxx", "mis", "mul"})
+
+_FORCED_TITLE_RE = re.compile(r"forced", re.IGNORECASE)
+
+
+def language_key(tag: str) -> str:
+    """One spelling per language: lower case, two-letter and B/T variants folded together."""
+    t = str(tag or "").strip().casefold()
+    return _LANGUAGE_ALIASES.get(t, t)
+
+
+def audio_language(audio_streams, audio_stream: str = "a:0") -> str:
+    """The language tag of the audio track the downmix is taken from, folded, or '' if untagged.
+
+    Read off the same `extract.audio_stream` the downmix uses, so "the audio's language" means the
+    audio this pipeline actually mixes over, not whichever track ffprobe happens to list first.
+    """
+    m = re.fullmatch(r"a:(\d+)", str(audio_stream or "").strip())
+    pos = int(m.group(1)) if m else 0
+    streams = list(audio_streams or [])
+    if not streams:
+        return ""
+    s = streams[pos] if pos < len(streams) else streams[0]
+    key = language_key(s.language)
+    return "" if key in NO_LANGUAGE else key
+
+
+def pick_translation_source(streams, target_language: str, audio_lang: str = "",
+                            wanted: str = "auto", reject_title_patterns=None,
+                            prefer_plain: bool = True) -> SubtitleChoice | None:
+    """The foreign TEXT subtitle a Polish translation is best made from, or None.
+
+    Separate from `pick_subtitle` on purpose: that one is a port that must not drift, and its
+    rules answer a different question ("which track IS the Polish dialogue"). Here:
+
+      1. Candidates are text tracks (a bitmap track would need OCR first) with a real language
+         tag that is not the target language, and not forced - by disposition or by a title
+         saying so - because a forced track is signage and translating it gives a lektor who
+         reads out the street names.
+      2. `wanted` other than 'auto' keeps only that language.
+      3. Under 'auto' the audio's own language ranks first, English second, anything else last.
+         A translation from what the actors say beats a translation of a translation, and English
+         is the second choice because it is also the language `speech` can align against.
+      4. Inside one language a plain dialogue track beats SDH (`prefer_plain`), and both beat a
+         track whose title matches extract.reject_title_patterns for any other reason. SDH is
+         still a candidate - a usable translation source with some bracketed noise in it beats
+         a skipped episode.
+      5. Ties go to ffprobe order, as everywhere else in this module.
+    """
+    # Imported here: speech imports nothing from media at module level, and the SDH rule lives
+    # there because the alignment reference was the first thing to need it.
+    from .speech import _SDH_RE
+
+    rejects = _compile_rejects(reject_title_patterns)
+    target = language_key(target_language)
+    want = language_key(wanted) if str(wanted or "auto").strip().casefold() != "auto" else ""
+    audio = language_key(audio_lang)
+    ranked = []
+    for s in streams:
+        lang = language_key(s.language)
+        if lang in NO_LANGUAGE or lang == target or not is_text_subtitle(s.codec_name):
+            continue
+        if s.forced or _FORCED_TITLE_RE.search(s.title):
+            continue
+        if want and lang != want:
+            continue
+        sdh = s.disposition.get("hearing_impaired") == 1 or bool(_SDH_RE.search(s.title))
+        other_reject = (not sdh) and any(rx.search(s.title) for _, rx in rejects)
+        lang_rank = 0 if (audio and lang == audio and audio != target) else \
+            1 if lang == "eng" else 2
+        tier = 2 if other_reject else (1 if sdh and prefer_plain else 0)
+        reason = ("SDH – no plain dialogue track in this language" if sdh and tier == 1 else
+                  "title matches extract.reject_title_patterns" if other_reject else "")
+        ranked.append(((lang_rank, tier, s.index),
+                       SubtitleChoice(index=s.index, title=s.title, codec=s.codec_name,
+                                      rejected=bool(other_reject), reason=reason,
+                                      language=lang, sdh=sdh)))
+    if not ranked:
+        return None
+    ranked.sort(key=lambda r: r[0])
+    return ranked[0][1]
+
+
+def translation_source_path(work_dir: Path, base: str, language: str) -> Path:
+    """Where the foreign subtitle lands: `subs/<base>.src.<lang>.srt`.
+
+    In `subs/` and not beside `<base>.srt`, because every stage that looks for episodes globs
+    `*.srt` in the work dir itself: a `<base>.src.eng.srt` there would come back as an episode
+    called `<base>.src.eng`, and `script` would condense the English.
+    """
+    return work_dir / "subs" / f"{base}.src.{language}.srt"
+
+
+def translate_settings(cfg) -> dict:
+    """The [translate] table, or an empty one for a config that predates it.
+
+    Read through `raw` rather than `cfg.get` because the stand-in configs the tests build carry
+    only `raw`, and the defaults below have to be the same ones lektor.tuning.toml ships.
+    """
+    return dict((getattr(cfg, "raw", None) or {}).get("translate") or {})
+
+
+def translate_mode(cfg) -> str:
+    mode = str(translate_settings(cfg).get("mode", "auto") or "auto").strip().lower()
+    if mode not in ("auto", "always", "never"):
+        raise ValueError(f"translate.mode: {mode!r} – pick from auto, always, never")
+    return mode
+
+
+# ---------------------------------------------------------------------------
 # Extract
 # ---------------------------------------------------------------------------
 
@@ -374,13 +503,18 @@ def extract_downmix(ffmpeg: str, video: Path, out_flac: Path, audio_stream: str 
 
 
 def write_source_json(path: Path, base: str, video: Path, choice: SubtitleChoice,
-                      language: str) -> dict:
+                      language: str, extra: dict | None = None) -> dict:
     """The `<base>.source.json` sidecar – the only record of which .mkv a work-dir base came from.
 
     Shape is the PowerShell's, `source_windows` included and translated back to `E:\\...` where
     there is a drive to name, so `windows/lektor.ps1 -Stage mux` still reads a work dir this side
     produced. `source` is added beside it and holds the path in the namespace that wrote the file,
     which is the only one of the two a Linux or macOS box can use at all.
+
+    `extra` is how a translated episode records its provenance (`subtitle_origin` and the rest).
+    A Polish extract passes none, so its sidecar stays exactly the shape it always was, and a
+    sidecar with no `subtitle_origin` means "track" - which is also what every sidecar the
+    PowerShell ever wrote means.
     """
     data = {
         "base": base,
@@ -391,6 +525,8 @@ def write_source_json(path: Path, base: str, video: Path, choice: SubtitleChoice
         "language": language,
         "extracted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    if extra:
+        data.update(extra)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data
 
@@ -408,10 +544,94 @@ def log_extract_error(work_dir: Path, base: str, message: str) -> None:
         fh.write(line)
 
 
+def _downmix(cfg, video: Path, flac: Path, force: bool) -> None:
+    """The stereo FLAC half of extract, shared by the Polish and the translated path."""
+    ex = cfg["extract"]
+    # The downmix is the 300-400 MB half of this step, and in a surround layout nothing ever
+    # reads it: `pick_source` rejects any source under six channels, so the two-channel FLAC
+    # loses to <base>.orig.mka every time. `satisfied()` has said so for a while and called
+    # extract done on the .srt alone; writing the file anyway just filled a disk that runs at
+    # 100%. Alignment does not want it either - `speech` cuts its own 16 kHz mono centre
+    # channel out of the film. Flip mix.channel_layout to stereo and the next extract writes
+    # it, because that is the one layout that mixes over it.
+    if is_surround(cfg):
+        was = " (one is already there and is not refreshed)" if flac.exists() else ""
+        say(f"  -> no stereo downmix: mix.channel_layout is "
+            f"{cfg['mix']['channel_layout']!r} and only a stereo mix reads that file{was}")
+    elif not extract_downmix(ffmpeg_bin(cfg), video, flac, ex.get("audio_stream", "a:0"),
+                             ex.get("downmix_channels", 2), ex.get("downmix_rate", 48000),
+                             force):
+        say("  -> downmix exists, skipping (--force to redo)")
+
+
+def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = False) -> Path | None:
+    """The foreign half of extract: `subs/<base>.src.<lang>.srt`, the downmix, and the sidecar.
+
+    Returns the source subtitle, or None when there is nothing to translate from - which is
+    logged to error_log.txt exactly as a missing Polish track always was, so a season run still
+    names every episode it could not do.
+    """
+    ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
+    ex = cfg["extract"]
+    tr = translate_settings(cfg)
+    work_dir = cfg.work_dir
+    source = str(tr.get("source", "auto") or "auto").strip().lower()
+    if source not in ("auto", "subs", "asr"):
+        raise ValueError(f"translate.source: {source!r} – pick from auto, subs, asr")
+    if source == "asr":
+        # Said, not quietly swapped for 'subs': whoever set it asked for a transcription of the
+        # audio, and a translation of a subtitle track is a different thing to hand them.
+        say("  !! translate.source is 'asr': transcribing the audio is phase 2 of "
+            "docs/translate.md and not implemented yet – skipped")
+        log_extract_error(work_dir, base, "translate.source 'asr' is not implemented yet")
+        return None
+
+    audio = audio_language(probe_streams(ffprobe, video, "a"), ex.get("audio_stream", "a:0"))
+    pick = pick_translation_source(subs, ex["subtitle_language"], audio,
+                                   tr.get("source_language", "auto"),
+                                   ex.get("reject_title_patterns"),
+                                   bool(tr.get("prefer_plain_dialogue", True)))
+    if pick is None:
+        wanted = str(tr.get("source_language", "auto") or "auto")
+        what = ("no text subtitle in another language" if wanted.lower() == "auto"
+                else f"no '{wanted}' text subtitle")
+        tail = (" either, and transcribing the audio (translate.source 'asr') is not implemented "
+                "yet" if source == "auto" else "")
+        say(f"  !! {what} to translate from{tail} – skipped")
+        log_extract_error(work_dir, base, f"{what} to translate from")
+        return None
+
+    note = f" ({pick.title})" if pick.title else ""
+    why = (" – the audio's language" if pick.language == audio
+           else " – English" if pick.language == "eng" else "")
+    flag = f" – {pick.reason}" if pick.reason else ""
+    say(f"  -> translating from stream 0:{pick.index} [{pick.codec}] "
+        f"'{pick.language}'{note}{why}{flag}")
+    src = translation_source_path(work_dir, base, pick.language)
+    src.parent.mkdir(parents=True, exist_ok=True)
+    if not extract_subtitles(ffmpeg, video, pick.index, src, force):
+        say(f"  -> {src.name} exists, skipping (--force to redo)")
+    flac = work_dir / f"{base}.orig.flac"
+    _downmix(cfg, video, flac, force)
+    write_source_json(work_dir / f"{base}.source.json", base, video, pick,
+                      ex["subtitle_language"], extra={
+                          "subtitle_origin": "subs",
+                          "source_language": pick.language,
+                          "source_srt": src.relative_to(work_dir).as_posix(),
+                          "source_codec": pick.codec,
+                          "source_sdh": pick.sdh,
+                          "audio_language": audio,
+                      })
+    say(f"  OK  {src.parent.name}/{src.name}" + (f" + {flac.name}" if flac.exists() else "")
+        + f" – `translate` turns it into {base}.srt")
+    return src
+
+
 def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
     ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
     ex = cfg["extract"]
     language = ex["subtitle_language"]
+    mode = translate_mode(cfg)
     work_dir = cfg.work_dir
     videos = find_sources(cfg.input_dir, cfg["paths"]["work_subdir"], only)
     if not videos:
@@ -431,6 +651,20 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
             log_extract_error(work_dir, base, f"ffprobe failed: {exc}")
             continue
         choice = pick_extractable_subtitle(subs, language, ex.get("reject_title_patterns"))
+        # The translation branch, taken only when the Polish track is absent or unusable - or
+        # when translate.mode says always. Everything below it is the Polish path, untouched.
+        polish_ok = choice is not None and is_text_subtitle(choice.codec)
+        if mode == "always" or (mode == "auto" and not polish_ok):
+            if choice is None:
+                say(f"  .. no '{language}' subtitle stream – looking for one to translate from")
+            elif not polish_ok:
+                say(f"  .. the '{language}' track (0:{choice.index}) is {choice.codec}, a bitmap "
+                    f"– looking for a text track to translate from instead")
+            else:
+                say(f"  .. translate.mode is 'always' – the '{language}' track at "
+                    f"0:{choice.index} is left alone")
+            extract_for_translation(cfg, video, base, subs, force)
+            continue
         if choice is None:
             say(f"  !! no '{language}' subtitle stream – skipped")
             log_extract_error(work_dir, base, f"no '{language}' subtitle stream")
@@ -447,21 +681,7 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
         flac = work_dir / f"{base}.orig.flac"
         if not extract_subtitles(ffmpeg, video, choice.index, srt, force):
             say("  -> srt exists, skipping (--force to redo)")
-        # The downmix is the 300-400 MB half of this step, and in a surround layout nothing ever
-        # reads it: `pick_source` rejects any source under six channels, so the two-channel FLAC
-        # loses to <base>.orig.mka every time. `satisfied()` has said so for a while and called
-        # extract done on the .srt alone; writing the file anyway just filled a disk that runs at
-        # 100%. Alignment does not want it either - `speech` cuts its own 16 kHz mono centre
-        # channel out of the film. Flip mix.channel_layout to stereo and the next extract writes
-        # it, because that is the one layout that mixes over it.
-        if is_surround(cfg):
-            was = " (one is already there and is not refreshed)" if flac.exists() else ""
-            say(f"  -> no stereo downmix: mix.channel_layout is "
-                f"{cfg['mix']['channel_layout']!r} and only a stereo mix reads that file{was}")
-        elif not extract_downmix(ffmpeg, video, flac, ex.get("audio_stream", "a:0"),
-                                 ex.get("downmix_channels", 2), ex.get("downmix_rate", 48000),
-                                 force):
-            say("  -> downmix exists, skipping (--force to redo)")
+        _downmix(cfg, video, flac, force)
         write_source_json(work_dir / f"{base}.source.json", base, video, choice, language)
         say(f"  OK  {srt.name}" + (f" + {flac.name}" if flac.exists() else ""))
 

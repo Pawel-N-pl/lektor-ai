@@ -38,6 +38,23 @@ ffprobe_wsl = 'ffprobe'
 # language TAG, never on its number.
 subtitle_language = 'pol'
 
+[translate]
+# What happens to a film with no Polish subtitle track. auto: translate its foreign subtitles
+# with an LLM, but only then; always: translate even when there is a Polish track; never: skip it.
+mode = 'auto'
+# Where the foreign text comes from: 'subs' (a text subtitle track in the film) or 'auto'. 'asr'
+# (transcribing the audio) is not implemented yet and only reports so.
+source = 'auto'
+# 'auto' takes the audio's own language, then English. A tag such as 'eng' takes only that.
+source_language = 'auto'
+# The model that translates the whole episode in one call, and the one that gets the lines it
+# could not produce. Empty fallback_model disables the hand-over.
+openrouter_model = 'openai/gpt-5.6-luna-pro'
+fallback_model = 'openai/gpt-5.6-terra'
+# Polish subtitles from the translation: 'off', 'sidecar' (<film>.pl.srt beside the film) or
+# 'mux' (a subtitle stream in the remuxed .mkv). `--subs` overrides it for one run.
+subtitles = 'off'
+
 [script]
 # The model that shortens lines too long for their slot. Draws twice, then hands over to
 # fallback_model.
