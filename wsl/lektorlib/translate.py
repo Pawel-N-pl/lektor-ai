@@ -279,9 +279,8 @@ def prepare(cues, glossary: Glossary | None) -> tuple[list[Cue], Brief]:
     this episode can use, judged on the text with the labels gone and the labels themselves.
     """
     hints = harvest(cues, glossary)
+    # harvest gives a card it left empty no hint, so nothing points at a dropped card.
     cues = [c for c in cues if c.text]
-    kept = {c.idx for c in cues}
-    hints.text = {i: h for i, h in hints.text.items() if i in kept}
     episode = glossary.for_episode([c.text for c in cues], hints.names) if glossary else None
     return cues, Brief(glossary=episode or None, hints=hints)
 
@@ -564,13 +563,15 @@ def load_book(cfg, base: str) -> dict[str, dict]:
     return {k: v for k, v in entries.items() if isinstance(v, dict) and v.get("text")}
 
 
-def write_book(cfg, base: str, entries: dict[str, dict]) -> Path:
+def write_book(cfg, base: str, entries: dict[str, dict], extras: tuple[str, ...] = ()) -> Path:
+    """Merge `entries` into the book. 'prompt' names the prompt of this write - with the episode's
+    glossary and hint rules, as its keys and translate.json have it - not of every older entry."""
     p = book_path(cfg, base)
     entries = {**load_book(cfg, base), **entries}
     payload = {
         "base": base,
         "version": CACHE_VERSION,
-        "prompt": prompt_fingerprint(),
+        "prompt": prompt_fingerprint(extras),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "_note": ("Translated lines, keyed on (source language, start time, source text, model, "
                   "effort, prompt hash, and the line's speaker hint and glossary entries where it "
@@ -989,7 +990,8 @@ def stage_translate(cfg, only: str | None, force: bool = False,
                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
                      for i, text in drawn.texts.items() if i in by_id}
             if fresh and (reuse or redraw):
-                say(f"  -> {write_book(cfg, base, fresh).name} ({len(fresh)} new line(s))")
+                book_file = write_book(cfg, base, fresh, brief.extras)
+                say(f"  -> {book_file.name} ({len(fresh)} new line(s))")
 
         texts = {**hits, **drawn.texts}
         missing = [c.idx for c in cues if c.idx not in texts]

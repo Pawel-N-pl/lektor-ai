@@ -154,6 +154,14 @@ class TestEpisode(unittest.TestCase):
         self.assertEqual(set(g.characters), {"Ted", "Rebecca"})
         self.assertEqual(g.address, {("Ted", "Rebecca"): "pani"})
 
+    def test_a_pair_with_a_group_or_unlisted_name_counts_when_the_text_says_it(self):
+        g = parse(FILE.replace("'Nate -> Ted' = 'pan'", "'Ted -> team' = 'wy'"))
+        self.assertEqual(g.for_episode(["Coach, the team is here."]).address,
+                         {("Ted", "team"): "wy"})
+        self.assertEqual(g.for_episode(["Coach?"]).address, {})
+        self.assertEqual(g.for_episode(["Coach?"], speakers={"TEAM"}).address,
+                         {("Ted", "team"): "wy"})
+
     def test_names_keep_their_case_terms_do_not(self):
         g = parse("[characters.Will]\n[terms]\n'gaffer' = 'szef'\n")
         got = g.for_episode(["I will ask the GAFFER."])

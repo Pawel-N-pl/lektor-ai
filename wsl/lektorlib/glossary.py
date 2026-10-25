@@ -479,7 +479,8 @@ def parse_suggestion(content: str) -> Glossary:
 
 
 def stage_glossary(cfg, only: str | None, force: bool = False) -> Path | None:
-    """Draft a glossary from the first translated episode `only` matches, for a person to edit.
+    """Draft a glossary from the first episode `only` matches that extract sent to translation -
+    its foreign subtitle or transcript, before any translate run - for a person to edit.
 
     One call to translate.openrouter_model, billed to that episode's `<base>.spend.json` under
     `"stage": "glossary"`. Writes `<input_dir>/lektor.glossary.suggested.toml` and nothing else;

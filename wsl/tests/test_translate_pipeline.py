@@ -209,6 +209,27 @@ class TestPlan(Base):
         self.assertIn("translate  run  ep.srt was translated from ep.src.eng.srt without the "
                       "series glossary", self.plan())
 
+    def test_a_retranslation_says_the_script_and_track_still_read_the_old_one(self):
+        """They skip on their files alone, so without the --redo the paid retranslation would
+        never reach the lektor."""
+        self.translated(with_srt=True)
+        T.provenance_path(self.cfg, "ep").write_text(json.dumps({
+            "srt_sha256": T.file_sha256(self.work / "ep.srt"), "source_language": "eng",
+            "source_srt": "subs/ep.src.eng.srt"}), encoding="utf-8")
+        (self.work / "ep.lektor.json").write_text("{}", encoding="utf-8")
+        P.artefact(self.cfg, "ep", "voice").write_bytes(b"a")
+        self.assertNotIn("--redo script", self.plan())
+        (self.cfg.input_dir / "lektor.glossary.toml").write_text(
+            "[terms]\n'Hello' = 'Dzień dobry'\n", encoding="utf-8")
+        out = self.plan()
+        self.assertIn("translate will write ep.srt again, but ep.lektor.json, "
+                      f"{P.artefact(self.cfg, 'ep', 'voice').name} were made from the "
+                      "translation before this one", out)
+        self.assertIn("`--redo script,voice` makes the lektor read the new text", out)
+        self.assertIn("`--redo voice`", self.plan(redo=("script",)))
+        self.assertNotIn("were made from the translation before",
+                         self.plan(redo=("script", "voice")))
+
     def german(self):
         """A German film translated from its own German subtitle."""
         (self.work / "subs").mkdir(exist_ok=True)
@@ -257,6 +278,21 @@ class TestRunStep(Base):
                 with self.assertRaises(P.HardFail):   # the double writes no ep.srt
                     P._run_step(self.cfg, "ep", "translate", force, True, False, {})
             self.assertEqual(st.call_args.args[2:], (force, redraw))
+
+    def test_a_run_that_retranslated_says_what_still_reads_the_old_text(self):
+        from types import SimpleNamespace
+        self.translated(with_srt=True)
+        (self.work / "ep.lektor.json").write_text("{}", encoding="utf-8")
+        args = SimpleNamespace(from_step="translate", to_step="translate", skip="", redo="",
+                               force=False, redraw=False, dry_run=False, require_speech=False)
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch.object(P, "resolve_episode", return_value="ep"), \
+                mock.patch.object(P, "_run_step", return_value=(P.OK, "ep.srt from 'eng'")), \
+                mock.patch.object(P, "print_summary"):
+            self.assertEqual(P.stage_run(self.cfg, "ep", args), 0)
+        self.assertIn("!! ep.srt is new, but ep.lektor.json was made from the translation "
+                      "before this one, and script skips on its file alone – `--redo script`",
+                      buf.getvalue())
 
     def test_redraw_on_a_translate_only_range_is_accepted(self):
         from types import SimpleNamespace

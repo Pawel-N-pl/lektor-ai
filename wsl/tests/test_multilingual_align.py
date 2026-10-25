@@ -159,6 +159,25 @@ class TestReferenceWhenOff(Base):
         self.subs("eng", audio="eng")
         self.assertEqual(SP.reference_problem(self.cfg, "ep"), "")
 
+    def test_a_subtitle_the_actors_do_not_speak_is_not_sent_to_mms_fa(self):
+        """Turning the key on would accept the licence and still find no reference, so the advice
+        is an English subtitle - for a Spanish track on an English film and an untagged audio."""
+        for language, audio, said in (("spa", "eng", "'eng'"), ("ger", "", "'untagged'")):
+            with self.subTest(language=language, audio=audio):
+                self.subs(language, audio=audio)
+                why = SP.reference_problem(self.cfg, "ep")
+                self.assertNotIn("CC-BY-NC", why)
+                self.assertIn(said, why)
+                self.assertIn("English subtitle", why)
+                self.cfg.raw["speech"]["multilingual_aligner"] = True
+                self.assertIsNone(SP.find_reference_srt(self.cfg, "ep"))
+                self.assertEqual(SP.reference_problem(self.cfg, "ep"), why)
+                self.cfg.raw["speech"]["multilingual_aligner"] = False
+
+    def test_a_transcript_is_always_spoken_so_the_key_is_the_advice(self):
+        self.transcript("ger")
+        self.assertIn("CC-BY-NC", SP.reference_problem(self.cfg, "ep"))
+
 
 # ---------------------------------------------------------------------------
 # What the script is given
@@ -198,6 +217,21 @@ class TestRomanise(unittest.TestCase):
             # English is read exactly as before: ASCII words.
             self.assertEqual(SP.cues_for_alignment(p)[0]["words"],
                              ["Wo", "warst", "du", "J", "rgen"])
+
+    def test_a_word_keeps_its_combining_marks(self):
+        """Python's \\w has no combining mark: without them a virama or a vowel sign would cut a
+        Devanagari word into letters and drop the signs before uroman read it."""
+        import unicodedata
+        nfd = unicodedata.normalize("NFD", "Jürgen, ça")
+        for line, want in (("नमस्ते दोस्त", ["नमस्ते", "दोस्त"]), ("مُحَمَّد", ["مُحَمَّد"]),
+                           (nfd, nfd.replace(",", "").split())):
+            with self.subTest(line=line), tempfile.TemporaryDirectory() as d:
+                p = Path(d) / "x.srt"
+                p.write_text(f"1\n00:00:01,000 --> 00:00:02,000\n{line}\n", encoding="utf-8")
+                self.assertEqual(SP.cues_for_alignment(p, "hin")[0]["words"], want)
+        got, how = SP.romanise([{"i": 1, "start": 0, "end": 900, "words": nfd.replace(",", "")
+                                 .split()}])
+        self.assertEqual((got[0]["words"], how), (["jurgen", "ca"], "none"))
 
 
 class TestDelivery(Base):
@@ -281,6 +315,12 @@ class TestStage(StageBase):
         self.assertEqual(data["source"]["reference_language"], "ger")
         self.assertEqual(data["fa"]["bundle"], "MMS_FA")
         self.assertEqual(data["words"], [[1100, 1300], [1400, 1700]])
+
+    def test_a_cyrillic_reference_goes_to_mms_fa_through_uroman_with_its_language(self):
+        src = self.subs("rus", audio="rus")
+        src.write_text("1\n00:00:01,000 --> 00:00:02,000\nГде ты был?\n", encoding="utf-8")
+        calls, _ = self.run_stage()
+        self.assertEqual(calls, [("MMS_FA", "uroman", "rus", [["Где", "ты", "был"]])])
 
     def test_an_english_reference_takes_the_old_road(self):
         self.subs("eng", audio="eng")
@@ -431,8 +471,9 @@ MMS_FA = Mms()
 
 FAKE_UROMAN = '''
 class Uroman:
+    # Russian rules only: a word asked for in any other language comes back as it was.
     def romanize_string(self, s, lcode=None):
-        return {"Привет": "Privet", "мир": "mir"}.get(s, s)
+        return {"Привет": "Privet", "мир": "mir"}.get(s, s) if lcode == "rus" else s
 '''
 
 
@@ -477,6 +518,11 @@ class TestTheScriptItself(unittest.TestCase):
     def test_uroman_romanises_what_does_not_fold(self):
         fa = self.align(["Привет", "мир"], ["30", "MMS_FA", "uroman", "rus"], uroman=True)
         self.assertEqual(fa["rows"][0]["n_words"], 2)
+
+    def test_uroman_is_told_the_language_it_was_given(self):
+        fa = self.align(["Привет", "мир"], ["30", "MMS_FA", "uroman", "ell"], uroman=True)
+        # Unromanised, no letter is in MMS_FA's alphabet: the window has no row or no words.
+        self.assertFalse([r for r in fa["rows"] if r["n_words"]])
 
     def test_without_uroman_it_exits_with_the_code_that_means_not_installed(self):
         try:

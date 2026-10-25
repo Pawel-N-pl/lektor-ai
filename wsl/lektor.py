@@ -45,8 +45,9 @@ Stages, one at a time
              A hand-edited <base>.srt is never overwritten without --force. The series
              glossary (lektor.glossary.toml beside the films: genders, ty/pan, fixed terms)
              and SDH speaker labels are passed to the model when there are any.
-  glossary   Draft that series glossary from one translated episode, in one LLM call, into
-             lektor.glossary.suggested.toml - for you to correct and save under the real
+  glossary   Draft that series glossary from one episode extract sent to translation (its
+             foreign subtitle or transcript on disk, no translate run needed), in one LLM call,
+             into lektor.glossary.suggested.toml - for you to correct and save under the real
              name. Nothing in the draft is used until you do.
   calibrate  Measure how fast the chosen voice actually speaks. Only backends that have to
              predict a duration need it; the rest say so and do nothing.
@@ -114,9 +115,8 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("stage", choices=["run", "extract", "transcribe", "translate", "glossary",
-                                      "calibrate",
-                                      "speech", "script", "retime", "voice", "pack", "mux", "all",
-                                      "sample", "cost", "status"])
+                                      "calibrate", "speech", "script", "retime", "voice", "pack",
+                                      "mux", "all", "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")

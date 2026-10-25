@@ -294,6 +294,28 @@ def _speech_reference(cfg: Config, base: str) -> str | None:
     return (data.get("source") or {}).get("reference_srt")
 
 
+def kept_after_translation(cfg: Config, base: str, will_run: set[str]) -> str:
+    """What a new <base>.srt leaves behind, said as the --redo that would rebuild it, or ''.
+
+    script, voice, pack and mux are satisfied by their files alone and none records which
+    <base>.srt it was made from, so after a glossary edit or a replaced source the chain would pay
+    for the translation and ship the lektor reading the old one. Not redone on its own: the
+    script may carry hand edits, condensing bills the script model and voice bills TTS for every
+    line its cache does not hold.
+    """
+    kept = [s for s in ("script", "voice", "pack", "mux")
+            if s not in will_run and artefact(cfg, base, s).exists()]
+    if not kept:
+        return ""
+    one = len(kept) == 1
+    return (f"{', '.join(artefact(cfg, base, s).name for s in kept)} {'was' if one else 'were'} "
+            f"made from the translation before this one, and {'/'.join(kept)} "
+            f"{'skips' if one else 'skip'} on {'its file' if one else 'their files'} alone – "
+            f"`--redo {','.join(kept)}`" + (" --to mux" if "mux" in kept else "")
+            + " makes the lektor read the new text (script bills the condensation again, voice "
+              "the TTS of every line not in its cache)")
+
+
 def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
     """The degradations that are invisible in the output file, said at second zero instead.
 
@@ -316,6 +338,10 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
         unknown = transcribe.unknown_language(cfg, translate.source_info(cfg, base))
         if unknown:
             out.append(unknown + ".")
+    kept = kept_after_translation(cfg, base, will_run) \
+        if "translate" in will_run and translate.is_translated(cfg, base) else ""
+    if kept:
+        out.append(f"translate will write {base}.srt again, but {kept}.")
     if "translate" in will_run and not os.environ.get("OPENROUTER_API_KEY"):
         # Before extract has run nobody knows yet whether the film has a Polish track, and a film
         # that has one never calls translate - so the stop is only certain for a translated film.
@@ -1018,6 +1044,10 @@ def stage_run(cfg: Config, only: str | None, args) -> int:
             failed = True
             break
         results.append(StepResult(step, status, note, time.time() - t0))
+        if step == "translate" and status == OK:
+            kept = kept_after_translation(cfg, base, redo)
+            if kept:
+                say(f"  !! {base}.srt is new, but {kept}")
 
     print_summary(cfg, base, results, steps, state, time.time() - t_all)
     return 1 if failed else 0

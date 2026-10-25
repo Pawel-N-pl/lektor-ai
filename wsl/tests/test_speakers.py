@@ -118,8 +118,16 @@ class TestLabels(unittest.TestCase):
 
     def test_a_card_that_was_only_a_label_is_left_empty_for_the_caller_to_drop(self):
         cs = cues("JOHN:")
-        SP.harvest(cs)
+        h = SP.harvest(cs)
         self.assertEqual(cs[0].text, "")
+        self.assertEqual((h.text, h.turns, h.names), ({}, {}, {"JOHN"}))
+
+    def test_a_label_with_no_line_of_its_own_is_not_a_turn(self):
+        cs = cues("JOHN:\nMARY: Hi.", "Where were you?\nTED:")
+        h = SP.harvest(cs)
+        self.assertEqual([c.text for c in cs], ["Hi.", "Where were you?"])
+        self.assertEqual(h.text, {1: "{mówi: MARY}"})
+        self.assertEqual(h.turns, {})
 
     def test_a_clock_and_a_single_letter_are_not_labels(self):
         cs = cues("10:30 tomorrow.", "A: the first option.")

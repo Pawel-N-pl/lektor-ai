@@ -585,11 +585,16 @@ def translation_reference(cfg, base: str, kind: str | None = None) -> Path | Non
     if not lang:
         return None
     if lang != "eng":
-        if not aligner_for(cfg, lang):
-            return None
-        if org == "subs" and language_key(str(info.get("audio_language") or "")) != lang:
+        if not aligner_for(cfg, lang) or not _spoken(org, lang, info):
             return None
     return translate.source_srt(cfg, base, info)
+
+
+def _spoken(org: str, lang: str, info: dict) -> bool:
+    """Is a source in `lang` what the actors say? A transcript is, by construction; a subtitle only
+    in the language the audio track is tagged with - an untagged track proves nothing."""
+    from .media import language_key
+    return org == "asr" or language_key(str(info.get("audio_language") or "")) == lang
 
 
 def reference_language(cfg, base: str, ref: Path | None) -> str:
@@ -603,13 +608,23 @@ def reference_language(cfg, base: str, ref: Path | None) -> str:
 def reference_problem(cfg, base: str) -> str:
     """Why the film's own foreign text is not a reference, said for the log, or ''.
 
-    The one case worth a sentence: a source in a language other than English, which the English
-    model cannot read and the multilingual aligner was not allowed to.
+    Two cases worth a sentence, both a source in a language other than English. A subtitle that is
+    not in the language of the audio is a translation, which no aligner can time, so the advice is
+    an English subtitle - never the multilingual aligner, whose licence would buy nothing. Text the
+    actors do say is what the English model cannot read and MMS_FA was not allowed to.
     """
     from . import translate
+    info = _info(cfg, base)
     org = _origin(cfg, base)
     lang = _source_language(cfg, base)
-    if org not in translate.TRANSLATED or lang in ("", "eng") or multilingual(cfg):
+    if org not in translate.TRANSLATED or lang in ("", "eng"):
+        return ""
+    if not _spoken(org, lang, info):
+        audio = str(info.get("audio_language") or "") or "untagged"
+        return (f"the film's own text is a '{lang}' subtitle and the audio is '{audio}' – a "
+                f"subtitle is a reference only in the language of the audio, so this film needs "
+                f"an English subtitle (speech.reference_srt_patterns)")
+    if multilingual(cfg):
         return ""
     return (f"the film's own text is '{lang}', and only the English aligner is enabled – "
             f"speech.multilingual_aligner = true aligns it with MMS_FA, whose weights are "
@@ -914,14 +929,27 @@ def cues_for_alignment(srt: Path, language: str = "eng") -> list[dict]:
     out = []
     for c in parse_srt(srt):
         body = re.sub(r"<[^>]+>|\[[^\]]*\]|\([^)]*\)", " ", c.raw)
-        words = (_WORD_RE if english else _ANY_WORD_RE).findall(body)
+        words = _WORD_RE.findall(body) if english else any_words(body)
         if words:
             out.append({"i": c.idx, "start": c.start_ms, "end": c.end_ms, "words": words})
     return out
 
 
-# A word in any script: letters, with an apostrophe inside it ("l'homme", "geht's").
-_ANY_WORD_RE = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)*")
+# A word in any script: letters and the marks on them, with an apostrophe inside it ("l'homme",
+# "geht's"). `re` has no class for a combining mark and its \w leaves them out, so a mark stands in
+# as _MARK while matching - otherwise the virama and vowel signs of 'नमस्ते' cut it into 'नमस' and
+# 'त', and an NFD 'Jürgen' into 'Ju' and 'rgen'.
+_MARK = "\x00"
+_ANY_WORD_RE = re.compile(r"(?:[^\W\d_]\x00*)+(?:['’](?:[^\W\d_]\x00*)+)*")
+
+
+def any_words(text: str) -> list[str]:
+    """The words of `text` in any script, each with its combining marks (Mn, Mc) still on it."""
+    text = text.replace(_MARK, " ")
+    masked = "".join(_MARK if unicodedata.category(ch)[0] == "M" else ch for ch in text)
+    return [text[m.start():m.end()] for m in _ANY_WORD_RE.finditer(masked)]
+
+
 # Latin letters NFKD does not take apart into a base letter and a mark.
 _LATIN_EXTRA = str.maketrans({"ß": "ss", "ẞ": "ss", "ł": "l", "Ł": "l", "æ": "ae", "Æ": "ae",
                               "œ": "oe", "Œ": "oe", "ø": "o", "Ø": "o", "đ": "d", "Đ": "d",
@@ -964,8 +992,8 @@ def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path, bundle: str = ENGL
     always was; MMS_FA gets the romaniser and the language after them.
 
     The alignment itself is one script (`_FA_SCRIPT`) taking four arguments, seven for MMS_FA,
-    and it does not care
-    where it runs. Only the delivery differs, so `speech.aligner` picks between two:
+    and it does not care where it runs. Only the delivery differs, so `speech.aligner` picks
+    between two:
 
       docker  hand it to the container named by speech.asr_container. This is how it started, and
               the container is INCIDENTAL - it was recycled from a sibling project because it

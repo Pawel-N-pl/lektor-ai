@@ -20,6 +20,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import lektor  # noqa: E402
 from lektorlib import glossary as G  # noqa: E402
 from lektorlib import script as S  # noqa: E402
 from lektorlib import translate as T  # noqa: E402
@@ -194,6 +195,17 @@ class TestStage(unittest.TestCase):
         self.assertFalse((self.root / G.SUGGESTED_NAME).exists())
         runs = json.loads((self.cfg.work_dir / "ep.spend.json").read_text())["runs"]
         self.assertEqual(runs[0]["stage"], "glossary")
+
+
+class TestCli(unittest.TestCase):
+    def test_the_cli_hands_only_and_force_to_the_stage(self):
+        with mock.patch.object(lektor.glossary, "stage_glossary") as st:
+            lektor.main(["glossary", "--only", "ep", "--force"])
+        st.assert_called_once()
+        self.assertEqual(st.call_args.args[1:], ("ep", True))
+        with mock.patch.object(lektor.glossary, "stage_glossary") as st:
+            lektor.main(["glossary", "--only", "ep"])
+        self.assertEqual(st.call_args.args[1:], ("ep", False))
 
 
 if __name__ == "__main__":

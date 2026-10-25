@@ -117,8 +117,8 @@ def harvest(cues, glossary: Glossary | None = None) -> SpeakerHints:
     """Take the speaker labels out of the cues' text and say what they said as hints.
 
     `cues` are source_cues' output; the text of a labelled cue is rewritten without its labels,
-    and a cue left with nothing - a card that was only `JOHN:` - ends with empty text for the
-    caller to drop. Every other cue is not touched.
+    and a cue left with nothing - a card that was only `JOHN:` - ends with empty text and no hint,
+    for the caller to drop. Every other cue is not touched.
     """
     out = SpeakerHints()
     # A bracket label is believed only for a name the episode labels the SDH way somewhere, so
@@ -163,6 +163,12 @@ def harvest(cues, glossary: Glossary | None = None) -> SpeakerHints:
                     turns[-1][1].append(rest)
                 continue
             turns.append([name, [f"{lead} {rest}" if lead else rest] if rest else []])
+        # A label no line followed on this card - its last line, or one straight before another
+        # label - is nobody speaking here; as a turn it would add a dash and a name to the card.
+        turns = [t for t in turns if t[1]]
+        if labelled and not turns:
+            c.text = ""
+            continue
         if labelled:
             starts = [t[1][0] for t in turns[1:] if t[1]]
             if len(turns) > 1 and not any(SPEAKER_DASH.match(ln) for ln in starts):

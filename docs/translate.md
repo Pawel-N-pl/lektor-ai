@@ -101,6 +101,10 @@ default = 'ty'
 - Tłumaczenie zrobione z inną wersją używanej części słownika jest nieaktualne jak tłumaczenie z
   podmienionego źródła: `translate` i `run` robią je jeszcze raz, płacąc tylko za to, co zmiana
   dosięga. Ręcznie poprawiony `<base>.srt` dalej wymaga `--force`.
+- `script`, `voice`, `pack` i `mux` sprawdzają tylko, czy ich plik jest, więc po nowym
+  `<base>.srt` lektor dalej czyta stare tłumaczenie. Plan i `run` to mówią; usłyszeć zmianę
+  pozwala `--redo script,voice,pack` (i `mux`), które płaci jeszcze raz za skracanie i za TTS
+  kwestii spoza cache – dlatego nie dzieje się samo, a skrypt może mieć ręczne poprawki.
 - Plik, którego nie da się przeczytać – zły TOML, płeć `male`, forma `sir`, nieznana tabela –
   zatrzymuje etap, zanim cokolwiek zostanie kupione.
 - `lektor.py glossary [--only X] [--force]` prosi model raz o szkic z jednego odcinka i zapisuje go
@@ -121,7 +125,8 @@ Polski pokazuje płeć mówiącego w czasowniku. Gdzie źródło samo to mówi, 
   zgubił pierwszy myślnik: `{mówiących: 2}`. Karta dialogowa z podpisem tylko przy jednej połowie
   (SDH często podpisuje tylko mówiącego spoza kadru) nie dostaje imienia – przeszłoby na drugą
   połowę razem z płcią – tylko wskazówkę jak karta bez podpisów. Ten sam podpis w kolejnej linii
-  to ta sama kwestia: bez nowego myślnika.
+  to ta sama kwestia: bez nowego myślnika. Podpis, po którym na karcie nie ma już żadnej linii
+  (ostatnia linia albo tuż przed następnym podpisem), nie jest mówiącym: ani myślnika, ani imienia.
 - Prompt każe trzymać rodzaj konsekwentnie i brać płeć ze słownika. Odcinek bez podpisów i bez
   zgubionych myślników idzie bez żadnej wskazówki i z tymi samymi kluczami cache co przedtem.
 
@@ -138,10 +143,13 @@ torchaudio MMS_FA, **tylko gdy `speech.multilingual_aligner = true`**:
   cięciami, zachowuje ten plik i po włączeniu klucza – trzeba `--redo speech`, o czym mówi plan.
 - Język bierze się z `source.json` (napisy) albo `asr.json` (transkrypt). Napisy są referencją
   tylko w języku ścieżki audio – hiszpańskie napisy angielskiego filmu to tłumaczenie – i wtedy
-  przed angielskimi wzorcami.
+  przed angielskimi wzorcami. Ścieżka audio bez tagu niczego nie dowodzi. Takim napisom klucz nie
+  pomaga, więc plan i log radzą wtedy angielskie napisy, nie MMS_FA.
 - Romanizacja: pismo łacińskie składane do a–z tutaj (bez akcentów, `ß` → `ss`, `ł` → `l`), bez
-  instalowania czegokolwiek. Inne pismo wymaga pakietu `uroman` w interpreterze alignera (torchaudio
-  go nie ma); bez niego odcinek dostaje same cięcia, z głośnym komunikatem.
+  instalowania czegokolwiek. Słowo zachowuje znaki łączące (virama, znaki samogłosek, harakat,
+  akcent w NFD) – `\w` Pythona ich nie zna i bez tego `नमस्ते` szło do uromana jako `नमस` i `त`.
+  Inne pismo wymaga pakietu `uroman` w interpreterze alignera (torchaudio go nie ma); bez niego
+  odcinek dostaje same cięcia, z głośnym komunikatem.
 
 ## Fazy
 
@@ -408,7 +416,16 @@ dokumentacji. Sam `uroman` 1.3.1.1 był uruchomiony tylko poza skryptem, żeby s
 języka: `βιβλίο` daje `vivlio` z `ell` i `biblio` z `gre`. Ile
 `WARNING:`-podobnych słów zostaje wziętych za podpis `NAME:`, nie sprawdzono na żadnym pliku.
 
-**Co sprawdzono.** Pełny zestaw testów: 682 passed, 3 skipped (po fazie 2: 582). Nowe testy w
+**Poprawki po przeglądzie.** Słowa referencji z niełacińskim pismem zachowują znaki łączące.
+Podpis bez linii po nim na karcie nie jest osobnym mówiącym. Napisy w innym języku niż audio (albo
+przy audio bez tagu) nie dostają rady o MMS_FA, który by ich nie przyjął. Plan i `run` mówią, że
+po nowym `<base>.srt` skrypt i ścieżka lektora są ze starego tłumaczenia. `<base>.translated.json`
+zapisuje hash promptu z regułami słownika i wskazówek, jak jego klucze. Dodane testy przypinają:
+reguły i szablony w kluczu cache, zgodność `stale_source` z etapem dla postaci znanej tylko z
+podpisu, drogę przez uromana w etapie `speech` i kod języka w skrypcie, parę `Ted -> team` i
+komendę `glossary` w CLI.
+
+**Co sprawdzono.** Pełny zestaw testów: 696 passed, 3 skipped (po fazie 2: 582). Nowe testy w
 `test_glossary*.py`, `test_speakers.py`, `test_translate_glossary.py` i
 `test_multilingual_align.py` idą offline: odpowiedzi modelu z atrapy `requests.post`, skrypt
 alignera na atrapie torcha i torchaudio, plan na prawdziwym `Config`. Żaden nie

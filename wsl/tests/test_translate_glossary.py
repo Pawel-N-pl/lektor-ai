@@ -15,6 +15,7 @@ import json
 import os
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -23,9 +24,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from lektorlib import glossary as G  # noqa: E402
 from lektorlib import script as S  # noqa: E402
+from lektorlib import speakers  # noqa: E402
 from lektorlib import translate as T  # noqa: E402
-from lektorlib.srt import parse_srt  # noqa: E402
+from lektorlib.srt import Cue, parse_srt  # noqa: E402
 from test_translate import TRANSLATE_TBL, Provider  # noqa: E402
 
 SOURCE = """1
@@ -236,6 +239,35 @@ class TestGlossary(Base):
             self.run_stage()
         self.assertFalse((self.work / "ep.srt").exists())
 
+    def test_rewording_the_rules_or_formats_moves_every_hinted_and_glossaried_key(self):
+        """The rule sections and the templates they explain are part of the prompt: a line
+        translated under the old wording must miss, or it comes back as a hit for good."""
+        cue = SimpleNamespace(idx=1, text="Where's Coach?", start_ms=1000)
+        s = {"openrouter_model": "m"}
+        episode = G.parse_glossary(tomllib.loads(GLOSSARY)).for_episode([cue.text])
+        brief = T.Brief(glossary=episode, hints=T.SpeakerHints(text={1: "{mówi: REBECCA}"}))
+        before, plain = T.cache_key(cue, "eng", s, brief), T.cache_key(cue, "eng", s, T.Brief())
+        for what, patch in (
+                ("GLOSSARY_RULES", mock.patch.object(T, "GLOSSARY_RULES", T.GLOSSARY_RULES + " ")),
+                ("HINT_RULES", mock.patch.object(T, "HINT_RULES", T.HINT_RULES + " ")),
+                ("HEADINGS", mock.patch.dict(G.HEADINGS,
+                                             {k: v + " " for k, v in G.HEADINGS.items()})),
+                ("HINT_FORMATS", mock.patch.dict(
+                    speakers.HINT_FORMATS,
+                    {k: v + " " for k, v in speakers.HINT_FORMATS.items()}))):
+            with self.subTest(what=what), patch:
+                self.assertNotEqual(T.cache_key(cue, "eng", s, brief), before)
+                self.assertEqual(T.cache_key(cue, "eng", s, T.Brief()), plain)
+
+    def test_the_files_name_the_prompt_the_glossary_keys_were_made_under(self):
+        self.run_stage()
+        self.assertEqual(self.prov()["prompt"], T.prompt_fingerprint())
+        self.glossary()
+        self.run_stage()
+        book = json.loads((self.work / "ep.translated.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(self.prov()["prompt"], T.prompt_fingerprint())
+        self.assertEqual(book["prompt"], self.prov()["prompt"])
+
     def test_the_plan_does_not_crash_on_a_broken_glossary(self):
         self.run_stage()
         self.glossary("[terms\n")
@@ -288,6 +320,35 @@ class TestHints(Base):
         self.assertIn("[1] {mówią po kolei: TED, REBECCA} - Ready? - Always.",
                       p.calls[0]["body"]["messages"][1]["content"])
         self.assertEqual(parse_srt(self.work / "ep.srt")[0].raw, "- Gotowa?\n- Zawsze.")
+
+    def test_a_character_known_only_by_its_label_does_not_make_a_fresh_translation_stale(self):
+        """Rebecca is never named in the dialogue, only labelled: the plan's glossary and the
+        stage's must both count her, or the episode reads stale on every run."""
+        self.glossary()
+        self.run_stage()
+        self.assertEqual(T.stale_source(self.cfg, "ep"), "")
+        got, p = self.run_stage()
+        self.assertEqual((got, p.calls), ({"ep": "kept"}, []))
+        got, p = self.run_stage(force=True)
+        self.assertEqual(p.calls, [])
+
+    def test_a_label_only_card_leaves_no_hint_behind(self):
+        """A hint on a dropped card would put HINT_RULES into the prompt and every key."""
+        raws = ["JOHN:", "Hello there."]
+        cues = [Cue(idx=n, start_ms=n * 1000, end_ms=n * 1000 + 900, raw=r, text=r)
+                for n, r in enumerate(raws, 1)]
+        kept, brief = T.prepare(cues, None)
+        self.assertEqual([c.text for c in kept], ["Hello there."])
+        self.assertFalse(brief.hints)
+        self.assertEqual(brief.hints.text, {})
+        (self.work / "subs" / "ep.src.eng.srt").write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\nJOHN:\n\n"
+            "2\n00:00:03,000 --> 00:00:04,000\nHello there.\n", encoding="utf-8")
+        p = Provider(lambda model, ids: {2: "Cześć."})
+        with mock.patch.object(S.requests, "post", p):
+            T.stage_translate(self.cfg, None)
+        self.assertEqual(p.calls[0]["body"]["messages"][0]["content"], T.TRANSLATE_SYSTEM)
+        self.assertEqual(self.prov()["speaker_hints"], 0)
 
     def test_a_card_that_was_only_a_label_is_dropped(self):
         (self.work / "subs" / "ep.src.eng.srt").write_text(
