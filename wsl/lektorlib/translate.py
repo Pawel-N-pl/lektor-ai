@@ -10,7 +10,8 @@ What it does, in the order it matters:
   * The whole episode goes to the model in ONE call, for the reason condensation does it: who
     speaks to whom, ty or pan, what a pronoun points back to, is decided by context a slice of the
     episode does not have. An episode longer than translate.max_prompt_chars is split into
-    contiguous chunks as a fallback, and each chunk then sees only itself.
+    contiguous chunks as a fallback, and each chunk is shown translate.context_cues of its
+    neighbours' cues on either side, to read but not to return.
   * The translation is faithful and in subtitle style, NOT condensed. Shortening to the time
     window is `script`'s job and its prompt is not touched; it needs the full line to know what
     may go. The same file is therefore also usable as Polish subtitles.
@@ -283,9 +284,10 @@ class TranslateOutcome:
 def plan_chunks(cues, max_chars: int) -> tuple[list[list], str]:
     """One chunk for the whole episode unless its prompt would not fit; then contiguous slices.
 
-    Equal slices by cue count, the way script.plan_segments cuts. Each slice loses the context of
-    the others, which is the price of an episode that would not fit at all otherwise; nothing has
-    measured how much that costs in quality, because no real episode has come near the limit.
+    Equal slices by cue count, the way script.plan_segments cuts. Each slice loses most of the
+    context of the others, which is the price of an episode that would not fit at all otherwise;
+    `with_context` gives back the cues at its edges. Nothing has measured how much the rest costs
+    in quality, because no real episode has come near the limit.
     """
     size = len(translate_prompt(cues))
     if size <= max_chars or len(cues) < 2:
@@ -294,6 +296,23 @@ def plan_chunks(cues, max_chars: int) -> tuple[list[list], str]:
     step = math.ceil(len(cues) / parts)
     chunks = [list(cues[i:i + step]) for i in range(0, len(cues), step)]
     return chunks, f"chunked:{len(chunks)}"
+
+
+def with_context(cues, chunk, n: int) -> list:
+    """The chunk with up to `n` cues of each neighbour around it, in episode order.
+
+    The neighbours are shown, never asked for: the request names the chunk's own cues only, and a
+    line returned for a neighbour is an extra the validator drops - its own chunk translates it.
+    What the edge needs is the sentence that started in the previous chunk and the answer that
+    comes in the next one; a reply to "Are you ready?" is "Jestem gotowa." or "Jestem gotowy."
+    depending on who asked, and that was said a cue before the cut. Context is shown on top of
+    max_prompt_chars, which at the shipped 20 cues is about 1 % of it.
+    """
+    if n <= 0 or not chunk:
+        return list(chunk)
+    pos = {c.idx: k for k, c in enumerate(cues)}
+    lo, hi = pos[chunk[0].idx], pos[chunk[-1].idx] + 1
+    return list(cues[max(0, lo - n):lo]) + list(chunk) + list(cues[hi:hi + n])
 
 
 def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutcome:
@@ -308,8 +327,11 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
     fallback_model = str(t.get("fallback_model") or "")
     out = TranslateOutcome(asked=len(todo))
     chunks, out.path = plan_chunks(cues, int(t.get("max_prompt_chars", 200000)))
+    overlap = 0
     if out.path != "whole_episode":
-        say(f"  prompt too long for one call – {out.path.replace(':', ' into ')} chunks")
+        overlap = max(0, int(t.get("context_cues", 20)))
+        say(f"  prompt too long for one call – {out.path.replace(':', ' into ')} chunks, each "
+            f"shown {overlap} cue(s) of its neighbours as context")
     use_schema = bool(t.get("structured_outputs", True))
     # Two records of the misses. `last_reasons` is the retry note's Polish, for the model, and
     # names absent cues too. `rejected` is the report's: only lines that came back and failed
@@ -334,12 +356,12 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
             out.by_model[s["openrouter_model"]] = out.by_model.get(s["openrouter_model"], 0) + 1
         return v, err
 
-    for chunk in chunks:
-        ids = {c.idx for c in chunk}
-        want = ids & todo
+    for own in chunks:
+        want = {c.idx for c in own} & todo
         if not want:
             continue
-        partial = want != ids
+        chunk = with_context(cues, own, overlap)
+        partial = want != {c.idx for c in chunk}
         v, err = attempt(primary, chunk, want, request_note(want) if partial else "", "translate")
         if err:
             say(f"  !! {primary['openrouter_model']}: {err}")

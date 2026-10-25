@@ -101,6 +101,12 @@ request_gap_ms = 400
 # slice of the episode does not carry. Above this many characters of prompt it is split into
 # contiguous chunks, which is a fallback for an episode that will not fit, not a mode.
 max_prompt_chars = 200000
+# Only when an episode IS split: each chunk is shown this many cues on either side of it from the
+# neighbouring chunks, to read and not to return - the question asked just before the cut decides
+# the gender and the ty/pan of the answer just after it. Shown on top of max_prompt_chars, which
+# at ~45 characters a cue makes 20 about 1 % of it. Chosen here, unmeasured: no real episode has
+# been long enough to be split. 0 sends each chunk alone, as phase 1 did.
+context_cues = 20
 
 # Sanity bounds on each returned line, as a ratio of Polish to source characters. Polish runs
 # longer than English, so the upper bound is loose; the lower one catches a SHORTENED line, which

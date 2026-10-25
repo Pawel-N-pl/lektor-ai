@@ -447,15 +447,53 @@ class TestTranslateEpisode(WorkDir):
 
     def test_an_episode_over_the_limit_is_sent_in_contiguous_chunks(self):
         self.chunked()
+        self.cfg.raw["translate"]["context_cues"] = 0
         p = Provider()
         out = self.go(p)
         self.assertEqual(out.path, "chunked:2")
         self.assertEqual(out.texts, POLISH)
         self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [4, 5]])
-        # Each chunk sees only itself, and asks for all of it, so there is no request note.
+        # With no context each chunk sees only itself, and asks for all of it, so there is no
+        # request note.
         second = p.calls[1]["body"]["messages"]
         self.assertNotIn("[1]", second[1]["content"])
         self.assertEqual(len(second), 2)
+
+    def test_each_chunk_reads_its_neighbours_edge_and_returns_only_its_own(self):
+        self.chunked()
+        self.cfg.raw["translate"]["context_cues"] = 1
+        shown = []
+
+        def answer(model, ids):
+            # Answer every cue the prompt SHOWED, neighbours included, as an eager model would.
+            shown.append([int(m) for m, _ in _LINE.findall(answer.prompt)])
+            return {i: POLISH[i] for i in shown[-1]}
+
+        p = Provider(answer)
+        real = p.__call__
+
+        def spy(url, headers=None, json=None, timeout=None):  # noqa: A002
+            answer.prompt = json["messages"][1]["content"]
+            return real(url, headers=headers, json=json, timeout=timeout)
+
+        with mock.patch.object(S.requests, "post", spy):
+            cues = self.cues()
+            out = T.translate_episode(cues, {c.idx for c in cues}, self.cfg, "k")
+        # Chunk [1, 2] reads cue 4 after it; chunk [4, 5] reads cue 2 before it.
+        self.assertEqual(shown, [[1, 2, 4], [2, 4, 5]])
+        # Each asks only for its own cues, and the neighbour that came back is dropped as extra.
+        self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [4, 5]])
+        self.assertIn("tylko kontekstem", p.calls[0]["body"]["messages"][2]["content"])
+        self.assertEqual(out.texts, POLISH)
+        self.assertEqual(out.by_model, {"test/primary": 4})
+
+    def test_context_is_the_neighbours_edge_and_never_past_the_episode(self):
+        cues = [SimpleNamespace(idx=i, text="x") for i in range(1, 11)]
+        ids = lambda got: [c.idx for c in got]  # noqa: E731
+        self.assertEqual(ids(T.with_context(cues, cues[3:6], 2)), [2, 3, 4, 5, 6, 7, 8])
+        self.assertEqual(ids(T.with_context(cues, cues[0:3], 2)), [1, 2, 3, 4, 5])
+        self.assertEqual(ids(T.with_context(cues, cues[8:], 5)), [4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(ids(T.with_context(cues, cues[3:6], 0)), [4, 5, 6])
 
     def test_a_chunk_with_nothing_wanted_is_not_sent(self):
         self.chunked()
