@@ -6,6 +6,9 @@ Two independent bills, and conflating them is how the old table got it wrong:
                 you redo them, and printing a dollar figure for them would be a lie.
   condensation  OpenRouter, one call per episode, and it applies to every backend because every
                 backend reads the same condensed script.
+  translation   OpenRouter again, only for films with no Polish track, which have to be
+                translated before there is anything to condense. Reported apart, because it is a
+                per-film bill and not a per-season constant.
 
 ElevenLabs bills a FLAT rate per 1000 characters, identical on every paid plan. What the plan buys
 is an included monthly allowance and a concurrency limit – never a cheaper character. The rate
@@ -20,6 +23,7 @@ from . import say
 from .config import Config
 from .script import read_spend
 from .srt import load_cues
+from . import translate
 
 FLASH_USD_PER_1K = 0.05   # eleven_flash_*, eleven_turbo_*
 OTHER_USD_PER_1K = 0.10   # eleven_multilingual_v2, eleven_v3
@@ -126,7 +130,8 @@ def stage_cost(cfg: Config, plan: str) -> None:
             f"$0.00 however many times you redo it.")
 
     # The condensation bill applies to every backend: they all read the same condensed script.
-    real = sum(read_spend(cfg, base) for base, _, _ in rows)
+    # Only condensation's runs: the spend record also holds translation, reported on its own.
+    real = sum(read_spend(cfg, base, "script") for base, _, _ in rows)
     if real:
         say(f"condensation via {cfg['script']['openrouter_model']}: ${real:.4f} already billed "
             f"across {len(rows)} episode(s), read from OpenRouter usage.cost.")
@@ -136,4 +141,45 @@ def stage_cost(cfg: Config, plan: str) -> None:
             say(f"condensation via {cfg['script']['openrouter_model']}: about "
                 f"${per_ep * max(1, len(rows)):.3f} for {max(1, len(rows))} episode(s), measured on "
                 f"one real episode. The script stage records what was actually billed.")
+    _translation_cost(cfg, {base for base, _, _ in rows})
     say("")
+
+
+def translated_bases(cfg: Config) -> list[str]:
+    """Episodes whose Polish text is (or will be) a translation, by their extract sidecar."""
+    tail = ".source.json"
+    bases = sorted(p.name[: -len(tail)] for p in cfg.work_dir.glob(f"*{tail}"))
+    return [b for b in bases if translate.origin(cfg, b) == "subs"]
+
+
+def _translation_cost(cfg: Config, counted: set[str]) -> None:
+    """The translation bill, for the films that have one. Silent when no film needs translating."""
+    bases = translated_bases(cfg)
+    if not bases:
+        return
+    t = translate.translate_settings(cfg)
+    model = t.get("openrouter_model", "?")
+    n_cues = n_chars = 0
+    for base in bases:
+        src = translate.source_srt(cfg, base)
+        if src is not None:
+            cues = translate.source_cues(src)
+            n_cues += len(cues)
+            n_chars += sum(len(c.text) for c in cues)
+    pending = [b for b in bases if not (cfg.work_dir / f"{b}.srt").exists()]
+    say(f"translation via {model}: {len(bases)} episode(s) with no Polish track, {n_cues} cues / "
+        f"{n_chars} chars of foreign source text.")
+    real = sum(read_spend(cfg, base, "translate") for base in bases)
+    if real:
+        say(f"  ${real:.4f} already billed, read from OpenRouter usage.cost.")
+    per_ep = float(t.get("measured_usd_per_episode", 0.0) or 0.0)
+    if pending and per_ep:
+        say(f"  about ${per_ep * len(pending):.3f} for the {len(pending)} not translated yet.")
+    elif pending:
+        say(f"  {len(pending)} not translated yet, and there is no measured per-episode figure to "
+            f"price them with: translate.measured_usd_per_episode is unset until a real episode "
+            f"has run. The translate stage records what OpenRouter actually bills.")
+    missing = [b for b in pending if b not in counted]
+    if missing:
+        say(f"  The character count above leaves out these {len(missing)}: they have no Polish "
+            f"text yet to count.")

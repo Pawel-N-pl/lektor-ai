@@ -243,5 +243,45 @@ class TestFooter(Base):
         self.assertNotIn("translation", buf.getvalue())
 
 
+class TestCostAndStatus(Base):
+    def run_quiet(self, fn, *a):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            fn(*a)
+        return buf.getvalue()
+
+    def test_cost_prices_translation_apart_and_admits_it_has_no_measured_figure(self):
+        from lektorlib import pricing
+        self.translated()
+        out = self.run_quiet(pricing.stage_cost, self.cfg, "creator")
+        self.assertIn("translation via openai/gpt-5.6-luna-pro: 1 episode(s) with no Polish "
+                      "track, 1 cues / 6 chars", out)
+        self.assertIn("no measured per-episode figure", out)
+        self.assertIn("leaves out these 1", out)
+
+    def test_cost_keeps_the_two_bills_apart(self):
+        from lektorlib import pricing
+        self.translated(with_srt=True)
+        S.append_spend(self.cfg, "ep", {"usd": 0.02})
+        S.append_spend(self.cfg, "ep", {"stage": "translate", "usd": 0.01})
+        out = self.run_quiet(pricing.stage_cost, self.cfg, "creator")
+        self.assertIn("$0.0200 already billed", out)
+        self.assertIn("$0.0100 already billed", out)
+        self.assertNotIn("not translated yet", out)
+
+    def test_cost_says_nothing_about_translation_on_a_polish_season(self):
+        from lektorlib import pricing
+        self.polish()
+        self.assertNotIn("translation", self.run_quiet(pricing.stage_cost, self.cfg, "creator"))
+
+    def test_status_lists_an_episode_still_waiting_for_its_translation(self):
+        from lektorlib import stages
+        self.translated()
+        out = self.run_quiet(stages.stage_status, self.cfg)
+        self.assertRegex(out, r"\nep\s+src ")
+        (self.work / "ep.srt").write_text(SRT, encoding="utf-8")
+        self.assertRegex(self.run_quiet(stages.stage_status, self.cfg), r"\nep\s+tr ")
+
+
 if __name__ == "__main__":
     unittest.main()

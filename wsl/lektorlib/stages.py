@@ -740,17 +740,28 @@ def stage_retime(cfg: Config, only: str | None) -> None:
 
 
 def stage_status(cfg: Config) -> None:
-    srts = sorted(cfg.work_dir.glob("*.srt"))
+    from . import translate     # imports script, which this module already pulls in
+
+    bases = {p.stem for p in cfg.work_dir.glob("*.srt")}
+    tail = ".source.json"
+    for p in cfg.work_dir.glob(f"*{tail}"):
+        b = p.name[: -len(tail)]
+        if translate.origin(cfg, b) == "subs":
+            bases.add(b)
     ext = encode_profile(cfg)["extension"]
     out_dir = cfg.input_dir / cfg["paths"]["output_subdir"]
     say(f"\n{'EPISODE':<52} {'SRT':>4} {'AUDIO':>6} {'SPEECH':>7} {'SCRIPT':>7} {'REUSE':>6} "
         f"{'TRACK':>6} {'MUXED':>6}")
-    for p in srts:
-        b = p.stem
+    for b in sorted(bases):
         mark = lambda q: "yes" if q.exists() else "-"  # noqa: E731
+        # SRT says where the Polish text came from: "yes" a Polish track, "tr" a translation,
+        # "src" a foreign subtitle still waiting for `translate`.
+        srt = "yes"
+        if translate.origin(cfg, b) == "subs":
+            srt = "tr" if (cfg.work_dir / f"{b}.srt").exists() else "src"
         # AUDIO is whatever the mix would actually be laid over, which in a surround layout is the
         # film itself and not the FLAC downmix the stereo path wants.
-        say(f"{b[:52]:<52} {'yes':>4} "
+        say(f"{b[:52]:<52} {srt:>4} "
             f"{'yes' if pick_source(cfg, b) else '-':>6} "
             f"{mark(cfg.work_dir / f'{b}.speech.json'):>7} "
             f"{mark(cfg.work_dir / f'{b}.lektor.json'):>7} "
