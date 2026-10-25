@@ -14,8 +14,9 @@ The whole thing, unattended
 turn, so a season is one command. Each episode is still resolved, run and summarised on its own,
 and one that fails does not stop the rest.
 
-`run` walks extract -> translate -> speech -> script -> retime -> voice -> pack for exactly ONE
-episode (translate only where extract found no Polish track, mux only on `--to mux`),
+`run` walks extract -> transcribe -> translate -> speech -> script -> retime -> voice -> pack for
+exactly ONE episode (translate only where extract found no Polish track, transcribe only where it
+found no text subtitle at all, mux only on `--to mux`),
 skipping every step whose artefact is already on disk, and stops the chain where carrying on
 would ship something wrong. It prints a plan before it starts and a summary of what it did,
 what it skipped and why, what it cost and where the file is, when it finishes.
@@ -32,9 +33,14 @@ Stages, one at a time
   extract    Pull the Polish subtitle stream and a stereo FLAC downmix out of the mkv, and
              record which file they came from. Skips the language-tagged forced and SDH tracks.
              A film with no Polish text track gets its best foreign text track instead, to
-             translate from (translate.mode; 'never' restores the old skip).
-  translate  Only for those films: the foreign subtitle into the Polish <base>.srt every later
-             stage reads, in one whole-episode LLM call. Faithful, not condensed, timings 1:1.
+             translate from (translate.mode; 'never' restores the old skip), and a film with no
+             text subtitle at all is sent to transcribe.
+  transcribe Only for those last films: the audio's centre channel through faster-whisper, in
+             a venv or container of its own, filtered for hallucinations and cut into subtitle
+             cards - the foreign text translate then reads. Local and free; needs the model.
+  translate  For every film extract found no Polish track in: the foreign subtitle, or the
+             transcript, into the Polish <base>.srt every later stage reads, in one
+             whole-episode LLM call. Faithful, not condensed, timings 1:1.
              A hand-edited <base>.srt is never overwritten without --force.
   calibrate  Measure how fast the chosen voice actually speaks. Only backends that have to
              predict a duration need it; the rest say so and do nothing.
@@ -82,7 +88,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.exit(f"missing dependency ({exc})\n  pip install numpy soundfile requests")
 
-from lektorlib import media, pipeline, stages, translate
+from lektorlib import media, pipeline, stages, transcribe, translate
 from lektorlib.backends import BACKEND_NAMES
 from lektorlib.config import DEFAULT_CONFIG, Config
 
@@ -101,7 +107,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("stage", choices=["run", "extract", "translate", "calibrate", "speech",
+    ap.add_argument("stage", choices=["run", "extract", "transcribe", "translate", "calibrate",
+                                      "speech",
                                       "script", "retime", "voice", "pack", "mux", "all", "sample",
                                       "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
@@ -176,6 +183,8 @@ def main(argv: list[str] | None = None) -> None:
         media.stage_pack(cfg, args.only, args.force)
     elif args.stage == "mux":
         media.stage_mux(cfg, args.only, args.force)
+    elif args.stage == "transcribe":
+        transcribe.stage_transcribe(cfg, args.only, args.force)
     elif args.stage == "translate":
         translate.stage_translate(cfg, args.only, args.force, args.redraw)
     elif args.stage == "calibrate":

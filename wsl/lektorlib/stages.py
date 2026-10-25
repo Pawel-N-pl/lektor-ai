@@ -744,7 +744,7 @@ def stage_status(cfg: Config) -> None:
     tail = ".source.json"
     for p in cfg.work_dir.glob(f"*{tail}"):
         b = p.name[: -len(tail)]
-        if translate.origin(cfg, b) == "subs":
+        if translate.is_translated(cfg, b):
             bases.add(b)
     ext = encode_profile(cfg)["extension"]
     out_dir = cfg.input_dir / cfg["paths"]["output_subdir"]
@@ -753,10 +753,12 @@ def stage_status(cfg: Config) -> None:
     for b in sorted(bases):
         mark = lambda q: "yes" if q.exists() else "-"  # noqa: E731
         # SRT says where the Polish text came from: "yes" a Polish track, "tr" a translation,
-        # "src" a foreign subtitle still waiting for `translate`.
+        # "src" a foreign subtitle or a transcript still waiting for `translate`, and "asr" a film
+        # with no text subtitle at all, still waiting for `transcribe`.
         srt = "yes"
-        if translate.origin(cfg, b) == "subs":
-            srt = "tr" if (cfg.work_dir / f"{b}.srt").exists() else "src"
+        if translate.is_translated(cfg, b):
+            srt = "tr" if (cfg.work_dir / f"{b}.srt").exists() else \
+                "src" if translate.source_srt(cfg, b) is not None else "asr"
         # AUDIO is whatever the mix would actually be laid over, which in a surround layout is the
         # film itself and not the FLAC downmix the stereo path wants.
         say(f"{b[:52]:<52} {srt:>4} "

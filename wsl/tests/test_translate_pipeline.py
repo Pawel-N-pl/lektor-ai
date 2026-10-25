@@ -79,7 +79,7 @@ class Base(unittest.TestCase):
 
 class TestSteps(unittest.TestCase):
     def test_translate_sits_between_extract_and_speech(self):
-        self.assertEqual(P.STEPS[:3], ("extract", "translate", "speech"))
+        self.assertEqual(P.STEPS[:4], ("extract", "transcribe", "translate", "speech"))
         self.assertEqual(P.DEFAULT_LAST_STEP, "pack")
 
     def test_it_can_be_named_in_every_range_flag(self):
@@ -119,12 +119,12 @@ class TestPlan(Base):
         out = self.plan()
         self.assertIn("text     translated by openai/gpt-5.6-luna-pro (fallback "
                       "openai/gpt-5.6-terra), subtitles off", out)
-        self.assertIn("translate run  -> ep.srt", out)
+        self.assertIn("translate  run  -> ep.srt", out)
 
     def test_a_polish_film_says_why_there_is_nothing_to_translate(self):
         self.polish()
         out = self.plan()
-        self.assertIn("translate skip the Polish text comes from the film's own track", out)
+        self.assertIn("translate  skip the Polish text comes from the film's own track", out)
         self.assertNotIn("translated by", out)
 
     def test_before_extract_it_says_the_step_is_conditional(self):
@@ -158,7 +158,7 @@ class TestPlan(Base):
     def test_mode_never(self):
         self.cfg.raw["translate"]["mode"] = "never"
         self.translated()
-        self.assertIn("translate skip translate.mode is 'never'", self.plan())
+        self.assertIn("translate  skip translate.mode is 'never'", self.plan())
 
     def test_mode_always_on_a_polish_extract_says_both_steps_run(self):
         # extract runs whatever the plan says, takes the translation branch under 'always' and
@@ -167,21 +167,22 @@ class TestPlan(Base):
         self.cfg.raw["translate"]["mode"] = "always"
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             out = self.plan()
-        self.assertIn("extract   run  translate.mode is 'always'", out)
-        self.assertIn("translate run  -> ep.srt, unless extract finds no text track in another "
+        self.assertIn("extract    run  translate.mode is 'always'", out)
+        self.assertIn("translate  run  -> ep.srt, unless extract finds no text track in another "
                       "language", out)
         self.assertIn("translated by openai/gpt-5.6-luna-pro", out)
         self.assertNotIn("comes from the film's own track", out)
         self.assertIn("OPENROUTER_API_KEY is not set: translate.mode is 'always'", out)
         # Without extract in range nothing turns the episode over, and the old skip is true.
         out = self.plan(steps=["translate", "speech"])
-        self.assertIn("translate skip the Polish text comes from the film's own track", out)
+        self.assertIn("translate  skip the Polish text comes from the film's own track", out)
 
     def test_mode_always_before_extract_does_not_promise_polish_first(self):
         self.cfg.raw["translate"]["mode"] = "always"
         out = self.plan()
         self.assertIn("unless extract finds no text track in another language", out)
-        self.assertNotIn("only if", out)
+        self.assertNotIn("only if the film has no Polish text track", out)
+        self.assertNotIn("only if extract finds no Polish text track", out)
 
     def test_a_translation_from_a_replaced_source_is_planned_as_run(self):
         self.translated(with_srt=True)
@@ -189,7 +190,7 @@ class TestPlan(Base):
             "srt_sha256": T.file_sha256(self.work / "ep.srt"), "source_language": "ger",
             "source_srt": "subs/ep.src.ger.srt"}), encoding="utf-8")
         self.assertFalse(P.satisfied(self.cfg, "ep", "translate"))
-        self.assertIn("translate run  ep.srt was translated from subs/ep.src.ger.srt, and "
+        self.assertIn("translate  run  ep.srt was translated from subs/ep.src.ger.srt, and "
                       "extract now names subs/ep.src.eng.srt", self.plan())
 
 
@@ -218,7 +219,7 @@ class TestRunStep(Base):
         buf = io.StringIO()
         with redirect_stdout(buf), mock.patch.object(P, "resolve_episode", return_value="ep"):
             self.assertEqual(P.stage_run(self.cfg, "ep", args), 0)
-        self.assertIn("translate run  -> ep.srt", buf.getvalue())
+        self.assertIn("translate  run  -> ep.srt", buf.getvalue())
         args.from_step = args.to_step = "speech"
         with redirect_stdout(buf), mock.patch.object(P, "resolve_episode", return_value="ep"):
             self.assertEqual(P.stage_run(self.cfg, "ep", args), 2)

@@ -9,6 +9,8 @@ Two independent bills, and conflating them is how the old table got it wrong:
   translation   OpenRouter again, only for films with no Polish track, which have to be
                 translated before there is anything to condense. Reported apart, because it is a
                 per-film bill and not a per-season constant.
+  transcription nothing: faster-whisper on the local GPU, for a film with no text subtitle at all.
+                Said anyway, because it is the one step on that path that is not free in time.
 
 ElevenLabs bills a FLAT rate per 1000 characters, identical on every paid plan. What the plan buys
 is an included monthly allowance and a concurrency limit – never a cheaper character. The rate
@@ -19,7 +21,7 @@ from __future__ import annotations
 
 import json
 
-from . import media, say, translate
+from . import media, say, transcribe, translate
 from .config import Config
 from .script import read_spend
 from .srt import load_cues
@@ -148,7 +150,7 @@ def translated_bases(cfg: Config) -> list[str]:
     """Episodes whose Polish text is (or will be) a translation, by their extract sidecar."""
     tail = ".source.json"
     bases = sorted(p.name[: -len(tail)] for p in cfg.work_dir.glob(f"*{tail}"))
-    return [b for b in bases if translate.origin(cfg, b) == "subs"]
+    return [b for b in bases if translate.is_translated(cfg, b)]
 
 
 def _translation_cost(cfg: Config, counted: set[str]) -> None:
@@ -166,6 +168,14 @@ def _translation_cost(cfg: Config, counted: set[str]) -> None:
             n_cues += len(cues)
             n_chars += sum(len(c.text) for c in cues)
     pending = [b for b in bases if not (cfg.work_dir / f"{b}.srt").exists()]
+    heard = [b for b in bases if translate.origin(cfg, b) == "asr"]
+    if heard:
+        waiting = [b for b in heard if not transcribe.is_done(cfg, b)]
+        say(f"transcription via faster-whisper "
+            f"{transcribe.settings(cfg).get('model', 'large-v3')}: {len(heard)} episode(s) with "
+            f"no text subtitle at all, $0.00 - it runs locally."
+            + (f" {len(waiting)} not transcribed yet, so the source text below leaves them out."
+               if waiting else ""))
     say(f"translation via {model}: {len(bases)} episode(s) with no Polish track, {n_cues} cues / "
         f"{n_chars} chars of foreign source text.")
     real = sum(read_spend(cfg, base, "translate") for base in bases)
