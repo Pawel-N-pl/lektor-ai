@@ -11,7 +11,8 @@ python3 wsl/lektor.py run --only S01E01
 Jedno polecenie przechodzi całą drogę: napisy → pomiar mowy → skrócenie tekstu → dosunięcie do
 aktora → synteza → miks → **gotowa ścieżka `.mka` obok filmu**. Film **bez polskich napisów** nie
 odpada: jego obcojęzyczne napisy są najpierw tłumaczone na polski
-([docs/translate.md](docs/translate.md)), a dalej wszystko idzie tą samą drogą. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
+([docs/translate.md](docs/translate.md)), a film bez żadnych napisów jest najpierw
+transkrybowany z dźwięku lokalnym Whisperem – dalej wszystko idzie tą samą drogą. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
 przed startem, a na końcu mówi co zrobił, co pominął, ile kosztowało i gdzie leży plik.
 
 ---
@@ -158,6 +159,7 @@ wymagają i co przestaje działać bez nich.
 | **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice` ([komendy](docs/install.md)), ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
 | **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` ([komendy](docs/install.md)) | jak wyżej |
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
+| **Transkrypcja** (faster-whisper) – tylko dla filmu bez żadnych napisów | venv z `faster-whisper` wskazany w `transcribe.venv` ([komendy](docs/install.md)), **albo** kontener, który go ma | film bez napisów nie dostaje lektora: etap mówi od razu, czego brakuje, zanim cokolwiek wytnie z dźwięku |
 | **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv` ([komendy](docs/install.md)), **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
 
 ---
@@ -189,8 +191,9 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 
 | etap | robi |
 |---|---|
-| `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą; gdy polskich nie ma – najlepsze obcojęzyczne tekstowe, do tłumaczenia |
-| `translate` | tylko dla takich filmów: cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ręcznych poprawek nie nadpisuje bez `--force` |
+| `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą; gdy polskich nie ma – najlepsze obcojęzyczne tekstowe, do tłumaczenia, a gdy nie ma żadnych – kieruje film do `transcribe` |
+| `transcribe` | tylko dla filmu bez żadnych napisów: kanał centralny przez faster-whisper (lokalnie, za darmo), filtr halucynacji, podział na karty jak w napisach – `subs/<base>.asr.<lang>.srt` |
+| `translate` | tylko dla filmów bez polskich napisów: obcojęzyczne napisy albo transkrypcję, cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ręcznych poprawek nie nadpisuje bez `--force` |
 | `speech` | forced alignment, ciszę między słowami, cięcia montażowe – lokalnie, za darmo |
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |
 | `retime` | dosuwa wczesne kwestie na pierwsze słowo aktora; nic nie kosztuje |
@@ -219,8 +222,8 @@ katalogu, bo po tym działa automatyczne podnoszenie.
 Około **$1.20–1.45 za odcinek** na ElevenLabs plus $0.15–0.20 za skracanie tekstu, albo **$0.00**
 na Piperze i OmniVoice. Tłumaczenie filmu bez polskich napisów to osobny rachunek z OpenRouter,
 jeszcze niezmierzony na prawdziwym odcinku – `cost` mówi to wprost, a `<base>.spend.json` zapisuje,
-ile naprawdę kosztowało. Wszystko, co lokalne – alignment, detekcja cięć, bramka scalania,
-retiming – kosztuje zero.
+ile naprawdę kosztowało. Wszystko, co lokalne – transkrypcja, alignment, detekcja cięć, bramka
+scalania, retiming – kosztuje zero.
 
 Szczegóły: [docs/cost.md](docs/cost.md).
 

@@ -54,3 +54,11 @@ than a handful of shortened lines, so it should cost more than a condensation dr
 more is unknown, and `translate.measured_usd_per_episode` ships at 0 so that `cost` says
 "unmeasured" instead of printing a guess. A rerun reuses `<base>.translated.json` and pays only for
 lines whose source, model or prompt changed.
+
+**Transcription** costs no money: a film with no text subtitle at all is transcribed by
+faster-whisper on the local GPU before it is translated, and `cost`, the plan and the `run` footer
+say `$0.00` for it. What it does cost is GPU time and, the first time, a ~3 GB model download.
+**Neither has been measured here** – the machine this was built on has no GPU – so there is no
+minutes-per-episode figure yet; `<base>.asr.json` records the transcription time and the realtime
+factor of every run, which is where the first one will come from. The translation that follows is
+billed like any other, on the transcript's cues.

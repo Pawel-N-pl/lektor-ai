@@ -32,6 +32,14 @@ What does not work well, stated plainly.
   from - but it does show that both were written as properties of the ENGINE when they are
   properties of an episode. Read them as "piper on easy material", not as a specification.
 
+- **Transcription has never run on a real film.** Everything about the `transcribe` stage – the
+  hallucination thresholds, the blacklist, the card lengths, the 300 ms linger, `large-v3` itself
+  – ships at the library's defaults or common Whisper practice and is covered by unit tests on
+  constructed segments only. Nobody has listened to a lektor read from a transcript, nor counted
+  how many of Whisper's segments the filters drop on real audio, nor checked how often its
+  language detection is wrong when the audio track has no tag. Whisper gives no speakers either,
+  so a transcribed card never carries the speaker dash a subtitle would.
+
 - **piper is the one engine allowed to gabble.** `timing.max_speed` is 1.2 and every other backend
   obeys it - omnivoice has an explicit floor that lets a line overrun rather than be compressed past
   that ceiling. piper reaches its window by searching `length_scale` down to `voice.piper.search_min`

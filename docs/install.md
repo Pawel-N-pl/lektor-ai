@@ -201,5 +201,43 @@ otherwise byte-identical to a run without the artefact. Shot detection itself is
 `speech.reference_srt_patterns` – the acoustic model is English – and without one the stage says
 `no English reference subtitle` and skips straight to the cuts.
 
+**transcription for `transcribe`** – only for a film with no text subtitle at all (or
+`translate.source = 'asr'`), and the only way such a film gets a lektor. It runs faster-whisper,
+which the pipeline never imports: the script goes to another interpreter exactly the way forced
+alignment does, chosen by `transcribe.runner` (`auto` by default).
+
+* `local` – a venv named by `transcribe.venv` with faster-whisper in it:
+
+  ```bash
+  uv venv --python 3.11 ~/.cache/lektor-ai-asr/venv-asr
+  uv pip install --python ~/.cache/lektor-ai-asr/venv-asr/bin/python faster-whisper
+  # on an NVIDIA GPU, the CUDA 12 libraries CTranslate2 loads at run time:
+  uv pip install --python ~/.cache/lektor-ai-asr/venv-asr/bin/python \
+      nvidia-cublas-cu12 'nvidia-cudnn-cu12==9.*'
+  ```
+
+  ```toml
+  [transcribe]
+  venv = '~/.cache/lektor-ai-asr/venv-asr'
+  ```
+
+  The pip-installed CUDA libraries are not on the loader's path by themselves; faster-whisper's
+  own README has the `LD_LIBRARY_PATH` line to export before running `lektor.py`, and on Windows
+  the same wheels need their `bin` directories on `PATH`. None of this has been run here – the
+  machine this was written on has no GPU – so treat the commands as the library's documented
+  install, not as a tested recipe. Without a GPU set `transcribe.device = 'cpu'`; it works and is
+  far slower.
+* `docker` – the same script handed to `transcribe.container`, which defaults to
+  `speech.asr_container`. The borrowed `asr` container already has faster-whisper, since its
+  resident service is a faster-whisper large-v3; this loads a second copy of the model beside it,
+  and how much VRAM that costs on top has not been measured. Nothing is installed into it.
+* `auto` – local when a usable venv is configured, docker otherwise.
+
+The first run downloads `transcribe.model` (`large-v3`, about 3 GB) into the Hugging Face cache of
+whichever interpreter runs it. Unlike `speech`, nothing degrades here: a film with no subtitle has
+no other text, so with no runtime the stage stops **before any audio is cut**, with one message
+naming what is missing – no venv, no docker, a container that is not running, or faster-whisper
+not installed in the one that was found – and `run` prints the same thing in its plan.
+
 Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
 a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 84 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 233 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either. Only the second is tracked: `lektor.toml` is gitignored and ships as `lektor.toml.example`, which the loader falls back to until you make the copy.

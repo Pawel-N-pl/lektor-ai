@@ -45,8 +45,8 @@ its episodes with `*.srt` in the work dir, and a `<base>.src.eng.srt` there woul
 episode of its own, with `script` condensing the English. The sidecar gains `subtitle_origin =
 "subs"`, `source_language`, `source_srt`, `source_sdh` and `audio_language`. A sidecar without
 `subtitle_origin` – every Polish extract, and every one the PowerShell ever wrote – means the
-film's own track. `translate.source = "asr"` (transcribing the audio) is phase 2 and is reported as
-not implemented, never quietly treated as `subs`.
+film's own track. A film with no text subtitle in any language is not skipped either: see "No
+subtitle at all" below.
 
 `translate` then writes `<base>.srt` from it: the whole episode in one OpenRouter call, faithful and
 in subtitle style rather than condensed (condensation is still `script`'s job, on its untouched
@@ -84,6 +84,63 @@ PowerShell mux (`windows/lektor.ps1 -Stage mux`) does not add the subtitle strea
 `subtitles` is `mux` on a translated film, and `python3 wsl/lektor.py mux` is the one that does.
 The PowerShell extract leaves a translated episode alone: it knows nothing of `translate.mode`,
 and would otherwise rewrite the sidecar without `subtitle_origin`.
+
+### No subtitle at all: the audio, transcribed
+
+Under `translate.source = "auto"` a film with no Polish text track and no foreign one either is
+sent to the `transcribe` stage instead of being skipped; `source = "asr"` sends every film without
+a Polish text track there, subtitles or not, and `"subs"` keeps the old skip. Extract writes the
+downmix and a sidecar with `subtitle_origin = "asr"` and the audio track's language tag, and
+nothing else: the language is Whisper's to find. Under `mode = "always"` a film that has its
+Polish track keeps it unless `source` is `"asr"` by name – a transcript is a guess at a text,
+paid for in GPU minutes, and `always` with `auto` is about comparing two texts of the film.
+
+`transcribe` cuts the dialogue stem the way `speech` does – the centre channel through
+`speech.centre_filter`, the downmix when there is no centre or it is quieter than
+`speech.centre_min_mean_db`, no Demucs – and hands it to faster-whisper (`large-v3`, beam 5, its
+built-in VAD, word timestamps on) in a venv or a container of its own; the pipeline never imports
+it ([install](install.md)). The language is `translate.source_language` when that names one, the
+audio track's tag otherwise, and Whisper's detection only when the track has none; the one used,
+and where it came from, is recorded.
+
+Then two things in plain Python, before anything is written:
+
+* **Hallucination filters.** A segment goes when Whisper itself calls it silence
+  (`no_speech_prob` over 0.6 *and* `avg_logprob` under -1.0 – either alone also fires on a quiet,
+  confidently decoded line), when its text compresses like a loop (ratio over 2.4), when one
+  phrase repeats back to back (4+ times, 12+ words), when the same text fills more than two
+  segments in a row, when it is only music notes or `[Music]`, when most of it lies outside the
+  VAD's speech regions, or when it essentially is a phrase from `transcribe.blacklist` – "Thanks
+  for watching", "Subtitles by the Amara.org community", "Untertitel im Auftrag des ZDF" and the
+  like, which Whisper learned from captioned video and writes over silence and credits. Every
+  dropped segment is kept in `<base>.asr.json` with its reason. **None of these thresholds has
+  been measured on this project's material**; they are the library's own or the common practice.
+* **Cutting into cards.** Whisper's segments can run 30 s and three sentences, so its words are
+  regrouped the way subtitles are laid out: at most two lines of 42 characters and ~6 s, a silence
+  over a second always ends a card, and a card that does not fit is split at a sentence end
+  first, then at a pause between words, then after a comma – never inside a word. Cards stay up
+  300 ms past their last word and at least a second, as far as the next one allows, with the
+  80 ms gap this release keeps between cards.
+
+The result is `subs/<base>.asr.<lang>.srt` – in `subs/` for the same reason as a subtitle extract
+– and `<base>.asr.json`, which holds the raw segments and words, the filters' verdicts, the
+language and the settings. From there the film is a translated one like any other: `translate`
+reads the transcript exactly as it reads a subtitle track, with the same provenance, the same
+staleness check (a new transcript is translated again) and the same hand-edit guard. A hand
+correction to the transcript itself – a name Whisper misheard – is copied aside before
+`transcribe --force` replaces it. A transcript made for another language than the one now asked
+for is redone rather than skipped as "exists". Audio Whisper hears as Polish is refused: it needs
+no lektor, and translating it into itself would fail line by line.
+
+**Whisper's timings are a grid, not a placement.** Its word times were measured 316 ms early at
+utterance starts (see `speech`), and the cards inherit that. They are not corrected:
+`transcribe.onset_shift_ms` ships at 0, because an early card is what an authored subtitle is
+anyway, and the same machinery fixes both – an English transcript is `speech`'s alignment
+reference (before any configured pattern, and never swapped for an SDH stream, since only the
+transcript shares the Polish cards' grid and `retime` matches cards by start time), and `retime`
+moves each line onto its aligned first word. A transcript in another language has no reference,
+as with a translation from one. Snapping cards to the shot cuts is not done: `speech` measures the
+cuts after this stage runs.
 
 ## The mux
 

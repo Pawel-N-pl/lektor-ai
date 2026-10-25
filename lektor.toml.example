@@ -42,8 +42,9 @@ subtitle_language = 'pol'
 # What happens to a film with no Polish subtitle track. auto: translate its foreign subtitles
 # with an LLM, but only then; always: translate even when there is a Polish track; never: skip it.
 mode = 'auto'
-# Where the foreign text comes from: 'subs' (a text subtitle track in the film) or 'auto'. 'asr'
-# (transcribing the audio) is not implemented yet and only reports so.
+# Where the foreign text comes from: 'subs' (a text subtitle track in the film), 'asr' (the
+# film's audio, transcribed locally - see [transcribe]) or 'auto', which transcribes only a film
+# with no text subtitle at all.
 source = 'auto'
 # 'auto' takes the audio's own language, then English. A tag such as 'eng' takes only that.
 source_language = 'auto'
@@ -54,6 +55,17 @@ fallback_model = 'openai/gpt-5.6-terra'
 # Polish subtitles from the translation: 'off', 'sidecar' (<film>.pl.srt beside the film) or
 # 'mux' (a subtitle stream in the remuxed .mkv). `--subs` overrides it for one run.
 subtitles = 'off'
+
+[transcribe]
+# Where faster-whisper runs for a film with no text subtitle: 'local' in the venv below, 'docker'
+# in a container (speech.asr_container unless `container` names another), 'auto' for local when
+# that venv exists and docker otherwise. With neither, the stage stops and says how to install one.
+runner = 'auto'
+# A venv with faster-whisper installed. Leave empty to use the container.
+venv = ''
+# The Whisper checkpoint, and 'auto', 'cuda' or 'cpu'. The CPU works and is far slower.
+model = 'large-v3'
+device = 'auto'
 
 [script]
 # The model that shortens lines too long for their slot. Draws twice, then hands over to

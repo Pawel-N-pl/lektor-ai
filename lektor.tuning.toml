@@ -44,17 +44,20 @@ downmix_rate = 48000
 # new label; whatever was built from the old text afterwards needs redoing.
 mode = 'auto'
 
-# Where the foreign text comes from. 'subs' is a text subtitle track in the film. 'asr' is
-# transcribing the audio, which is phase 2 of docs/translate.md and NOT IMPLEMENTED: asking for it
-# is reported and the episode is skipped, never silently treated as 'subs'. 'auto' means subs,
-# then asr - so today, subs or a report that there was nothing to translate from.
+# Where the foreign text comes from. 'subs' is a text subtitle track in the film, and a film with
+# none is skipped as it was before. 'asr' is the film's own audio, transcribed by the transcribe
+# stage ([transcribe] below), even when a subtitle track is there. 'auto' means subs, then asr:
+# the audio only for a film with no text subtitle at all - and, under mode 'always', never for a
+# film that has its Polish track, which then keeps it rather than be swapped for a transcript.
 source = 'auto'
 
 # 'auto' ranks the film's text tracks: the language of the audio first (a translation of what the
 # actors actually say), then English, then anything else, in stream order. A tag such as 'eng' or
-# 'ger' takes only that language and skips the episode when it is not there. Two- and
-# three-letter codes and the bibliographic/terminology pairs (ger/deu, fre/fra) are the same
-# language.
+# 'ger' takes only that language and skips the episode when it is not there (or, under source
+# 'auto', transcribes the audio instead). Two- and three-letter codes and the
+# bibliographic/terminology pairs (ger/deu, fre/fra) are the same language. For transcription a
+# tag here is the language Whisper is told; 'auto' tells it the audio track's own tag, and lets it
+# detect the language only when the track has none.
 source_language = 'auto'
 
 # Within one language, a plain dialogue track is preferred over SDH. SDH carries "[door creaks]"
