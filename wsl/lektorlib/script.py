@@ -25,8 +25,10 @@ import random
 import threading
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 import requests
 
@@ -528,8 +530,14 @@ def _error_text(resp) -> str:
     return json.dumps(body)[:300]
 
 
+# What a call's `parse` makes of the reply: the cues for condensation and translation, a Glossary
+# for the glossary draft.
+Parsed = TypeVar("Parsed")
+
+
 def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format: dict,
-                    purpose: str, parse=parse_reply) -> tuple[dict[int, str], CallStats]:
+                    purpose: str, parse: Callable[[str], Parsed] = parse_reply,
+                    ) -> tuple[Parsed, CallStats]:
     """One request. Retries only what is worth retrying, and honours Retry-After when told to.
 
     `parse` turns the message content into the result, raising ReplyError for a reply worth
@@ -930,13 +938,14 @@ def _condense_once(cues, target_ids: set[int], cfg: Config, api_key: str) -> Con
 
 def _ask(s: dict, api_key: str, messages: list[dict], use_schema: bool, out: CondenseOutcome,
          purpose: str, schema: dict = CUES_SCHEMA,
-         parse=parse_reply) -> tuple[dict[int, str], bool, str]:
+         parse: Callable[[str], Parsed] = parse_reply) -> tuple[Parsed | dict, bool, str]:
     """Call with json_schema, degrade to json_object once if the provider refuses it.
 
     `schema` is the one thing the translate stage changes: its reply has the same
     {"cues": [{"id", "text"}]} shape, so the parsing, the retries and the degradation are this
-    function's and not a second copy of it. `parse` goes to call_openrouter, for a reply of
-    another shape.
+    function's and not a second copy of it. The glossary draft changes both: its own schema, and
+    a `parse` that reads its other shape into a Glossary - passed to both calls, the fallback's
+    included. On an error the result is `{}`, whatever `parse` would have made.
     """
     if use_schema:
         try:
@@ -1021,9 +1030,10 @@ def append_spend(cfg: Config, base: str, run: dict) -> Path:
 def read_spend(cfg: Config, base: str, stage: str | None = None) -> float:
     """What this episode has cost on OpenRouter so far, or 0 if nothing has run.
 
-    With no `stage` it is the whole bill - condensation and translation together, the number
-    `usd_total` has always held. `stage="script"` or `"translate"` sums only that stage's runs, so
-    a chain can say what each of the two cost this time without one swallowing the other.
+    With no `stage` it is the whole bill - condensation, translation and any glossary draft
+    together, the number `usd_total` has always held. `stage="script"`, `"translate"` or
+    `"glossary"` sums only that stage's runs, so a chain can say what each cost this time without
+    one swallowing the other.
     """
     p = spend_path(cfg, base)
     if not p.exists():

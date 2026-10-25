@@ -59,6 +59,17 @@ class TestParse(unittest.TestCase):
         with self.assertRaises(S.ReplyError):
             G.parse_suggestion(json.dumps({"characters": [], "address": [], "terms": []}))
 
+    def test_a_wrong_shape_is_left_out_or_rolled_again_never_a_crash(self):
+        # json_object mode enforces no schema. A string of aliases would be split into letters;
+        # anything but a ReplyError would escape after the call was paid, before its spend.
+        g = G.parse_suggestion(json.dumps({"characters": [{"name": "Ted", "aliases": "Coach"}]}))
+        self.assertEqual(g.characters["Ted"].aliases, ())
+        g = G.parse_suggestion(json.dumps({"characters": [{"name": "Ted", "aliases": 1}]}))
+        self.assertEqual(g.characters["Ted"].aliases, ())
+        for key in ("characters", "address", "terms"):
+            with self.subTest(key=key), self.assertRaises(S.ReplyError):
+                G.parse_suggestion(json.dumps({**DRAFT, key: 5}))
+
     def test_a_fenced_reply_is_still_read(self):
         g = G.parse_suggestion("```json\n" + json.dumps(DRAFT) + "\n```")
         self.assertIn("Ted", g.characters)
@@ -143,6 +154,35 @@ class TestStage(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}), \
                 self.assertRaisesRegex(SystemExit, "OPENROUTER_API_KEY"):
             self.draft()
+
+    def test_a_refused_schema_still_drafts_through_json_object(self):
+        # The fallback call must keep the draft's own parser: with translate's, every reply is
+        # "no 'cues' array" and no draft is ever written.
+        def post(url, headers=None, json=None, timeout=None):  # noqa: A002
+            self.sent.append(json)
+            if len(self.sent) == 1:
+                return Resp(400, {"error": {"code": 400,
+                                            "message": "response_format json_schema unsupported"}})
+            return reply(DRAFT)
+
+        with mock.patch.object(S.requests, "post", post):
+            out = G.stage_glossary(self.cfg, None)
+        self.assertEqual(G.load_glossary(self.cfg_for(out)).address,
+                         {("Ted", "Rebecca"): "pani"})
+        self.assertEqual(self.sent[1]["response_format"], {"type": "json_object"})
+        runs = json.loads((self.cfg.work_dir / "ep.spend.json").read_text())["runs"]
+        self.assertEqual(runs[0]["response_format"], "json_object")
+
+    def test_a_long_episode_is_drafted_from_its_first_whole_lines(self):
+        self.cfg.raw["translate"]["max_prompt_chars"] = 60
+        self.draft()
+        self.assertEqual(len(self.sent), 1)
+        sent = self.sent[0]["messages"][1]["content"]
+        cues, brief = T.prepare(T.source_cues(self.cfg.work_dir / "subs" / "ep.src.eng.srt"), None)
+        whole = T.translate_prompt(cues, brief.hints.text)
+        self.assertLessEqual(len(sent), 60)
+        self.assertTrue(sent.startswith("[1] "))
+        self.assertTrue(whole.startswith(sent + "\n"), "cut mid-line")
 
     def test_a_failed_call_writes_no_draft_and_still_books_the_spend(self):
         def dead(url, headers=None, json=None, timeout=None):  # noqa: A002

@@ -284,6 +284,16 @@ def speech_signals(cfg: Config, base: str) -> dict | None:
     return {k: len(data.get(k) or []) for k in ("words", "gaps", "cuts")}
 
 
+def _speech_reference(cfg: Config, base: str) -> str | None:
+    """The reference `<base>.speech.json` was measured against, as it recorded it; None for
+    none, and for no readable artefact."""
+    try:
+        data = json.loads((cfg.work_dir / f"{base}.speech.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return (data.get("source") or {}).get("reference_srt")
+
+
 def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
     """The degradations that are invisible in the output file, said at second zero instead.
 
@@ -363,6 +373,14 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
         else:
             out.append(f"no English reference subtitle yet; `speech` will pull stream "
                        f"{pick.index} ({pick.title or pick.language}) out of the episode itself.")
+    sig = speech_signals(cfg, base)
+    if "speech" not in will_run and sig is not None and not sig["words"] \
+            and _speech_reference(cfg, base) is None and find_reference_srt(cfg, base) is not None:
+        # speech is satisfied by its file existing, so a reference that became readable after
+        # the cuts-only run - speech.multilingual_aligner switched on, a pattern file dropped in -
+        # would otherwise never be aligned, and the log line that asked for it is gone by now.
+        out.append(f"{base}.speech.json has shot cuts only, written when there was no reference "
+                   f"an aligner here could read; there is one now – `--redo speech` aligns it.")
     subs = media.subtitles_mode(cfg)
     if subs == "mux" and "mux" not in will_run and translate.origin(cfg, base) != "track" \
             and media.translate_mode(cfg) != "never":

@@ -74,7 +74,8 @@ def speaker_turns(raw: str) -> int:
 class SpeakerHints:
     text: dict[int, str] = field(default_factory=dict)    # cue id -> hint the model is shown
     # Cue id -> how many speakers a card holds whose own layout does not show it: labels on
-    # separate lines with no dashes. format_srt lays the Polish card out by it.
+    # separate lines with no dashes, or one speaker's lines each dashed. format_srt lays the
+    # Polish card out by it.
     turns: dict[int, int] = field(default_factory=dict)
     names: set[str] = field(default_factory=set)          # every label seen, as written
 
@@ -131,10 +132,11 @@ def harvest(cues, glossary: Glossary | None = None) -> SpeakerHints:
 
     for c in cues:
         lines = _lines(c.raw)
-        speakers: list[str] = []
-        # (line, opens a speaker's turn) - a label alone on its line opens the next one.
-        kept: list[tuple[str, bool]] = []
-        opens = False
+        # The card as its turns: [speaker or None, its lines]. A label alone on its line opens
+        # the turn its next line belongs to; a label repeating the speaker before it continues
+        # that turn; a dashed line without a label opens a turn nobody named.
+        turns: list[list] = []
+        labelled = False
         for ln in lines:
             m = _caps_name(ln, glossary)
             if m is None:
@@ -144,34 +146,49 @@ def harvest(cues, glossary: Glossary | None = None) -> SpeakerHints:
                           or (glossary is not None and glossary.lookup(name))):
                     m = b
             if m is None:
-                kept.append((ln, opens))
-                opens = False
+                if not turns or (SPEAKER_DASH.match(ln) and turns[-1][1]):
+                    turns.append([None, [ln]])
+                else:
+                    turns[-1][1].append(ln)
                 continue
+            labelled = True
             name = m.group("name").strip()
             out.names.add(name)
-            if not speakers or speakers[-1].casefold() != name.casefold():
-                speakers.append(name)
             lead = m.group("lead").strip()
             rest = ln[m.end():].strip()
-            if rest:
-                kept.append((f"{lead} {rest}" if lead else rest, True))
-                opens = False
-            else:
-                opens = True
-        if speakers:
-            texts = [ln for ln, _ in kept]
-            if len(speakers) > 1 and not any(SPEAKER_DASH.match(ln) for ln in texts[1:]):
-                # Two labelled speakers on lines with no dashes: the dashes are what tells the
-                # model, and later the card's layout, that the speaker changes here.
-                texts = [f"- {ln}" if turn and not SPEAKER_DASH.match(ln) else ln
-                         for ln, turn in kept]
-                out.turns[c.idx] = sum(1 for _, turn in kept if turn)
-            c.text = _join(texts)
-            if len(speakers) == 1:
-                out.text[c.idx] = HINT_FORMATS["one"].format(who=_who(speakers[0], glossary, False))
+            if turns and turns[-1][0] is not None and turns[-1][0].casefold() == name.casefold():
+                # Same speaker again: its dash would tell the model, and format_srt, that the
+                # speaker changes where it does not.
+                if rest:
+                    turns[-1][1].append(rest)
+                continue
+            turns.append([name, [f"{lead} {rest}" if lead else rest] if rest else []])
+        if labelled:
+            starts = [t[1][0] for t in turns[1:] if t[1]]
+            if len(turns) > 1 and not any(SPEAKER_DASH.match(ln) for ln in starts):
+                # Two speakers on lines with no dashes: the dashes are what tells the model, and
+                # later the card's layout, that the speaker changes here.
+                for t in turns:
+                    if t[1] and not SPEAKER_DASH.match(t[1][0]):
+                        t[1][0] = f"- {t[1][0]}"
+            laid_out = speaker_turns(c.raw)
+            if len(turns) != laid_out and max(len(turns), laid_out) > 1:
+                # The source's dashes and its labels disagree - no dashes, or a dash before a
+                # speaker's second line - and the labels are the ones that name who speaks.
+                out.turns[c.idx] = len(turns)
+            c.text = _join([ln for t in turns for ln in t[1]])
+            names = [t[0] for t in turns]
+            if None in names:
+                # A dialogue card SDH labels only half of, often the off-screen half. Naming the
+                # labelled speaker would give the other half that speaker's gender - the error a
+                # hint exists to prevent - so the card is hinted as if it had no labels.
+                if len(turns) > 1 and not SPEAKER_DASH.match(c.text):
+                    out.text[c.idx] = HINT_FORMATS["turns"].format(n=len(turns))
+            elif len(names) == 1:
+                out.text[c.idx] = HINT_FORMATS["one"].format(who=_who(names[0], glossary, False))
             else:
                 out.text[c.idx] = HINT_FORMATS["many"].format(
-                    who=", ".join(_who(s, glossary, True) for s in speakers))
+                    who=", ".join(_who(s, glossary, True) for s in names))
             continue
         turns = speaker_turns(c.raw)
         if turns >= 2 and lines and not SPEAKER_DASH.match(lines[0]):

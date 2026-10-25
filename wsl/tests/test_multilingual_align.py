@@ -28,7 +28,6 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lektorlib import speech as SP  # noqa: E402
-from lektorlib import translate as T  # noqa: E402
 from lektorlib.config import Config  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -230,11 +229,15 @@ class TestDelivery(Base):
         self.assertEqual(self.deliver(SP.MULTILINGUAL_BUNDLE, "uroman", "rus"),
                          [str(self.cfg["speech"]["fa_window_s"]), "MMS_FA", "uroman", "rus"])
 
+    def test_uroman_gets_the_iso_639_3_code_not_the_folded_one(self):
+        # language_key folds Greek to 'gre'; uroman's Greek rules are filed under 'ell' only.
+        self.assertEqual(self.deliver(SP.MULTILINGUAL_BUNDLE, "uroman", "gre")[-1], "ell")
+
     def test_a_missing_romaniser_is_said_as_such(self):
         fail = SP.ScriptFailed("forced alignment", SP.NO_ROMANISER_EXIT,
                                "uroman cannot be imported: No module named 'uroman'")
         with mock.patch.object(SP, "run_script_local", side_effect=fail), \
-                self.assertRaisesRegex(RuntimeError, "pip install uroman"):
+                self.assertRaisesRegex(RuntimeError, "aligner_venv.*uroman"):
             SP.forced_align(self.cfg, Path("a.wav"), [], self.root, SP.MULTILINGUAL_BUNDLE,
                             "uroman", "rus")
 

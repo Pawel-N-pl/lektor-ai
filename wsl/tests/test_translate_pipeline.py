@@ -209,6 +209,37 @@ class TestPlan(Base):
         self.assertIn("translate  run  ep.srt was translated from ep.src.eng.srt without the "
                       "series glossary", self.plan())
 
+    def german(self):
+        """A German film translated from its own German subtitle."""
+        (self.work / "subs").mkdir(exist_ok=True)
+        (self.work / "subs" / "ep.src.ger.srt").write_text(SRT, encoding="utf-8")
+        (self.work / "ep.source.json").write_text(json.dumps({
+            "base": "ep", "source": str(self.cfg.input_dir / "ep.mkv"), "language": "pol",
+            "subtitle_origin": "subs", "source_language": "ger", "audio_language": "ger",
+            "source_srt": "subs/ep.src.ger.srt"}), encoding="utf-8")
+        (self.work / "ep.srt").write_text(SRT, encoding="utf-8")
+
+    def test_a_german_subtitle_film_says_why_its_text_is_no_reference(self):
+        self.german()
+        with mock.patch.object(P, "reference_stream", return_value=None):
+            out = self.plan()
+        self.assertIn("forced alignment cannot run", out)
+        self.assertIn("The reason it is not the film's own text", out)
+        self.assertIn("CC-BY-NC", out)
+
+    def test_a_cuts_only_speech_file_asks_for_a_redo_once_its_reference_is_readable(self):
+        # speech is satisfied by its file, so switching the aligner on changes nothing by itself.
+        self.german()
+        (self.work / "ep.speech.json").write_text(json.dumps({
+            "source": {"video": "ep.mkv", "reference_srt": None, "reference_language": None},
+            "words": [], "gaps": [], "cuts": [1000], "cues": []}), encoding="utf-8")
+        self.assertNotIn("--redo speech", self.plan())
+        self.cfg.raw["speech"]["multilingual_aligner"] = True
+        self.assertIn("ep.speech.json has shot cuts only, written when there was no reference "
+                      "an aligner here could read; there is one now – `--redo speech` aligns it.",
+                      self.plan())
+        self.assertNotIn("--redo speech", self.plan(redo=("speech",)))
+
 
 class TestRunStep(Base):
     def step(self, step, force=False):

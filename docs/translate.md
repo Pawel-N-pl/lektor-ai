@@ -118,7 +118,10 @@ Polski pokazuje płeć mówiącego w czasowniku. Gdzie źródło samo to mówi, 
 - Nawias na początku linii to znacznie częściej dźwięk niż imię, więc `[Laughs]` zostaje tekstem.
 - Karta z dwoma podpisami: `{mówią po kolei: Ted (mężczyzna), Rebecca (kobieta)}`; podpisy w
   liniach bez myślników dostają myślniki w prompcie i w układzie polskiej karty. Karta, której rip
-  zgubił pierwszy myślnik: `{mówiących: 2}`.
+  zgubił pierwszy myślnik: `{mówiących: 2}`. Karta dialogowa z podpisem tylko przy jednej połowie
+  (SDH często podpisuje tylko mówiącego spoza kadru) nie dostaje imienia – przeszłoby na drugą
+  połowę razem z płcią – tylko wskazówkę jak karta bez podpisów. Ten sam podpis w kolejnej linii
+  to ta sama kwestia: bez nowego myślnika.
 - Prompt każe trzymać rodzaj konsekwentnie i brać płeć ze słownika. Odcinek bez podpisów i bez
   zgubionych myślników idzie bez żadnej wskazówki i z tymi samymi kluczami cache co przedtem.
 
@@ -131,7 +134,8 @@ torchaudio MMS_FA, **tylko gdy `speech.multilingual_aligner = true`**:
 
 - Domyślnie wyłączone, bo wagi MMS_FA są na licencji **CC-BY-NC 4.0** (niekomercyjnej); włączenie
   klucza to świadoma zgoda na te warunki. Wyłączone – film nie po angielsku dostaje same cięcia
-  montażowe, jak dotąd, a plan i log mówią dlaczego.
+  montażowe, jak dotąd, a plan i log mówią dlaczego. Odcinek, który `speech` już zmierzył z samymi
+  cięciami, zachowuje ten plik i po włączeniu klucza – trzeba `--redo speech`, o czym mówi plan.
 - Język bierze się z `source.json` (napisy) albo `asr.json` (transkrypt). Napisy są referencją
   tylko w języku ścieżki audio – hiszpańskie napisy angielskiego filmu to tłumaczenie – i wtedy
   przed angielskimi wzorcami.
@@ -239,8 +243,8 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
 **Otwarte.**
 
 - Faza 3. (~~`source = "asr"` czeka na fazę 2~~ – zrobione w fazie 2.)
-- Odcinek za długi na jedno wywołanie jest cięty na kawałki, z których każdy widzi tylko siebie –
-  bez kontekstu sąsiadów. Do zrobienia, jeśli prawdziwy odcinek kiedyś się nie zmieści.
+- ~~Odcinek za długi na jedno wywołanie jest cięty na kawałki, z których każdy widzi tylko siebie –
+  bez kontekstu sąsiadów.~~ – zrobione w fazie 3 (`translate.context_cues`).
 - `mode = "always"` na filmie, którego polski `<base>.srt` był już wyciągnięty wcześniej, trzyma
   ten plik do `--redo translate` (albo `--force`).
 - Pierwszy przebieg na prawdziwym filmie i prawdziwym API: zmierzyć koszt odcinka i wpisać go do
@@ -353,8 +357,68 @@ ASR przeciw atrapie `faster_whisper`. Żaden nie dotyka sieci ani GPU.
 - Dosuwanie kart do cięć ujęć: `speech` mierzy cięcia dopiero po tym etapie.
 - Ponowne cięcie na karty z istniejącego `<base>.asr.json` bez uruchamiania Whispera od nowa.
 - Whisper nie daje mówców, więc karta z transkryptu nigdy nie ma myślnika zmiany mówcy.
-- Faza 3: słownik serii, rodzaj gramatyczny mówiącego, aligner wielojęzyczny (MMS_FA) – dziś
-  transkrypt w innym języku niż angielski nie jest referencją do alignmentu, więc jego karty
-  zostają tak wczesne, jak postawił je Whisper (`onset_shift_ms = 0`).
+- ~~Faza 3: słownik serii, rodzaj gramatyczny mówiącego, aligner wielojęzyczny (MMS_FA) – dziś
+  transkrypt w innym języku niż angielski nie jest referencją do alignmentu~~ – zrobione w fazie 3.
+  Bez `speech.multilingual_aligner` nadal nie jest, i jego karty zostają tak wczesne, jak postawił
+  je Whisper (`onset_shift_ms = 0`).
 - Linie karty z transkryptu łamią się tylko na spacjach: tekst chiński czy japoński bez spacji
   mieści się w karcie tylko jako jedna linia (`layout`/`fits_lines`).
+
+### Faza 3 – jakość: zrobiona
+
+**Co jest.**
+
+- Kontekst sąsiadów: odcinek cięty na kawałki (`translate.max_prompt_chars`) pokazuje każdemu
+  kawałkowi `translate.context_cues` (20) kwestii z każdej strony do przeczytania, nie do
+  zwrócenia. Odcinek w jednym wywołaniu idzie jak dotąd.
+- Słownik serii (`lektorlib/glossary.py`, `translate.glossary`): postacie z płcią i aliasami,
+  formy zwracania się w parach, terminy. Do promptu idzie tylko to, czego odcinek może użyć, a
+  klucz cache każdej kwestii obejmuje tylko to, co ją dosięga – zmiana terminu tłumaczy od nowa
+  jego kwestie, zmiana postaci albo pary cały odcinek, w którym postać jest. Odcinek bez słownika
+  ma stare klucze. `stale_source` i plan mówią, że tłumaczenie powstało bez słownika, z inną jego
+  wersją albo ze słownikiem, którego już nie ma; `<base>.translated.json` trzyma linie sprzed
+  zmiany, więc powrót do poprzedniej wersji nic nie kosztuje.
+- Szkic słownika: `lektor.py glossary [--only X] [--force]`, jedno wywołanie przez `script._ask`
+  z własnym schematem i parserem, rachunek w `<base>.spend.json` jako `"stage": "glossary"`. Pisze
+  tylko `lektor.glossary.suggested.toml`.
+- Podpisy mówiących (`lektorlib/speakers.py`): podpis SDH wychodzi z tekstu kwestii i staje
+  przed nią jako wskazówka `{mówi: …}`, `{mówią po kolei: …}` albo `{mówiących: N}`, z `HINT_RULES`
+  w prompcie systemowym tylko dla odcinka z choć jedną wskazówką.
+- Alignment poza angielskim: `speech.multilingual_aligner` (domyślnie wyłączony, licencja
+  CC-BY-NC 4.0) wysyła referencję w innym języku do MMS_FA – transkrypt albo napisy w języku
+  ścieżki audio. Pismo łacińskie składane do a–z tutaj, inne przez `uroman` w interpreterze
+  alignera, z kodem języka ISO 639-3. Angielski dostaje dokładnie stary model i stare argumenty.
+  Plan prosi o `--redo speech`, gdy `<base>.speech.json` ma same cięcia, a referencja dała się
+  przeczytać dopiero później.
+
+**Odstępstwa od planu.**
+
+- Karta dialogowa z podpisem tylko przy jednej połowie nie dostaje imienia: przeszłoby na
+  niepodpisaną połowę razem z płcią. Ten sam podpis w kolejnej linii nie otwiera nowej kwestii.
+- `Mary:` (nie wielkimi literami) jest podpisem tylko dla imienia ze słownika; „zna je inny
+  podpis” wystarcza tylko nawiasom.
+
+**Czego nie zmierzono.** Nic z modelem. Żaden odcinek nie został przetłumaczony ze słownikiem
+ani ze wskazówkami – nie wiadomo, czy model trzyma się płci i form z promptu, ani ile kosztuje
+szkic słownika. Żaden prawdziwy odcinek nie był dość długi, by go ciąć, więc `context_cues = 20`
+to wybór, nie pomiar. MMS_FA nie wyrównał tu ani jednego odcinka: brak GPU, torcha i wag; jego
+jakość, szybkość, VRAM i skala jego `score` wobec `min_score` są nieznane. Skrypt alignera
+przeszedł tylko przez atrapę torcha i torchaudio, bez `uroman`; API `uroman` wzięte z jego
+dokumentacji. Sam `uroman` 1.3.1.1 był uruchomiony tylko poza skryptem, żeby sprawdzić kod
+języka: `βιβλίο` daje `vivlio` z `ell` i `biblio` z `gre`. Ile
+`WARNING:`-podobnych słów zostaje wziętych za podpis `NAME:`, nie sprawdzono na żadnym pliku.
+
+**Co sprawdzono.** Pełny zestaw testów: 682 passed, 3 skipped (po fazie 2: 582). Nowe testy w
+`test_glossary*.py`, `test_speakers.py`, `test_translate_glossary.py` i
+`test_multilingual_align.py` idą offline: odpowiedzi modelu z atrapy `requests.post`, skrypt
+alignera na atrapie torcha i torchaudio, plan na prawdziwym `Config`. Żaden nie
+dotyka sieci ani GPU.
+
+**Otwarte.**
+
+- Pierwszy przebieg ze słownikiem i podpisami na prawdziwym odcinku: czy rodzaj i formy się
+  zgadzają, i co kosztuje szkic.
+- Pierwszy przebieg MMS_FA: ile kwestii się wyrównuje, i czy `min_score` z angielskiego modelu
+  ma dla niego sens.
+- Karta z podpisem tylko przy jednej połowie mogłaby nazwać tę połowę (`?` dla drugiej) – wymaga
+  zmiany `HINT_RULES`, a więc kluczy każdego odcinka ze wskazówkami.

@@ -214,7 +214,9 @@ the aligner's interpreter, which torchaudio does not ship:
 uv pip install --python <speech.aligner_venv>/bin/python uroman
 ```
 
-Without it the episode keeps shot cuts only, and the log says `needs uroman`. In the borrowed
+Without it the episode keeps shot cuts only, and the log says `needs uroman`. An episode `speech`
+already measured with cuts only keeps that file after the key is switched on: rerun it with
+`--redo speech` (the plan says so). In the borrowed
 `asr` container nothing is installed, so there a non-Latin reference stays cuts-only. MMS_FA's
 weights download on first use into torch's hub cache. None of this has run here: no GPU, no
 torch and no MMS_FA on the machine it was written on, so its alignment quality, speed and VRAM are

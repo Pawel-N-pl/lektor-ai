@@ -294,6 +294,12 @@ def parse_glossary(data: dict, path: Path | None = None) -> Glossary:
     if unknown:
         raise GlossaryError(f"{where}: unknown table(s) {', '.join(unknown)} – the glossary has "
                             f"[characters.<name>], [address] and [terms]")
+    for table in ("characters", "address", "terms"):
+        # `address = "ty"` above every table is an easy slip, and anything but a GlossaryError
+        # here escapes stale_source, which the planner calls for every episode.
+        if not isinstance(data.get(table) or {}, dict):
+            raise GlossaryError(f"{where}: [{table}] must be a table, not "
+                                f"{type(data[table]).__name__}")
     g = Glossary(path=path)
     for name, entry in (data.get("characters") or {}).items():
         at = f"{where}: characters.{name}"
@@ -430,27 +436,39 @@ def parse_suggestion(content: str) -> Glossary:
     from .script import ReplyError, reply_object
 
     data = reply_object(content)
+
+    def items(key: str) -> list:
+        # json_object mode enforces no schema, and anything but a ReplyError leaving here escapes
+        # the call after it was paid for, before its spend is written.
+        value = data.get(key) or []
+        if not isinstance(value, list):
+            raise ReplyError(f"{key!r} is not an array")
+        return value
+
     g = Glossary()
-    for c in data.get("characters") or []:
+    for c in items("characters"):
         if not isinstance(c, dict) or not isinstance(c.get("name"), str) or not c["name"].strip():
             continue
         name = c["name"].strip()
         if g.lookup(name):
             continue
         gender = str(c.get("gender") or "").strip().casefold()
-        aliases = [a.strip() for a in c.get("aliases") or [] if isinstance(a, str) and a.strip()
+        # A string here would be iterated letter by letter, and one-letter aliases match nearly
+        # every episode.
+        listed = c.get("aliases") if isinstance(c.get("aliases"), list) else []
+        aliases = [a.strip() for a in listed if isinstance(a, str) and a.strip()
                    and a.strip().casefold() != name.casefold()]
         g.characters[name] = Character(name=name, gender=gender if gender in GENDERS else "",
                                        aliases=tuple(dict.fromkeys(aliases)),
                                        note=str(c.get("note") or "").strip())
-    for a in data.get("address") or []:
+    for a in items("address"):
         if not isinstance(a, dict):
             continue
         who, to = str(a.get("from") or "").strip(), str(a.get("to") or "").strip()
         form = str(a.get("form") or "").strip().casefold()
         if who and to and who.casefold() != to.casefold() and form in ADDRESS_FORMS:
             g.address.setdefault((g.canonical(who), g.canonical(to)), form)
-    for t in data.get("terms") or []:
+    for t in items("terms"):
         if isinstance(t, dict):
             src, pl = str(t.get("source") or "").strip(), str(t.get("polish") or "").strip()
             if src and pl:

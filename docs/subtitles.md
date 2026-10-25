@@ -80,12 +80,15 @@ with neither is sent and keyed byte for byte as before:
   into the file that is read. Format: `wsl/lektorlib/glossary.py` and
   [translate.md](translate.md).
 * **Speaker hints** from the source itself (`speakers.py`). SDH labels – `JOHN:`, `TED (V.O.):`,
-  `Mary:` or `[Mary]` for a name the glossary or another label knows – are taken out of the line
+  `Mary:` for a name the glossary knows, `[Mary]` or `(Mary)` for a name the glossary or another
+  label knows – are taken out of the line
   and shown in front of it as `{mówi: ...}`; before, `JOHN:` was translated and read out by the
   lektor, since `clean.strip_patterns` only knows brackets. A bracket at the start of a line is a
   sound far more often than a name, so `[Laughs]` stays text. A card whose rip dropped the first
   speaker's dash is hinted `{mówiących: N}`, and labels on lines with no dashes get the dashes, in
-  the prompt and in the Polish card's layout.
+  the prompt and in the Polish card's layout. A dialogue card with only one half labelled names
+  nobody – the label would give the other half its speaker's gender – and is hinted as a card
+  with no labels; a label repeated on the same speaker's next line gets no dash of its own.
 
 An episode too long for one call (`translate.max_prompt_chars`) is cut into chunks, and each chunk
 now reads `translate.context_cues` (20) of its neighbours' cues on either side without being asked

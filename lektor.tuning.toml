@@ -701,6 +701,9 @@ aligner_venv = ''
 # episode keeps shot cuts only, said loudly in the log. NOTHING HERE IS MEASURED: MMS_FA has not
 # aligned one non-English episode on this machine, and min_score above was measured on the English
 # model's scores, which MMS_FA's need not share.
+#
+# An episode speech already measured with cuts only keeps that file: speech is done once its file
+# exists. Switching this on reaches it only with `--redo speech`, which the plan then says.
 multilingual_aligner = false
 
 # The container forced alignment runs INSIDE, by name. It is borrowed, not owned: it belongs to

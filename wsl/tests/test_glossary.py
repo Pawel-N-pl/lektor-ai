@@ -85,6 +85,10 @@ class TestFile(unittest.TestCase):
             ("[people.Ted]\n", "unknown table"),
             ("[characters]\nTed = 'm'\n", "must be a table"),
             ("[characters.Ted]\naliases = 'Coach'\n", "list"),
+            # Not wrapped in a GlossaryError, these would escape stale_source and stop `status`.
+            ("address = 'ty'\n", r"\[address\] must be a table"),
+            ("terms = ['Greyhounds']\n", r"\[terms\] must be a table"),
+            ("characters = 'Ted'\n", r"\[characters\] must be a table"),
         ]:
             with self.subTest(bad=bad), self.assertRaisesRegex(G.GlossaryError, said):
                 parse(bad)

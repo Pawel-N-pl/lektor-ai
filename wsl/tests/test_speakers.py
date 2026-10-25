@@ -81,6 +81,28 @@ class TestLabels(unittest.TestCase):
         self.assertEqual(cs[0].text, "- Ready? - Always.")
         self.assertEqual(h.turns, {1: 2})
 
+    def test_a_half_labelled_dialogue_card_names_nobody(self):
+        # SDH often labels only the off-screen half. Naming JOHN for the card would give the
+        # other speaker his gender.
+        cs = cues("- JOHN: Hi.\n- Hello.", "- Hi.\n- MARY: Hello.", "JOHN: Hi.\n- Hello.",
+                  "Hi.\nMARY: Hello.")
+        h = SP.harvest(cs, GLOSSARY)
+        self.assertEqual([c.text for c in cs],
+                         ["- Hi. - Hello.", "- Hi. - Hello.", "Hi. - Hello.", "- Hi. - Hello."])
+        # Only the card whose first dash is missing needs the count.
+        self.assertEqual(h.text, {3: "{mówiących: 2}"})
+        self.assertEqual(h.turns, {4: 2})
+
+    def test_a_repeated_label_continues_the_turn_instead_of_opening_one(self):
+        cs = cues("TED: Ready?\nTED: Now?\nMARY: Always.", "- TED: Ready?\n- TED: Now?")
+        h = SP.harvest(cs, GLOSSARY)
+        self.assertEqual(cs[0].text, "- Ready? Now? - Always.")
+        self.assertEqual(h.text[1], "{mówią po kolei: Ted (mężczyzna), Mary (kobieta)}")
+        self.assertEqual(cs[1].text, "- Ready? Now?")
+        self.assertEqual(h.text[2], "{mówi: Ted, mężczyzna}")
+        # As many dashes as names; the second card is one speaker whatever its dashes say.
+        self.assertEqual(h.turns, {1: 2, 2: 1})
+
     def test_a_label_alone_on_its_line_opens_the_next_one(self):
         cs = cues("JOHN:\nReady?\nMARY:\nAlways.")
         h = SP.harvest(cs)

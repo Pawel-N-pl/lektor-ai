@@ -76,7 +76,7 @@ if ROMANISE == "uroman":
         _UROMAN = uroman.Uroman()
     except Exception as exc:
         print(f"uroman cannot be imported: {exc}", file=sys.stderr)
-        sys.exit(4)
+        sys.exit(4)  # NO_ROMANISER_EXIT
 
     def roman(word):
         return _UROMAN.romanize_string(word, lcode=LANG or None)
@@ -539,6 +539,16 @@ MULTILINGUAL_BUNDLE = "MMS_FA"
 # The aligner script's exit when it was asked to romanise and uroman will not import.
 NO_ROMANISER_EXIT = 4
 
+# media.language_key folds to the ISO 639-2/B codes ffprobe mostly reports; uroman keys its rules
+# on ISO 639-3, which for these languages is the /T code. Checked against uroman 1.3.1.1:
+# 'βιβλίο' romanises to 'vivlio' as 'ell' and to 'biblio' - no Greek rules - as 'gre'.
+_UROMAN_LCODE = {
+    "gre": "ell", "chi": "zho", "cze": "ces", "ger": "deu", "fre": "fra", "dut": "nld",
+    "alb": "sqi", "arm": "hye", "baq": "eus", "bur": "mya", "geo": "kat", "ice": "isl",
+    "mac": "mkd", "mao": "mri", "may": "msa", "per": "fas", "rum": "ron", "slo": "slk",
+    "tib": "bod", "wel": "cym",
+}
+
 
 def aligner_for(cfg, language: str) -> str:
     """The torchaudio bundle that can align text in `language`, or '' when none here may.
@@ -953,7 +963,8 @@ def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path, bundle: str = ENGL
     `bundle` is aligner_for's answer. The English one is called with exactly the arguments it
     always was; MMS_FA gets the romaniser and the language after them.
 
-    The alignment itself is one script (`_FA_SCRIPT`) taking four arguments, and it does not care
+    The alignment itself is one script (`_FA_SCRIPT`) taking four arguments, seven for MMS_FA,
+    and it does not care
     where it runs. Only the delivery differs, so `speech.aligner` picks between two:
 
       docker  hand it to the container named by speech.asr_container. This is how it started, and
@@ -976,7 +987,7 @@ def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path, bundle: str = ENGL
     venv = str(s.get("aligner_venv", "") or "")
     extra = [str(s["fa_window_s"])]
     if bundle != ENGLISH_BUNDLE:
-        extra += [bundle, romaniser, language]
+        extra += [bundle, romaniser, _UROMAN_LCODE.get(language, language)]
     try:
         if choice == "local" or (choice == "auto" and venv and venv_python(venv).is_file()):
             return _align_local(cfg, wav, cues, tmp, extra)
@@ -986,7 +997,8 @@ def forced_align(cfg, wav: Path, cues: list[dict], tmp: Path, bundle: str = ENGL
             raise RuntimeError(
                 f"this reference is not in Latin script and needs uroman to romanise it, which "
                 f"the aligner's interpreter does not have ({exc.stderr.strip()[-200:]}) – "
-                f"`pip install uroman` there (docs/install.md)") from exc
+                f"`uv pip install --python <speech.aligner_venv>/bin/python uroman`; the "
+                f"borrowed asr container gets nothing installed (docs/install.md)") from exc
         raise
 
 
@@ -1158,6 +1170,8 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
         tmp = tmp_root(cfg) / f"lektor-speech-{base[:40]}"
         tmp.mkdir(parents=True, exist_ok=True)
         language = reference_language(cfg, base, ref)
+        # Never '' with a reference: translation_reference admits a text in another language only
+        # when aligner_for has a bundle for it, and every other reference is English.
         bundle = aligner_for(cfg, language) if ref is not None else ""
         payload: dict = {
             "base": base,
@@ -1173,11 +1187,6 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
                 why = reference_problem(cfg, base)
                 say("  !! no reference subtitle an aligner here can read – no pause signal for "
                     "this episode" + (f": {why}" if why else ""))
-            elif not bundle:
-                # Not reached by anything find_reference_srt picks today; kept so a reference in
-                # a language nothing here may read is said, never sent to the English model.
-                say(f"  !! {ref.name} is '{language}' and only the English aligner is enabled "
-                    f"(speech.multilingual_aligner) – no pause signal for this episode")
             else:
                 try:
                     wav = tmp / "centre16k.wav"

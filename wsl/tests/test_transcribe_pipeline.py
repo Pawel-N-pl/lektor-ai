@@ -264,6 +264,12 @@ class TestPlan(Base):
         with mock.patch.object(P, "reference_stream", return_value=None):
             self.assertNotIn("no English reference subtitle", self.plan())
 
+    def test_a_foreign_transcript_to_come_is_its_own_reference_with_the_multilingual_aligner(self):
+        self.cfg.raw["speech"]["multilingual_aligner"] = True
+        self.heard(language="ger")
+        with mock.patch.object(P, "reference_stream", return_value=None):
+            self.assertNotIn("no English reference subtitle", self.plan())
+
     def test_before_extract_a_missing_reference_is_said_to_depend_on_what_extract_finds(self):
         """The film this phase is for: no subtitle stream at all, nothing extracted yet."""
         (self.cfg.input_dir / "ep.mkv").write_bytes(b"not really an mkv")

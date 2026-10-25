@@ -182,6 +182,17 @@ class TestGlossary(Base):
         self.assertEqual(got, {"ep": "written"})
         self.assertEqual(asked, [[2]])
 
+    def test_reverting_a_term_costs_nothing(self):
+        self.glossary()
+        self.run_stage()
+        self.glossary(GLOSSARY.replace("'Charty'", "'Psy'"))
+        self.assertIn("earlier version of the series glossary", T.stale_source(self.cfg, "ep"))
+        self.run_stage()
+        # The book keeps the lines from before the edit, so going back is already paid for.
+        self.glossary()
+        got, p = self.run_stage()
+        self.assertEqual((got, p.calls), ({"ep": "written"}, []))
+
     def test_a_changed_gender_retranslates_the_whole_episode(self):
         got, asked = self.rerun_after(GLOSSARY.replace("gender = 'm'", "gender = 'f'"))
         self.assertEqual(asked, [[1, 2, 3]])
@@ -201,6 +212,15 @@ class TestGlossary(Base):
         self.assertEqual([c["ids"] for c in p.calls], [[1, 2, 3]])
         self.assertEqual(T.stale_source(self.cfg, "ep"), "")
 
+    def test_removing_the_glossary_is_stale_and_reuses_the_lines_from_before_it(self):
+        self.run_stage()
+        self.glossary()
+        self.run_stage()
+        (self.root / "lektor.glossary.toml").unlink()
+        self.assertIn("no longer applies", T.stale_source(self.cfg, "ep"))
+        got, p = self.run_stage()
+        self.assertEqual((got, p.calls), ({"ep": "written"}, []))
+
     def test_a_hand_edited_srt_is_still_kept_when_the_glossary_changes(self):
         self.glossary()
         self.run_stage()
@@ -219,6 +239,8 @@ class TestGlossary(Base):
     def test_the_plan_does_not_crash_on_a_broken_glossary(self):
         self.run_stage()
         self.glossary("[terms\n")
+        self.assertEqual(T.stale_source(self.cfg, "ep"), "")
+        self.glossary("address = 'ty'\n")
         self.assertEqual(T.stale_source(self.cfg, "ep"), "")
 
 
