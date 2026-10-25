@@ -128,7 +128,8 @@ reuse_previous = true
 # show, and given to the model as binding. 'auto' reads lektor.glossary.toml in the episode
 # directory (input_dir) when there is one; a path names another file (relative to input_dir, and
 # then it must exist); 'off' ignores it. Format and reasoning: wsl/lektorlib/glossary.py and
-# docs/translate.md.
+# docs/translate.md. `lektor.py glossary` drafts one from an episode, in one call to
+# openrouter_model, into lektor.glossary.suggested.toml - never into the file read here.
 #
 # What an edit costs: only the entries an episode can use reach its prompt (a character named in
 # it or labelling one of its lines, a pair of two such, a term it says). A change to a character

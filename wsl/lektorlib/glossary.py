@@ -356,3 +356,185 @@ def dump_glossary(g: Glossary, header: str = "") -> str:
             out.append(f"{_toml_str(src)} = {_toml_str(pl)}")
         out.append("")
     return "\n".join(out).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
+# A first draft, from one episode: `lektor.py glossary`
+# ---------------------------------------------------------------------------
+#
+# Writing the file from nothing means listing a cast from memory. The model has just read the
+# episode and can list who is in it and what is said of them, so it is asked once, and what comes
+# back goes to SUGGESTED_NAME - never to the file translate reads. Genders and forms of address
+# guessed from one episode's text are exactly the guesses a glossary exists to replace, so nothing
+# the model proposes is used until a person has read it and saved it under the real name.
+
+SUGGESTED_NAME = "lektor.glossary.suggested.toml"
+
+SUGGEST_SYSTEM = """Przygotowujesz słownik serii dla tłumacza list dialogowych na język polski.
+
+Dostajesz pełną listę dialogową jednego odcinka w języku oryginału. Kwestia może zaczynać się
+wskazówką w nawiasie klamrowym, kto ją mówi. Na tej podstawie proponujesz:
+
+- POSTACIE: imię tak, jak zapisuje je oryginał; płeć ("m" albo "f") TYLKO wtedy, gdy wynika z
+  tekstu – zaimek, forma, tytuł – a w przeciwnym razie ""; inne imiona, przezwiska i nazwiska,
+  którymi postać jest nazywana; jedno krótkie zdanie po polsku, kim jest.
+- ZWRACANIE SIĘ: dla par postaci, między którymi tekst pokazuje relację (szef i podwładny,
+  przyjaciele, obcy), forma, jaką pierwsza zwracałaby się do drugiej po polsku: "ty", "pan",
+  "pani", "wy" albo "państwo". Pomijasz pary, o których tekst nic nie mówi.
+- TERMINY: nazwy własne drużyn, miejsc, instytucji i powtarzający się żargon serialu, z
+  propozycją polskiego zapisu – albo bez zmian, gdy nazwy się nie tłumaczy.
+
+Nie zgadujesz: wpis pominięty jest lepszy niż wymyślony, bo człowiek poprawi brak łatwiej niż
+błąd, którego nie zauważy. Odpowiadasz wyłącznie obiektem JSON w podanym schemacie."""
+
+SUGGEST_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "lektor_glossary_draft",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "characters": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"},
+                                   "gender": {"type": "string", "enum": ["m", "f", ""]},
+                                   "aliases": {"type": "array", "items": {"type": "string"}},
+                                   "note": {"type": "string"}},
+                    "required": ["name", "gender", "aliases", "note"],
+                    "additionalProperties": False}},
+                "address": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"from": {"type": "string"}, "to": {"type": "string"},
+                                   "form": {"type": "string", "enum": list(ADDRESS_FORMS)}},
+                    "required": ["from", "to", "form"],
+                    "additionalProperties": False}},
+                "terms": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {"source": {"type": "string"}, "polish": {"type": "string"}},
+                    "required": ["source", "polish"],
+                    "additionalProperties": False}},
+            },
+            "required": ["characters", "address", "terms"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+
+def parse_suggestion(content: str) -> Glossary:
+    """The model's draft as a Glossary. Entries that would not load are left out, not repaired:
+    the draft is read by a person, who can add what is missing more easily than spot what was
+    bent into shape. A reply with nothing usable at all is worth another roll."""
+    from .script import ReplyError, reply_object
+
+    data = reply_object(content)
+    g = Glossary()
+    for c in data.get("characters") or []:
+        if not isinstance(c, dict) or not isinstance(c.get("name"), str) or not c["name"].strip():
+            continue
+        name = c["name"].strip()
+        if g.lookup(name):
+            continue
+        gender = str(c.get("gender") or "").strip().casefold()
+        aliases = [a.strip() for a in c.get("aliases") or [] if isinstance(a, str) and a.strip()
+                   and a.strip().casefold() != name.casefold()]
+        g.characters[name] = Character(name=name, gender=gender if gender in GENDERS else "",
+                                       aliases=tuple(dict.fromkeys(aliases)),
+                                       note=str(c.get("note") or "").strip())
+    for a in data.get("address") or []:
+        if not isinstance(a, dict):
+            continue
+        who, to = str(a.get("from") or "").strip(), str(a.get("to") or "").strip()
+        form = str(a.get("form") or "").strip().casefold()
+        if who and to and who.casefold() != to.casefold() and form in ADDRESS_FORMS:
+            g.address.setdefault((g.canonical(who), g.canonical(to)), form)
+    for t in data.get("terms") or []:
+        if isinstance(t, dict):
+            src, pl = str(t.get("source") or "").strip(), str(t.get("polish") or "").strip()
+            if src and pl:
+                g.terms.setdefault(src, pl)
+    if not g:
+        raise ReplyError("the draft named no character, pair or term")
+    return g
+
+
+def stage_glossary(cfg, only: str | None, force: bool = False) -> Path | None:
+    """Draft a glossary from the first translated episode `only` matches, for a person to edit.
+
+    One call to translate.openrouter_model, billed to that episode's `<base>.spend.json` under
+    `"stage": "glossary"`. Writes `<input_dir>/lektor.glossary.suggested.toml` and nothing else;
+    an earlier draft is replaced only with --force, since it may already carry somebody's edits.
+    """
+    import os
+    import time
+
+    from . import say
+    from .script import _ask, append_spend
+    from .translate import (TranslateOutcome, call_settings, candidate_bases, is_translated,
+                            prepare, source_cues, source_info, source_srt, translate_prompt)
+
+    picked = None
+    for base in candidate_bases(cfg, only):
+        if is_translated(cfg, base):
+            src = source_srt(cfg, base, source_info(cfg, base))
+            if src is not None:
+                picked = (base, src)
+                break
+    if picked is None:
+        raise SystemExit("no translated episode with its foreign subtitle on disk"
+                         + (f" matches {only!r}" if only else "")
+                         + " – the draft is made from one; run extract (and transcribe) first")
+    base, src = picked
+    out = Path(cfg.input_dir) / SUGGESTED_NAME
+    if out.exists() and not force:
+        raise SystemExit(f"{out} exists and may hold your edits – --force replaces it")
+    api_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if not api_key:
+        raise SystemExit("OPENROUTER_API_KEY not set – the draft is one call to the model")
+
+    cues, brief = prepare(source_cues(src), None)
+    s = call_settings(cfg)
+    limit = int(translate_settings(cfg).get("max_prompt_chars", 200000))
+    prompt = translate_prompt(cues, brief.hints.text)
+    if len(prompt) > limit:
+        # A draft does not need the whole episode, and one more call for the rest would bill for
+        # a cast the first half already named.
+        prompt = prompt[:limit].rsplit("\n", 1)[0]
+        say(f"  the episode is longer than translate.max_prompt_chars – drafting from its first "
+            f"{limit} characters")
+    say(f"{base}: drafting a series glossary from {src.parent.name}/{src.name} with "
+        f"{s['openrouter_model']} ({len(cues)} cues)")
+    bill = TranslateOutcome()
+    messages = [{"role": "system", "content": SUGGEST_SYSTEM},
+                {"role": "user", "content": prompt}]
+    got, use_schema, err = _ask(s, api_key, messages, True, bill, "glossary",
+                                schema=SUGGEST_SCHEMA, parse=parse_suggestion)
+    usd = sum(c.cost for c in bill.calls)
+    append_spend(cfg, base, {
+        "stage": "glossary",
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "model": s["openrouter_model"],
+        "response_format": "json_schema" if use_schema else "json_object",
+        "usd": round(usd, 6),
+        "error": err,
+        "calls": [c.as_dict() for c in bill.calls],
+    })
+    if err or not isinstance(got, Glossary):
+        raise SystemExit(f"no draft: {err or 'the reply held no glossary'}")
+    header = "\n".join([
+        f"# DRAFT by {s['openrouter_model']} from {base}, {time.strftime('%Y-%m-%d')}.",
+        "# Nothing in this file is used. Read it, correct it - genders and forms of address were",
+        "# guessed from one episode's text - and save what is right as lektor.glossary.toml in",
+        "# this directory (or wherever translate.glossary points). docs/translate.md has the format.",
+    ])
+    out.write_text(dump_glossary(got, header), encoding="utf-8")
+    try:
+        live = glossary_path(cfg)
+    except GlossaryError:
+        live = None
+    say(f"  -> {out} ({len(got.characters)} character(s), {len(got.address)} pair(s), "
+        f"{len(got.terms)} term(s)); ${usd:.4f}")
+    if live is not None:
+        say(f"  {live.name} is untouched – merge what you want from the draft by hand")
+    return out

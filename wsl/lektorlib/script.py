@@ -363,7 +363,30 @@ _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$")
 
 
 def parse_reply(content: str) -> dict[int, str]:
-    """Turn the message content into id -> text, or raise ReplyError.
+    """Turn the message content into id -> text, or raise ReplyError."""
+    data = reply_object(content)
+    cues = data.get("cues")
+    if not isinstance(cues, list):
+        raise ReplyError("no 'cues' array in the reply")
+    out: dict[int, str] = {}
+    for item in cues:
+        if not isinstance(item, dict) or "id" not in item or "text" not in item:
+            continue
+        try:
+            cue_id = int(item["id"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(item["text"], str):
+            continue
+        # A duplicated id means the model answered twice; the last word wins, as it would in a dict.
+        out[cue_id] = item["text"].strip()
+    if not out:
+        raise ReplyError("reply carried no usable cue")
+    return out
+
+
+def reply_object(content: str) -> dict:
+    """The JSON object in a message's content, or ReplyError.
 
     json_schema mode makes this trivial; the json_object fallback occasionally arrives wrapped in a
     markdown fence or with prose around it, so the outermost object is dug out before parsing.
@@ -383,24 +406,7 @@ def parse_reply(content: str) -> dict[int, str]:
             raise ReplyError(f"content is not JSON ({exc})") from None
     if not isinstance(data, dict):
         raise ReplyError("top level is not an object")
-    cues = data.get("cues")
-    if not isinstance(cues, list):
-        raise ReplyError("no 'cues' array in the reply")
-    out: dict[int, str] = {}
-    for item in cues:
-        if not isinstance(item, dict) or "id" not in item or "text" not in item:
-            continue
-        try:
-            cue_id = int(item["id"])
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(item["text"], str):
-            continue
-        # A duplicated id means the model answered twice; the last word wins, as it would in a dict.
-        out[cue_id] = item["text"].strip()
-    if not out:
-        raise ReplyError("reply carried no usable cue")
-    return out
+    return data
 
 
 def validate(returned: dict[int, str], targets: list[Target]) -> Validation:
@@ -523,8 +529,13 @@ def _error_text(resp) -> str:
 
 
 def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format: dict,
-                    purpose: str) -> tuple[dict[int, str], CallStats]:
-    """One request. Retries only what is worth retrying, and honours Retry-After when told to."""
+                    purpose: str, parse=parse_reply) -> tuple[dict[int, str], CallStats]:
+    """One request. Retries only what is worth retrying, and honours Retry-After when told to.
+
+    `parse` turns the message content into the result, raising ReplyError for a reply worth
+    another roll. Everything here but the cue-shaped replies uses parse_reply; the glossary draft
+    passes its own, and gets the retries, the throttle and the bill without a copy of them.
+    """
     body = {
         "model": s["openrouter_model"],
         # max_tokens is not optional here: reasoning effort is spent as a fraction of it, so a
@@ -631,7 +642,7 @@ def call_openrouter(s: dict, api_key: str, messages: list[dict], response_format
         # A malformed body is worth one more roll of the dice; the spend is already booked either
         # way, so the stats of a discarded attempt must still reach the caller.
         try:
-            return parse_reply(content), stats
+            return parse(content), stats
         except ReplyError as exc:
             last = f"{exc}"
             if attempt == retries - 1:
@@ -918,16 +929,18 @@ def _condense_once(cues, target_ids: set[int], cfg: Config, api_key: str) -> Con
 
 
 def _ask(s: dict, api_key: str, messages: list[dict], use_schema: bool, out: CondenseOutcome,
-         purpose: str, schema: dict = CUES_SCHEMA) -> tuple[dict[int, str], bool, str]:
+         purpose: str, schema: dict = CUES_SCHEMA,
+         parse=parse_reply) -> tuple[dict[int, str], bool, str]:
     """Call with json_schema, degrade to json_object once if the provider refuses it.
 
     `schema` is the one thing the translate stage changes: its reply has the same
     {"cues": [{"id", "text"}]} shape, so the parsing, the retries and the degradation are this
-    function's and not a second copy of it.
+    function's and not a second copy of it. `parse` goes to call_openrouter, for a reply of
+    another shape.
     """
     if use_schema:
         try:
-            got, stats = call_openrouter(s, api_key, messages, schema, purpose)
+            got, stats = call_openrouter(s, api_key, messages, schema, purpose, parse)
             out.calls.append(stats)
             return got, True, ""
         except SchemaRejected as exc:
@@ -935,7 +948,7 @@ def _ask(s: dict, api_key: str, messages: list[dict], use_schema: bool, out: Con
         except CondenseError as exc:
             return {}, use_schema, str(exc)
     try:
-        got, stats = call_openrouter(s, api_key, messages, JSON_OBJECT_FORMAT, purpose)
+        got, stats = call_openrouter(s, api_key, messages, JSON_OBJECT_FORMAT, purpose, parse)
         out.calls.append(stats)
         return got, False, ""
     except CondenseError as exc:

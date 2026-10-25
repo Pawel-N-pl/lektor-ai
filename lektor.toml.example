@@ -54,7 +54,7 @@ openrouter_model = 'openai/gpt-5.6-luna-pro'
 fallback_model = 'openai/gpt-5.6-terra'
 # The series glossary - names, genders, ty/pan between characters, fixed terms. 'auto' reads
 # lektor.glossary.toml beside the episodes when it exists; a path names another; 'off' ignores
-# it.
+# it. `lektor.py glossary` drafts one from an episode for you to correct and save.
 glossary = 'auto'
 # Polish subtitles from the translation: 'off', 'sidecar' (<film>.pl.srt beside the film) or
 # 'mux' (a subtitle stream in the remuxed .mkv). `--subs` overrides it for one run.

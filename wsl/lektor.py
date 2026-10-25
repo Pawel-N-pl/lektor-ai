@@ -42,7 +42,12 @@ Stages, one at a time
   translate  For every film extract found no Polish track in: the foreign subtitle, or the
              transcript, into the Polish <base>.srt every later stage reads, in one
              whole-episode LLM call. Faithful, not condensed, timings 1:1.
-             A hand-edited <base>.srt is never overwritten without --force.
+             A hand-edited <base>.srt is never overwritten without --force. The series
+             glossary (lektor.glossary.toml beside the films: genders, ty/pan, fixed terms)
+             and SDH speaker labels are passed to the model when there are any.
+  glossary   Draft that series glossary from one translated episode, in one LLM call, into
+             lektor.glossary.suggested.toml - for you to correct and save under the real
+             name. Nothing in the draft is used until you do.
   calibrate  Measure how fast the chosen voice actually speaks. Only backends that have to
              predict a duration need it; the rest say so and do nothing.
   speech     Measure what the actors and the editor actually did: forced-aligned word times off
@@ -89,7 +94,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.exit(f"missing dependency ({exc})\n  pip install numpy soundfile requests")
 
-from lektorlib import media, pipeline, stages, transcribe, translate
+from lektorlib import glossary, media, pipeline, stages, transcribe, translate
 from lektorlib.backends import BACKEND_NAMES
 from lektorlib.config import DEFAULT_CONFIG, Config
 
@@ -108,7 +113,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    ap.add_argument("stage", choices=["run", "extract", "transcribe", "translate", "calibrate",
+    ap.add_argument("stage", choices=["run", "extract", "transcribe", "translate", "glossary",
+                                      "calibrate",
                                       "speech", "script", "retime", "voice", "pack", "mux", "all",
                                       "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
@@ -187,6 +193,8 @@ def main(argv: list[str] | None = None) -> None:
         transcribe.stage_transcribe(cfg, args.only, args.force)
     elif args.stage == "translate":
         translate.stage_translate(cfg, args.only, args.force, args.redraw)
+    elif args.stage == "glossary":
+        glossary.stage_glossary(cfg, args.only, args.force)
     elif args.stage == "calibrate":
         stages.stage_calibrate(cfg)
     elif args.stage == "speech":
