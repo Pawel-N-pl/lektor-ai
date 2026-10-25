@@ -18,6 +18,66 @@ carries signage, not dialogue. Both comparisons are case-insensitive, which is w
 one is used anyway and named as a rejected fallback; only an episode with no candidate at all is
 skipped, with a line appended to `_lektor/error_log.txt`.
 
+### No Polish track: a foreign one to translate from
+
+Under `translate.mode = "auto"` a film with no Polish **text** track – none at all, or only a
+bitmap one – no longer ends at extract. A Polish text track, when there is one, is extracted
+exactly as before, into the same `<base>.srt` with the same sidecar; nothing below touches that
+path. Otherwise extract picks the foreign text track the translation is made from, by
+`pick_translation_source`, which is deliberately not `pick_subtitle`: that one answers "which track
+IS the Polish dialogue" and must not drift.
+
+* **Candidates** are text tracks with a real language tag (not empty, `und`, `zxx`, `mis`, `mul`),
+  not Polish, and not forced – by disposition or by a title saying so. A forced track is signage;
+  translating it gives a lektor who reads out street names.
+* **Language** – the audio's own language first (read off the same `extract.audio_stream` the
+  downmix uses), then English, then anything else. A translation of what the actors say beats a
+  translation of a translation, and English is second because it is also what `speech` can align
+  against. `translate.source_language` set to a tag takes only that language. Two- and
+  three-letter codes and the bibliographic/terminology pairs (`ger`/`deu`, `fre`/`fra`) are one
+  language, because mkv muxers write either.
+* **Within a language** plain dialogue beats SDH (`translate.prefer_plain_dialogue`): SDH's
+  `[door creaks]` would be translated and then stripped again by `clean.strip_patterns`. SDH is
+  still a candidate, and still the preferred **alignment** reference – see below.
+
+The track lands in `_lektor/subs/<base>.src.<lang>.srt`, not beside `<base>.srt`: every stage finds
+its episodes with `*.srt` in the work dir, and a `<base>.src.eng.srt` there would come back as an
+episode of its own, with `script` condensing the English. The sidecar gains `subtitle_origin =
+"subs"`, `source_language`, `source_srt`, `source_sdh` and `audio_language`. A sidecar without
+`subtitle_origin` – every Polish extract, and every one the PowerShell ever wrote – means the
+film's own track. `translate.source = "asr"` (transcribing the audio) is phase 2 and is reported as
+not implemented, never quietly treated as `subs`.
+
+`translate` then writes `<base>.srt` from it: the whole episode in one OpenRouter call, faithful and
+in subtitle style rather than condensed (condensation is still `script`'s job, on its untouched
+prompt), timings copied card for card from the source. Every line is validated – present,
+non-empty, not absurdly long, not a fraction of a long source, not handed back untranslated – with
+one targeted retry and then `translate.fallback_model` for what is still missing. **An episode
+with any line still untranslated gets no `<base>.srt` at all**: a partial one would leave the
+lektor silent on exactly those lines, and nothing downstream can tell that from a quiet scene.
+The written file is hashed into `<base>.translate.json`, so a hand edit is recognised and never
+overwritten without `--force` – and with it, only after the edited file is copied aside. A
+`<base>.srt` the stage did not write is treated the same way. Reruns reuse lines from
+`<base>.translated.json`, keyed on the source line, its start time (two identical "I'm ready."
+cards can be said by people of different gender, and Polish shows it), the source language, the
+model, the effort and a hash of the prompt.
+
+**The English it was translated from doubles as the alignment reference.** `find_reference_srt`
+takes it after every configured pattern. Translation prefers the plain track and alignment
+prefers SDH, so when the film carries an SDH stream other than the one translated from, `speech`
+still extracts that one; without one it reuses the source rather than reading the same stream out
+of the film twice. Any source language other than English is not a reference: the acoustic model
+is English.
+
+**Polish subtitles, only when asked and only for a translation.** `translate.subtitles` (or
+`--subs` for one run): `sidecar` writes `<film>.pl.srt` beside the film and the `.mka`, re-synced
+on every pack so a later fix to the translation reaches it; `mux` appends it to the remuxed `.mkv`
+as a `pol` stream titled `Polski (AI)`, after every original subtitle and **not** default, which
+only happens with `--to mux` – the plan says so when the chain stops at pack. A film that had a
+Polish track never gets a second, "AI" copy of it.
+
+## The mux
+
 The mux keeps all 43 and appends the lektor after every original audio stream, tagging it
 `language=pol` / `title=Lektor AI (PL)`, making it the default and demoting the originals – stream
 copy only, verified on a cut clip. **Its audio index is counted off the source with ffprobe, not

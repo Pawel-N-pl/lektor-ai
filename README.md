@@ -9,7 +9,9 @@ python3 wsl/lektor.py run --only S01E01
 ```
 
 Jedno polecenie przechodzi całą drogę: napisy → pomiar mowy → skrócenie tekstu → dosunięcie do
-aktora → synteza → miks → **gotowa ścieżka `.mka` obok filmu**. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
+aktora → synteza → miks → **gotowa ścieżka `.mka` obok filmu**. Film **bez polskich napisów** nie
+odpada: jego obcojęzyczne napisy są najpierw tłumaczone na polski
+([docs/translate.md](docs/translate.md)), a dalej wszystko idzie tą samą drogą. Pomija każdy etap, którego wynik już leży na dysku, wypisuje plan
 przed startem, a na końcu mówi co zrobił, co pominął, ile kosztowało i gdzie leży plik.
 
 ---
@@ -152,7 +154,7 @@ wymagają i co przestaje działać bez nich.
 |---|---|---|
 | **Piper** – domyślny silnik, darmowy, offline | `uv pip install --python .venv/bin/python piper-tts` | brak darmowej syntezy |
 | **ElevenLabs** | `ELEVENLABS_API_KEY` w `.env` | ten backend nie wystartuje |
-| **Skracanie tekstu** (OpenRouter) | `OPENROUTER_API_KEY` w `.env` | kwestie nie są skracane i lektor nie mieści się w oknach |
+| **Skracanie tekstu** (OpenRouter) | `OPENROUTER_API_KEY` w `.env` | kwestie nie są skracane i lektor nie mieści się w oknach; film bez polskich napisów nie zostanie przetłumaczony |
 | **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice` ([komendy](docs/install.md)), ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
 | **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` ([komendy](docs/install.md)) | jak wyżej |
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
@@ -187,7 +189,8 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 
 | etap | robi |
 |---|---|
-| `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą |
+| `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą; gdy polskich nie ma – najlepsze obcojęzyczne tekstowe, do tłumaczenia |
+| `translate` | tylko dla takich filmów: cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ręcznych poprawek nie nadpisuje bez `--force` |
 | `speech` | forced alignment, ciszę między słowami, cięcia montażowe – lokalnie, za darmo |
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |
 | `retime` | dosuwa wczesne kwestie na pierwsze słowo aktora; nic nie kosztuje |
@@ -198,6 +201,8 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 | `status` | co już leży na dysku |
 
 Podgląd bez skutków ubocznych: `run --dry-run`. Zakres: `--from`, `--to`, `--skip`, `--redo`.
+Polskie napisy z tłumaczenia – `<film>.pl.srt` obok filmu albo strumień w remuxie – tylko na
+życzenie: `translate.subtitles` albo `--subs sidecar|mux` na jedno uruchomienie.
 
 **Dlaczego łańcuch kończy się na `pack`, a nie na `mux`.** Odtwarzacz sam podnosi ścieżkę leżącą
 obok filmu, więc remux nic nie kupuje, a kosztuje drugą kopię całego wideo – 3.6 GB przy odcinku
@@ -212,7 +217,9 @@ katalogu, bo po tym działa automatyczne podnoszenie.
 ## Koszt
 
 Około **$1.20–1.45 za odcinek** na ElevenLabs plus $0.15–0.20 za skracanie tekstu, albo **$0.00**
-na Piperze i OmniVoice. Wszystko, co lokalne – alignment, detekcja cięć, bramka scalania,
+na Piperze i OmniVoice. Tłumaczenie filmu bez polskich napisów to osobny rachunek z OpenRouter,
+jeszcze niezmierzony na prawdziwym odcinku – `cost` mówi to wprost, a `<base>.spend.json` zapisuje,
+ile naprawdę kosztowało. Wszystko, co lokalne – alignment, detekcja cięć, bramka scalania,
 retiming – kosztuje zero.
 
 Szczegóły: [docs/cost.md](docs/cost.md).
@@ -226,6 +233,7 @@ Szczegóły: [docs/cost.md](docs/cost.md).
 | [docs/install.md](docs/install.md) | pełna instalacja, każde środowisko, każdy element opcjonalny |
 | [docs/backends.md](docs/backends.md) | pięć silników, zmierzone, i jak je porównywać |
 | [docs/subtitles.md](docs/subtitles.md) | wybór ścieżki, czyszczenie, scalanie kart, bramka dowodowa |
+| [docs/translate.md](docs/translate.md) | film bez polskich napisów: tłumaczenie, plan i dziennik prac |
 | [docs/script.md](docs/script.md) | skracanie, reguły promptu, drabina modeli, cache |
 | [docs/timing-and-mix.md](docs/timing-and-mix.md) | kiedy lektor mówi, jak planowane jest tempo, jak zbudowany jest miks |
 | [docs/cost.md](docs/cost.md) | znaki, dolary, kredyty, minuty GPU |

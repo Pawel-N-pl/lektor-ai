@@ -45,3 +45,12 @@ draws); it is only what `cost` reports until `<base>.spend.json` exists, after w
 figure is used. On easy material a single clean draw of a 598-cue episode billed **$0.0089**; on hard
 fansub material the shipped ladder measured **$0.3034** an episode. Both are still small next to the
 TTS bill on a paid backend, but "well under a dollar for a season" is only true of the first.
+
+**Translation** is a third bill, and only for films with no Polish subtitle track. It goes to the
+same `<base>.spend.json` as condensation, as runs tagged `"stage": "translate"`, so `usd_total` is
+still the episode's whole OpenRouter bill; `cost` and the `run` footer report the two apart.
+**Nothing has been measured on a real episode yet.** The output is a full episode of Polish rather
+than a handful of shortened lines, so it should cost more than a condensation draw, but how much
+more is unknown, and `translate.measured_usd_per_episode` ships at 0 so that `cost` says
+"unmeasured" instead of printing a guess. A rerun reuses `<base>.translated.json` and pays only for
+lines whose source, model or prompt changed.
