@@ -608,7 +608,7 @@ def find_video(cfg, base: str) -> Path | None:
 
 
 def tmp_root(cfg) -> Path:
-    """Where the 16 kHz mono extract is cut: speech.tmp_dir, or the system temp when that is empty."""
+    """Where the 16 kHz mono extract is cut: speech.tmp_dir, or the system temp when it is empty."""
     d = cfg["speech"].get("tmp_dir")
     return Path(d).expanduser() if d else Path(gettempdir())
 

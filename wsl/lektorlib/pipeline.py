@@ -465,8 +465,8 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
             continue
         if step == "translate" and done and step not in redo \
                 and translate.srt_state(cfg, base) == "edited":
-            say(f"  {step:<10} skip {art.name} was edited by hand – kept (--redo translate replaces "
-                f"it, after copying it aside)")
+            say(f"  {step:<10} skip {art.name} was edited by hand – kept (--redo translate "
+                f"replaces it, after copying it aside)")
             continue
         if step == "retime":
             state = "run  free: recomputes delay_ms, changes no text, bills nothing"

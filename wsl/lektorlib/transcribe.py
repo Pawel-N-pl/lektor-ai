@@ -91,8 +91,8 @@ for s in segments:
         "no_speech_prob": round(float(s.no_speech_prob), 4),
         "compression_ratio": round(float(s.compression_ratio), 3),
         "temperature": s.temperature,
-        "words": [[round(w.start * 1000), round(w.end * 1000), w.word, round(float(w.probability), 3)]
-                  for w in (s.words or [])],
+        "words": [[round(w.start * 1000), round(w.end * 1000), w.word,
+                   round(float(w.probability), 3)] for w in (s.words or [])],
     })
 transcribe_s = time.perf_counter() - t1
 
@@ -119,10 +119,12 @@ json.dump({"meta": {"model": opts["model"], "device": str(device),
                     "language": info.language,
                     "language_probability": round(float(info.language_probability), 3),
                     "audio_dur_s": round(float(info.duration), 2),
-                    "speech_dur_s": round(float(getattr(info, "duration_after_vad", info.duration)), 2),
+                    "speech_dur_s": round(float(getattr(info, "duration_after_vad",
+                                                        info.duration)), 2),
                     "load_s": round(load_s, 2), "transcribe_s": round(transcribe_s, 2),
                     "rtf_x": round(info.duration / transcribe_s, 1) if transcribe_s else None},
-           "segments": rows, "speech": speech}, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
+           "segments": rows, "speech": speech},
+          open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
 print(json.dumps({"ok": True, "n_segments": len(rows)}))
 '''
 
