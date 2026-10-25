@@ -77,7 +77,7 @@ fallback_model = 'openai/gpt-5.6-terra'
 # not reach this stage. What the retry buys on translation is unmeasured; false sends the misses
 # straight to the fallback model.
 retry_misses = true
-openrouter_base = 'https://openrouter.ai/api/v1'
+# No openrouter_base here: translate uses [script]'s, so the endpoint is spelled in one place.
 reasoning_effort = 'medium'
 # The condensation figure (206/210 in budget at 0.3 against 92/210 at the default) was about
 # counting characters, which translation does not do. Kept at the same value untested rather than

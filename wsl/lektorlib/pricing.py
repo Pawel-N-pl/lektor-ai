@@ -176,9 +176,9 @@ def _translation_cost(cfg: Config, counted: set[str]) -> None:
         say(f"  about ${per_ep * len(pending):.3f} for the {len(pending)} not translated yet.")
     elif pending:
         say(f"  {len(pending)} not translated yet, and there is no measured per-episode figure to "
-            f"price them with: translate.measured_usd_per_episode is unset until a real episode "
-            f"has run. The translate stage records what OpenRouter actually bills.")
+            f"price them with: translate.measured_usd_per_episode is 0 (unmeasured) until a real "
+            f"episode has run. The translate stage records what OpenRouter actually bills.")
     missing = [b for b in pending if b not in counted]
     if missing:
-        say(f"  The character count above leaves out these {len(missing)}: they have no Polish "
-            f"text yet to count.")
+        say(f"  The speech character total above leaves out these {len(missing)}: they have no "
+            f"Polish text yet to count.")

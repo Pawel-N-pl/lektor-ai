@@ -160,6 +160,38 @@ class TestPlan(Base):
         self.translated()
         self.assertIn("translate skip translate.mode is 'never'", self.plan())
 
+    def test_mode_always_on_a_polish_extract_says_both_steps_run(self):
+        # extract runs whatever the plan says, takes the translation branch under 'always' and
+        # moves <base>.srt aside; translate then bills. "skip" on either line hid that.
+        self.polish()
+        self.cfg.raw["translate"]["mode"] = "always"
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            out = self.plan()
+        self.assertIn("extract   run  translate.mode is 'always'", out)
+        self.assertIn("translate run  -> ep.srt, unless extract finds no text track in another "
+                      "language", out)
+        self.assertIn("translated by openai/gpt-5.6-luna-pro", out)
+        self.assertNotIn("comes from the film's own track", out)
+        self.assertIn("OPENROUTER_API_KEY is not set: translate.mode is 'always'", out)
+        # Without extract in range nothing turns the episode over, and the old skip is true.
+        out = self.plan(steps=["translate", "speech"])
+        self.assertIn("translate skip the Polish text comes from the film's own track", out)
+
+    def test_mode_always_before_extract_does_not_promise_polish_first(self):
+        self.cfg.raw["translate"]["mode"] = "always"
+        out = self.plan()
+        self.assertIn("unless extract finds no text track in another language", out)
+        self.assertNotIn("only if", out)
+
+    def test_a_translation_from_a_replaced_source_is_planned_as_run(self):
+        self.translated(with_srt=True)
+        T.provenance_path(self.cfg, "ep").write_text(json.dumps({
+            "srt_sha256": T.file_sha256(self.work / "ep.srt"), "source_language": "ger",
+            "source_srt": "subs/ep.src.ger.srt"}), encoding="utf-8")
+        self.assertFalse(P.satisfied(self.cfg, "ep", "translate"))
+        self.assertIn("translate run  ep.srt was translated from subs/ep.src.ger.srt, and "
+                      "extract now names subs/ep.src.eng.srt", self.plan())
+
 
 class TestRunStep(Base):
     def step(self, step, force=False):
@@ -167,6 +199,30 @@ class TestRunStep(Base):
         with mock.patch.object(T, "say"), mock.patch.object(P, "say"):
             status, note = P._run_step(self.cfg, "ep", step, force, False, False, state)
         return status, note, state
+
+    def test_redraw_reaches_translate_only_when_it_is_redone(self):
+        self.translated()
+        for force, redraw in ((True, True), (False, False)):
+            with self.subTest(redo=force), \
+                    mock.patch.object(T, "stage_translate", return_value={}) as st, \
+                    mock.patch.object(T, "say"), mock.patch.object(P, "say"):
+                with self.assertRaises(P.HardFail):   # the double writes no ep.srt
+                    P._run_step(self.cfg, "ep", "translate", force, True, False, {})
+            self.assertEqual(st.call_args.args[2:], (force, redraw))
+
+    def test_redraw_on_a_translate_only_range_is_accepted(self):
+        from types import SimpleNamespace
+        self.translated()
+        args = SimpleNamespace(from_step="translate", to_step="translate", skip="", redo="",
+                               force=False, redraw=True, dry_run=True, require_speech=False)
+        buf = io.StringIO()
+        with redirect_stdout(buf), mock.patch.object(P, "resolve_episode", return_value="ep"):
+            self.assertEqual(P.stage_run(self.cfg, "ep", args), 0)
+        self.assertIn("translate run  -> ep.srt", buf.getvalue())
+        args.from_step = args.to_step = "speech"
+        with redirect_stdout(buf), mock.patch.object(P, "resolve_episode", return_value="ep"):
+            self.assertEqual(P.stage_run(self.cfg, "ep", args), 2)
+        self.assertIn("--redraw only means anything for the translate and script", buf.getvalue())
 
     def test_a_polish_film_skips_without_calling_the_stage(self):
         self.polish()
@@ -323,6 +379,17 @@ class TestCostAndStatus(Base):
                       "track, 1 cues / 6 chars", out)
         self.assertIn("no measured per-episode figure", out)
         self.assertIn("leaves out these 1", out)
+
+    def test_cost_estimates_only_the_untranslated_ones(self):
+        from lektorlib import pricing
+        self.cfg.raw["translate"]["measured_usd_per_episode"] = 0.05
+        self.translated(with_srt=True)
+        (self.work / "subs" / "ep2.src.eng.srt").write_text(SRT, encoding="utf-8")
+        (self.work / "ep2.source.json").write_text(json.dumps({
+            "base": "ep2", "language": "pol", "subtitle_origin": "subs",
+            "source_language": "eng", "source_srt": "subs/ep2.src.eng.srt"}), encoding="utf-8")
+        out = self.run_quiet(pricing.stage_cost, self.cfg, "creator")
+        self.assertIn("about $0.050 for the 1 not translated yet", out)
 
     def test_cost_keeps_the_two_bills_apart(self):
         from lektorlib import pricing

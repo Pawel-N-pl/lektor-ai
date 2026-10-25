@@ -434,7 +434,10 @@ class TestTranslateEpisode(WorkDir):
         out = self.go(p)
         self.assertEqual(len(p.calls), 2)          # the call and its targeted retry
         self.assertEqual(out.missing, [4])
-        self.assertEqual(out.error, "")
+        # The retry asked for cue 4 alone and got a reply with no cue in it, which _ask reports
+        # as a failed call - and a failed retry is reported like a failed first call.
+        self.assertIn("no usable cue", out.error)
+        self.assertEqual(out.rejected, {})
 
     def chunked(self):
         # Small enough that SOURCE's four cues go out as [1, 2] and [4, 5].
@@ -483,8 +486,38 @@ class TestTranslateEpisode(WorkDir):
         out = self.go(p)
         self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [1], [1], [4, 5]])
         self.assertEqual(out.missing, [1])
-        self.assertIn(1, out.rejected)
+        # In the validator's words, not the retry note's Polish meant for the model.
+        self.assertEqual(out.rejected, {1: "came back untranslated"})
         self.assertEqual(out.error, "")
+
+    def test_a_cue_that_never_came_back_is_missing_not_rejected(self):
+        self.cfg.raw["translate"]["fallback_model"] = ""
+        dropped = {i: POLISH[i] for i in (1, 2, 5)}
+        p = Provider(lambda model, ids: {i: dropped[i] for i in ids if i in dropped}
+                     if ids != [4] else Resp(200, body([{"id": 1, "text": POLISH[1]}])))
+        out = self.go(p)
+        self.assertEqual(out.missing, [4])
+        self.assertEqual(out.rejected, {})
+
+    def test_a_failed_retry_is_a_failed_call(self):
+        # The first call does most of chunk 1, the retry meets a dead key, and there is no
+        # fallback: the error is the episode's, and chunk 2 is not sent to the same dead key.
+        self.chunked()
+        self.cfg.raw["translate"]["fallback_model"] = ""
+
+        def answer(model, ids):
+            answer.n += 1
+            if answer.n == 1:
+                return {1: POLISH[1]}
+            return Resp(401, {"error": {"code": 401, "message": "bad key"}})
+
+        answer.n = 0
+        p = Provider(answer)
+        out = self.go(p)
+        self.assertEqual([c["ids"] for c in p.calls], [[1, 2], [2]])
+        self.assertIn("401", out.error)
+        self.assertEqual(out.missing, [2, 4, 5])
+        self.assertEqual(out.rejected, {})
 
     def test_a_partial_send_shows_the_whole_episode_and_names_the_wanted_cues(self):
         p = Provider()
@@ -544,6 +577,50 @@ class TestStage(WorkDir):
         got, p = self.run_stage(force=True, redraw=True)
         self.assertEqual(len(p.calls), 1)
 
+    def test_redraw_alone_implies_force(self):
+        # As in script: a clean draw that then skips the episode as "exists" cannot mean anything.
+        self.run_stage()
+        got, p = self.run_stage(redraw=True)
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual(len(p.calls), 1)
+
+    def test_a_full_book_needs_no_key(self):
+        # Rebuilding from lines already paid for is offline work: no key, no call.
+        self.run_stage()
+        self.srt.unlink()
+        T.provenance_path(self.cfg, "ep").unlink()
+        with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
+            got, p = self.run_stage(Provider(lambda model, ids: {}))
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual(p.calls, [])
+        self.assertTrue(self.srt.exists())
+
+    def test_a_changed_source_language_is_translated_again(self):
+        self.run_stage()
+        ger = self.work / "subs" / "ep.src.ger.srt"
+        ger.write_text(SOURCE, encoding="utf-8")
+        self.write_sidecar({"subtitle_origin": "subs", "source_language": "ger",
+                            "source_srt": "subs/ep.src.ger.srt"})
+        self.assertIn("ep.src.eng.srt", T.stale_source(self.cfg, "ep"))
+        got, p = self.run_stage()
+        self.assertEqual(got, {"ep": "written"})
+        # The language is in the cache key, so nothing English-sourced is reused.
+        self.assertEqual([c["ids"] for c in p.calls], [[1, 2, 4, 5]])
+        prov = json.loads((self.work / "ep.translate.json").read_text(encoding="utf-8"))
+        self.assertEqual((prov["source_language"], prov["source_srt"]),
+                         ("ger", "subs/ep.src.ger.srt"))
+        self.assertEqual(T.stale_source(self.cfg, "ep"), "")
+
+    def test_a_source_rewritten_on_the_same_path_is_translated_again_for_what_changed(self):
+        # extract --force picking another stream of the same language lands on the same path.
+        self.run_stage()
+        self.src.write_text(SOURCE.replace("Where have you been?", "Where were you?"),
+                            encoding="utf-8")
+        self.assertNotEqual(T.stale_source(self.cfg, "ep"), "")
+        got, p = self.run_stage()
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual([c["ids"] for c in p.calls], [[1]])
+
     def test_a_hand_edit_is_never_overwritten_without_force(self):
         self.run_stage()
         edited = self.srt.read_text(encoding="utf-8").replace("Gdzie byłeś?", "Gdzieś ty był?")
@@ -562,6 +639,53 @@ class TestStage(WorkDir):
         kept = list(self.work.glob("ep.srt.bak-*"))
         self.assertEqual(len(kept), 1)
         self.assertIn("moje", kept[0].read_text(encoding="utf-8"))
+
+    def test_a_failed_force_leaves_the_hand_edit_where_it_was(self):
+        # Copied aside only once there is a complete translation to put in its place: a forced
+        # run that fails must not leave the episode with a .bak and no <base>.srt.
+        self.run_stage()
+        mine = "1\n00:00:01,000 --> 00:00:02,000\nmoje\n"
+        self.srt.write_text(mine, encoding="utf-8")
+        drop4 = Provider(lambda model, ids: {i: POLISH[i] for i in ids if i != 4})
+        with self.assertRaises(SystemExit):
+            # --redraw too: with the book full, --force alone would never call the provider.
+            self.run_stage(drop4, force=True, redraw=True)
+        self.assertEqual(self.srt.read_text(encoding="utf-8"), mine)
+        self.assertEqual(list(self.work.glob("ep.srt.bak-*")), [])
+        self.assertEqual(T.srt_state(self.cfg, "ep"), "edited")
+
+    def test_a_failed_force_leaves_a_foreign_srt_where_it_was(self):
+        self.srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nPolski track\n", encoding="utf-8")
+        with self.assertRaises(SystemExit):
+            self.run_stage(Provider(lambda model, ids: {i: POLISH[i] for i in ids if i != 4}),
+                           force=True)
+        self.assertIn("Polski track", self.srt.read_text(encoding="utf-8"))
+        self.assertEqual(list(self.work.glob("ep.srt.bak-*")), [])
+        self.assertEqual(T.srt_state(self.cfg, "ep"), "foreign")
+
+    def test_one_failed_episode_does_not_stop_the_next(self):
+        # 'a' has a cue no model ever answers; 'b' is fine and comes after it.
+        (self.work / "ep.source.json").unlink()
+        self.src.unlink()
+        for base, text in (("a", SOURCE + "\n9\n00:02:00,000 --> 00:02:01,000\nNever.\n"),
+                           ("b", SOURCE)):
+            (self.work / "subs" / f"{base}.src.eng.srt").write_text(text, encoding="utf-8")
+            (self.work / f"{base}.source.json").write_text(json.dumps({
+                "base": base, "language": "pol", "subtitle_origin": "subs",
+                "source_language": "eng", "source_srt": f"subs/{base}.src.eng.srt"}),
+                encoding="utf-8")
+        # Asked for the extra cue alone, the double answers with one nobody asked for: a reply
+        # that parses and leaves the cue absent, rather than one _ask would call a failed call.
+        p = Provider(lambda model, ids: {i: POLISH[i] for i in ids if i in POLISH}
+                     or {1: POLISH[1]})
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage(p)
+        msg = str(cm.exception)
+        # Absent, said in English, and not as a rejection.
+        self.assertRegex(msg, r"a: 1 of 5 cues untranslated \(\[\d+\] absent\)")
+        self.assertNotIn("b:", msg)
+        self.assertTrue((self.work / "b.srt").exists())
+        self.assertFalse((self.work / "a.srt").exists())
 
     def test_an_srt_this_stage_did_not_write_is_left_alone(self):
         self.srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nPolski track\n", encoding="utf-8")

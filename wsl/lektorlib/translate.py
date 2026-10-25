@@ -46,7 +46,8 @@ from .media import read_source_json, translate_mode, translate_settings
 from .script import CallStats, Validation, _ask, append_spend, spend_path
 from .srt import SENTENCE_END, SPEAKER_DASH, Cue, parse_srt
 
-__all__ = ["stage_translate", "origin", "source_info", "source_srt", "srt_state"]
+__all__ = ["stage_translate", "origin", "source_info", "source_srt", "srt_state",
+           "stale_source"]
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -305,7 +306,12 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
     if out.path != "whole_episode":
         say(f"  prompt too long for one call – {out.path.replace(':', ' into ')} chunks")
     use_schema = bool(t.get("structured_outputs", True))
+    # Two records of the misses. `last_reasons` is the retry note's Polish, for the model, and
+    # names absent cues too. `rejected` is the report's: only lines that came back and failed
+    # validation, in the validator's own words, so `cues_rejected` in spend.json and the failure
+    # message do not count a cue that simply never came back as a refused one.
     last_reasons: dict[int, str] = {}
+    rejected: dict[int, str] = {}
 
     def attempt(s: dict, chunk, want: set[int], note: str, purpose: str) -> tuple[Validation, str]:
         nonlocal use_schema
@@ -317,6 +323,7 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
                                     schema=TRANSLATE_SCHEMA)
         wanted = {c.idx: c.text for c in chunk if c.idx in want}
         v = validate(got, wanted, t)
+        rejected.update(v.rejected)
         for i, text in v.accepted.items():
             out.texts[i] = text
             out.by_model[s["openrouter_model"]] = out.by_model.get(s["openrouter_model"], 0) + 1
@@ -335,9 +342,15 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
         if still and not err and bool(t.get("retry_misses", True)):
             say(f"  {len(still)} cue(s) missed ({len(v.missing)} absent, {len(v.rejected)} "
                 f"rejected) – one targeted retry")
-            v, err2 = attempt(primary, chunk, still, request_note(still, miss_reasons(v)), "retry")
+            v2, err2 = attempt(primary, chunk, still, request_note(still, miss_reasons(v)), "retry")
             if err2:
+                # As dead as a first call that failed: kept as the chunk's error, so the loop
+                # stops below and the report names it, and the first call's reasons stay the ones
+                # the fallback is told - an empty reply has nothing to say about any line.
                 say(f"  .. retry failed ({err2})")
+                err = err2
+            else:
+                v = v2
             still = {i for i in want if i not in out.texts}
         last_reasons.update(miss_reasons(v))
         err_fb = ""
@@ -358,7 +371,7 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
 
     out.response_format = "json_schema" if use_schema else "json_object"
     out.missing = sorted(i for i in todo if i not in out.texts)
-    out.rejected = {i: why for i, why in last_reasons.items() if i in out.missing}
+    out.rejected = {i: why for i, why in rejected.items() if i in out.missing}
     out.usd = sum(c.cost for c in out.calls)
     return out
 
@@ -514,6 +527,35 @@ def srt_state(cfg, base: str) -> str:
     return "ours" if recorded == file_sha256(srt) else "edited"
 
 
+def stale_source(cfg, base: str, info: dict | None = None) -> str:
+    """What the existing translation was made from, when that is no longer what extract names;
+    '' while it still is, or when nothing was recorded to compare.
+
+    Without this a changed translate.source_language, or an `extract --force` that picked another
+    stream, leaves the old translation in place as "exists, skipping": the new source is never
+    read, and `speech` meanwhile aligns against the new one. The language and the path catch the
+    first case; the source's own hash catches the second, which lands on the same path. A
+    provenance written before the hash was recorded is compared on the other two only.
+    """
+    try:
+        prov = json.loads(provenance_path(cfg, base).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(prov, dict):
+        return ""
+    info = source_info(cfg, base) if info is None else info
+    was_lang, was_srt = str(prov.get("source_language") or ""), str(prov.get("source_srt") or "")
+    now_lang, now_srt = str(info.get("source_language") or ""), str(info.get("source_srt") or "")
+    if (was_lang and now_lang and was_lang != now_lang) or (was_srt and now_srt
+                                                             and was_srt != now_srt):
+        return f"{was_srt or was_lang}, and extract now names {now_srt or now_lang}"
+    src = source_srt(cfg, base, info)
+    recorded = prov.get("source_sha256")
+    if recorded and src is not None and file_sha256(src) != recorded:
+        return f"an earlier {src.name}, and extract has since rewritten it"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Writing the Polish file
 # ---------------------------------------------------------------------------
@@ -649,6 +691,11 @@ def stage_translate(cfg, only: str | None, force: bool = False,
     contract as `script`, and for the same reason: `run` and `all` must not carry an episode with
     no Polish text into the stages that bill for reading it.
     """
+    if redraw and not force:
+        # The same rule as script's: "pay for a clean translation, then skip the episode because
+        # its <base>.srt already exists" cannot mean anything.
+        say("--redraw implies --force")
+        force = True
     mode = translate_mode(cfg)
     t = translate_settings(cfg)
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -672,7 +719,10 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             continue
         out_srt = cfg.work_dir / f"{base}.srt"
         state = srt_state(cfg, base)
-        if state == "ours" and not force:
+        stale = stale_source(cfg, base, info) if state == "ours" else ""
+        if stale and not force:
+            say(f"{base}: {out_srt.name} was translated from {stale} – translating it again")
+        elif state == "ours" and not force:
             say(f"{base}: {out_srt.name} exists, skipping (--force to redo)")
             result[base] = "kept"
             continue
@@ -731,7 +781,8 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             say(f"  -> {write_spend_run(cfg, base, drawn, language, len(cues), len(hits)).name}")
             # Filed before the verdict, so an episode that fails on three lines pays for three
             # lines next time and not for the whole episode again - as long as reuse_previous is
-            # on. Off, the book is neither written nor read, the way script treats its own.
+            # on. Off, the book is not read, and is written only when --redraw asked for a fresh
+            # draw to be filed - the same `reuse or redraw` rule script applies to its own.
             by_id = {c.idx: c for c in cues}
             fresh = {cache_key(by_id[i], language, s): {
                          "text": text, "id": i, "start_ms": by_id[i].start_ms, "src": by_id[i].text,
@@ -764,6 +815,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             "source_srt": src.relative_to(cfg.work_dir).as_posix()
             if cfg.work_dir in src.parents else str(src),
             "source_language": language,
+            "source_sha256": file_sha256(src),
             "model": s["openrouter_model"],
             "fallback_model": t.get("fallback_model", ""),
             "prompt": prompt_fingerprint(),

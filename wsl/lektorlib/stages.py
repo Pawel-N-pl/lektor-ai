@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import say
+from . import say, translate
 import numpy as np
 
 from . import loudness as LD
@@ -740,8 +740,6 @@ def stage_retime(cfg: Config, only: str | None) -> None:
 
 
 def stage_status(cfg: Config) -> None:
-    from . import translate     # imports script, which this module already pulls in
-
     bases = {p.stem for p in cfg.work_dir.glob("*.srt")}
     tail = ".source.json"
     for p in cfg.work_dir.glob(f"*{tail}"):

@@ -113,7 +113,9 @@ def main(argv: list[str] | None = None) -> None:
                          "touched)")
     ap.add_argument("--redraw", action="store_true",
                     help="script: ignore <base>.condensed.json and pay for a clean draw; "
-                         "translate: ignore <base>.translated.json the same way")
+                         "translate: ignore <base>.translated.json the same way. Both imply "
+                         "--force. In run it applies to script, and to translate only when "
+                         "translate is in --redo or is the only one of the two in range")
     ap.add_argument("--plan", default="creator", help="cost: elevenlabs plan for the allowance table")
     ap.add_argument("--seconds", type=float, default=90.0, help="sample: how much to render")
     ap.add_argument("--models", default="", help="sample: comma-separated model ids to compare")

@@ -222,12 +222,17 @@ def satisfied(cfg: Config, base: str, step: str) -> bool:
     the surround case actually re-cuts 300 MB that nothing will read.
 
     `translate` is satisfied by <base>.srt, and also by having nothing to do: a film whose Polish
-    text came from its own track is finished with this step before it starts.
+    text came from its own track is finished with this step before it starts. A <base>.srt it
+    translated from a source extract has since replaced is not: the stage will translate again,
+    and a plan that said "skip" would hide a paid step.
     """
     if step == "translate" and translate.origin(cfg, base) == "track":
         return True
     art = artefact(cfg, base, step)
     if art is None or not art.exists():
+        return False
+    if step == "translate" and translate.srt_state(cfg, base) == "ours" \
+            and translate.stale_source(cfg, base):
         return False
     if step == "extract":
         if is_surround(cfg):
@@ -281,6 +286,10 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
             out.append("OPENROUTER_API_KEY is not set: translate cannot run, and a film with no "
                        "Polish track has no Polish text without it – the chain will stop at that "
                        "step.")
+        elif media.translate_mode(cfg) == "always":
+            out.append("OPENROUTER_API_KEY is not set: translate.mode is 'always', so if extract "
+                       "finds a text track in another language, translate cannot run and the "
+                       "chain will stop there.")
         else:
             out.append("OPENROUTER_API_KEY is not set: if extract finds no Polish text track, "
                        "translate cannot run and the chain will stop there.")
@@ -337,13 +346,21 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
         + f"{base}.lektor.{encode_profile(cfg)['extension']}")
     org = translate.origin(cfg, base)
     mode = media.translate_mode(cfg)
-    if "translate" in steps and mode != "never" and org != "track":
+    # Under 'always' an episode extracted from its Polish track is not finished: extract runs
+    # whatever the plan says, takes the translation branch, moves that <base>.srt aside, and the
+    # translate step after it bills. Only a film with no text track in another language stays on
+    # its Polish track, which this cannot know without probing - so the plan says "run" for both
+    # steps, the safe way to be wrong about a paid one.
+    flip = mode == "always" and org == "track" and "extract" in steps
+    if "translate" in steps and mode != "never" and (org != "track" or flip):
         t = media.translate_settings(cfg)
         fb = str(t.get("fallback_model") or "")
         say(f"  text     translated by {t.get('openrouter_model', '?')}"
             + (f" (fallback {fb})" if fb else "")
             + f", subtitles {t.get('subtitles', 'off') or 'off'}"
-            + ("" if org == "subs" else " – only if the film has no Polish text track"))
+            + ("" if org == "subs" else
+               " – unless the film has no text track in another language" if mode == "always"
+               else " – only if the film has no Polish text track"))
     say("")
     will_run: set[str] = set()
     for step in STEPS:
@@ -352,17 +369,32 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
             continue
         art = artefact(cfg, base, step)
         done = satisfied(cfg, base, step)
+        if step == "extract" and flip:
+            say(f"  {step:<9} run  translate.mode is 'always': a text track in another language "
+                f"replaces {art.name} (moved aside) with one to translate")
+            will_run.add(step)
+            continue
         if step == "translate" and (mode == "never" or org != "subs"):
             # Said rather than printed as "skip <base>.srt is already there", which on a film with
             # a Polish track reads as if something had been translated.
             if mode == "never":
                 state = "skip translate.mode is 'never'"
+            elif mode == "always" and (flip or org != "track"):
+                state = (f"run  -> {art.name}, unless extract finds no text track in another "
+                         f"language")
+                will_run.add(step)
             elif org == "track" or art.exists():
                 state = "skip the Polish text comes from the film's own track"
             else:
                 state = f"run  -> {art.name}, only if extract finds no Polish text track"
                 will_run.add(step)
             say(f"  {step:<9} {state}")
+            continue
+        if step == "translate" and not done and step not in redo and art.exists() \
+                and translate.srt_state(cfg, base) == "ours":
+            say(f"  {step:<9} run  {art.name} was translated from "
+                f"{translate.stale_source(cfg, base)} – lines the book still holds are free")
+            will_run.add(step)
             continue
         if step == "translate" and done and step not in redo \
                 and translate.srt_state(cfg, base) == "edited":
@@ -469,8 +501,11 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
                                f"this episode, and every later step needs its Polish text")
             return SKIPPED, f"no {base}.source.json; {art.name} is taken as the Polish text"
         before = read_spend(cfg, base, "translate")
+        # `force` is "translate is in the redo set", so a chain redraws the translation only
+        # when asked to redo it: a bare `run --redraw` means the condensation, as it always has,
+        # and does not quietly re-buy every line of a finished translation as well.
         try:
-            what = translate.stage_translate(cfg, base, force).get(base, "")
+            what = translate.stage_translate(cfg, base, force, redraw and force).get(base, "")
         except SystemExit as exc:
             # Same contract as script: no Polish file means nothing downstream may run, and the
             # footer still prints before the exit code.
@@ -758,10 +793,16 @@ def stage_run(cfg: Config, only: str | None, args) -> int:
         if args.redraw:
             # --redraw already implies --force inside stage_script, so it has to pull script into
             # the redo set here too, or the episode would be skipped before paying for the draw.
-            if "script" not in steps:
-                raise UsageError("--redraw only means anything for the script step, which is not "
-                                 "in this range; drop it or widen --from/--to")
-            redo.add("script")
+            # translate is redrawn only when it is in the redo set: named in --redo, or the one
+            # step of the two in range, which leaves nothing else the flag could mean.
+            if "script" in steps:
+                redo.add("script")
+            elif "translate" in steps:
+                redo.add("translate")
+            else:
+                raise UsageError("--redraw only means anything for the translate and script "
+                                 "steps, neither of which is in this range; drop it or widen "
+                                 "--from/--to")
         outside = redo - set(steps)
         if outside:
             raise UsageError(f"--redo names {', '.join(sorted(outside))}, outside the selected "

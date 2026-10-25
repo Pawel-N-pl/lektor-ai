@@ -60,7 +60,9 @@ overwritten without `--force` – and with it, only after the edited file is cop
 `<base>.srt` the stage did not write is treated the same way. Reruns reuse lines from
 `<base>.translated.json`, keyed on the source line, its start time (two identical "I'm ready."
 cards can be said by people of different gender, and Polish shows it), the source language, the
-model, the effort and a hash of the prompt.
+model, the effort and a hash of the prompt. A translation whose source extract has since replaced
+– another `source_language`, or `extract --force` landing on another stream – is translated again
+rather than skipped as "exists"; `translate --redraw` ignores the book and implies `--force`.
 
 **The English it was translated from doubles as the alignment reference.** `find_reference_srt`
 takes it after every configured pattern. Translation prefers the plain track and alignment
@@ -80,6 +82,8 @@ there by hand. Under `translate.mode = 'always'` the film keeps its own Polish t
 translation goes beside it – a different text, not a copy, and the one `always` asked for. The
 PowerShell mux (`windows/lektor.ps1 -Stage mux`) does not add the subtitle stream: it warns when
 `subtitles` is `mux` on a translated film, and `python3 wsl/lektor.py mux` is the one that does.
+The PowerShell extract leaves a translated episode alone: it knows nothing of `translate.mode`,
+and would otherwise rewrite the sidecar without `subtitle_origin`.
 
 ## The mux
 

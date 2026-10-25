@@ -345,6 +345,19 @@ function Invoke-Extract {
 
         Write-Host $base -ForegroundColor White
 
+        # An episode the WSL extract set up for translation is left to it, with or without
+        # -Force. This side knows nothing of translate.mode: it would take the Polish track,
+        # keep <base>.srt (the translation) as "srt exists", and rewrite the sidecar without
+        # subtitle_origin - after which every WSL stage reads the translation as the film's own
+        # track. Untested: there is no PowerShell box here, only the reading of the code.
+        if (Test-Path $nfoPath) {
+            $prev = Get-Content -Path $nfoPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($prev.subtitle_origin -eq 'subs') {
+                Write-Warn2 "translated by the WSL side (subtitle_origin 'subs') -- left alone; run 'python3 wsl/lektor.py extract' for it"
+                continue
+            }
+        }
+
         $sub = Get-SubtitleStreamIndex -File $f.FullName -Lang $Language
         if (-not $sub) {
             Write-Warn2 "no '$Language' subtitle stream -- skipped"

@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import say
 from .mix import encode_profile, is_surround
-from .speech import find_video
+from .speech import _SDH_RE, find_video
 
 # `-c:s srt` transcodes the chosen stream into SubRip, which works for subrip/ass/ssa/mov_text and
 # dies inside ffmpeg for anything bitmap. The PowerShell never checked, so a disc-sourced release
@@ -392,10 +392,6 @@ def pick_translation_source(streams, target_language: str, audio_lang: str = "",
          a skipped episode.
       5. Ties go to ffprobe order, as everywhere else in this module.
     """
-    # Imported here: speech imports nothing from media at module level, and the SDH rule lives
-    # there because the alignment reference was the first thing to need it.
-    from .speech import _SDH_RE
-
     rejects = _compile_rejects(reject_title_patterns)
     target = language_key(target_language)
     want = language_key(wanted) if str(wanted or "auto").strip().casefold() != "auto" else ""
@@ -440,7 +436,8 @@ def translate_settings(cfg) -> dict:
     """The [translate] table, or an empty one for a config that predates it.
 
     Read through `raw` rather than `cfg.get` because the stand-in configs the tests build carry
-    only `raw`, and the defaults below have to be the same ones lektor.tuning.toml ships.
+    only `raw`. No defaults are filled in here: each caller passes its own fallback to `.get`, and
+    those have to be the same values lektor.tuning.toml ships.
     """
     return dict((getattr(cfg, "raw", None) or {}).get("translate") or {})
 
@@ -630,13 +627,15 @@ def _downmix(cfg, video: Path, flac: Path, force: bool) -> None:
 
 
 def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = False,
-                            polish_fallback: bool = False) -> Path | None:
+                            polish_fallback: bool = False, log_prefix: str = "") -> Path | None:
     """The foreign half of extract: `subs/<base>.src.<lang>.srt`, the downmix, and the sidecar.
 
     Returns the source subtitle, or None when there is nothing to translate from - which is
     logged to error_log.txt exactly as a missing Polish track always was, so a season run still
     names every episode it could not do. With `polish_fallback` the caller still has the film's
-    own Polish track to fall back on, so a miss is neither "skipped" nor logged.
+    own Polish track to fall back on, so a miss is neither "skipped" nor logged. `log_prefix` is
+    what the caller already knows about the Polish track, put in front of a logged miss so the
+    one line says everything that would rescue the episode.
     """
     end = "" if polish_fallback else " – skipped"
     ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
@@ -652,7 +651,8 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
         say("  !! translate.source is 'asr': transcribing the audio is phase 2 of "
             f"docs/translate.md and not implemented yet{end}")
         if not polish_fallback:
-            log_extract_error(work_dir, base, "translate.source 'asr' is not implemented yet")
+            log_extract_error(work_dir, base,
+                              f"{log_prefix}translate.source 'asr' is not implemented yet")
         return None
 
     audio = audio_language(probe_streams(ffprobe, video, "a"), ex.get("audio_stream", "a:0"))
@@ -668,7 +668,7 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
                 "yet" if source == "auto" else "")
         say(f"  !! {what} to translate from{tail}{end}")
         if not polish_fallback:
-            log_extract_error(work_dir, base, f"{what} to translate from")
+            log_extract_error(work_dir, base, f"{log_prefix}{what} to translate from")
         return None
 
     note = f" ({pick.title})" if pick.title else ""
@@ -741,7 +741,12 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
             else:
                 say(f"  .. translate.mode is 'always' – the '{language}' track at "
                     f"0:{choice.index} is left alone")
-            if extract_for_translation(cfg, video, base, subs, force, polish_fallback=polish_ok):
+            # A bitmap Polish track is the one miss OCR would rescue, so it is named in the log
+            # line too, as it was before translation existed, not only on the console.
+            bitmap = (f"bitmap '{language}' subtitle stream ({choice.codec}) – OCR it first; "
+                      if choice is not None and not polish_ok else "")
+            if extract_for_translation(cfg, video, base, subs, force, polish_fallback=polish_ok,
+                                       log_prefix=bitmap):
                 # The Polish track's text, extracted under the old mode. Left in place, translate
                 # would see a file it did not write, keep it, and the film's own track would be
                 # read and shipped as the translation.

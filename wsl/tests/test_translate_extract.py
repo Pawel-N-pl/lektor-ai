@@ -297,6 +297,17 @@ class TestExtractBranches(unittest.TestCase):
                                       translate={"mode": "auto"})
         self.assertEqual(calls, [(2, cfg.work_dir / "subs" / "ep.src.eng.srt")])
 
+    def test_a_bitmap_polish_track_with_nothing_to_translate_still_says_ocr_in_the_log(self):
+        # The one fact that rescues this episode is that its Polish track can be OCRed; the log
+        # a season run reads has to say so, not only that there was no foreign track.
+        cfg, calls = self.run_extract([sub(30, "pol", codec="hdmv_pgs_subtitle")],
+                                      translate={"mode": "auto"})
+        self.assertEqual(calls, [])
+        log = (cfg.work_dir / "error_log.txt").read_text(encoding="utf-8")
+        self.assertEqual(len(log.splitlines()), 1)
+        self.assertIn("bitmap 'pol' subtitle stream (hdmv_pgs_subtitle) – OCR it first", log)
+        self.assertIn("to translate from", log)
+
     def test_asr_is_reported_as_not_implemented_and_skipped(self):
         cfg, calls = self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "asr"})
         self.assertEqual(calls, [])

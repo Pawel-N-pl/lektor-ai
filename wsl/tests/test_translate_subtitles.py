@@ -78,6 +78,30 @@ class TestMuxArgs(unittest.TestCase):
         self.assertIn("-disposition:a:2", got)
         self.assertEqual(got[got.index("-disposition:a:2") + 1], "default")
 
+    def test_mux_indexes_the_new_subtitle_off_the_probed_count(self):
+        # mux_args is told the index; this is the line that counts it. Got wrong, the film's own
+        # first subtitle would be relabelled 'Polski (AI)' and every argv test above would pass.
+        def probe(ffprobe, path, select=None, strict=False):
+            return [object()] * (2 if select == "a" else 5)
+
+        with tempfile.TemporaryDirectory() as td:
+            dest = Path(td) / "out" / "ep.mkv"
+            for subs in (Path("/w/ep.srt"), None):
+                with self.subTest(subs=subs), \
+                        mock.patch.object(M, "probe_streams", side_effect=probe) as ps, \
+                        mock.patch.object(M, "run_ffmpeg") as ff:
+                    M.mux("ffmpeg", "ffprobe", Path("/s.mkv"), Path("/t.eac3"), dest, subs=subs)
+                argv = ff.call_args.args[1]
+                asked = [c.args[2] if len(c.args) > 2 else c.kwargs.get("select")
+                         for c in ps.call_args_list]
+                self.assertIn("-disposition:a:2", argv)
+                if subs is not None:
+                    self.assertIn("-metadata:s:s:5", argv)
+                    self.assertIn("-disposition:s:5", argv)
+                else:
+                    self.assertNotIn("s", asked)
+                    self.assertFalse(any(a.startswith("-metadata:s:s") for a in argv))
+
     def test_the_subtitle_index_is_counted_strictly(self):
         with mock.patch.object(M, "probe_streams", return_value=[1, 2, 3]) as ps:
             self.assertEqual(M.count_subtitle_streams("ffprobe", "/s.mkv"), 3)

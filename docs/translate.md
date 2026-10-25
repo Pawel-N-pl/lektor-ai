@@ -110,8 +110,18 @@ _Każda faza dopisuje tu, co zrobiła, co zmierzyła i czego nie dało się spra
   idzie obok jako drugi, inny tekst.
 - Zmiana `mode` i ponowny `extract` odsuwa `<base>.srt` z poprzedniego trybu na
   `<base>.srt.bak-*`, zamiast zostawić go pod nową etykietą.
+- Zmiana źródła – inny `source_language` albo `extract --force`, który wybrał inny track – i
+  ponowny `translate` (albo `run`) tłumaczy odcinek od nowa, zamiast pominąć go jako „exists”.
+  `<base>.translate.json` pamięta ścieżkę, język i hash źródła; linie, których klucz się nie
+  zmienił, nadal idą z `<base>.translated.json` za darmo. Ręcznie poprawiony `<base>.srt` dalej
+  wymaga `--force`.
+- `translate --redraw` oznacza też `--force`, jak w `script`. W `run` dotyczy `script`, a
+  `translate` tylko wtedy, gdy jest w `--redo` albo jest jedynym z tych dwóch kroków w zakresie –
+  samo `run --redraw` nie kupuje po cichu tłumaczenia drugi raz.
 - Mux z PowerShella (`lektor.ps1 -Stage mux`) nie dokłada napisów; ostrzega i odsyła do muxa z
-  WSL.
+  WSL. Extract z PowerShella zostawia w spokoju odcinek, którego `source.json` ma
+  `subtitle_origin = "subs"` – nie zna `translate.mode` i nadpisałby sidecar bez tego klucza. Ta
+  ścieżka nie była uruchomiona: w środowisku nie ma PowerShella.
 
 **Czego nie zmierzono.** Nic nie przeszło jeszcze przez prawdziwy odcinek: brak GPU, kontenera ASR
 i dostępu do LLM w środowisku, w którym to powstało, więc wszystko jest sprawdzone wyłącznie
