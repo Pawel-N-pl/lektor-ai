@@ -126,6 +126,106 @@ measured_usd_per_episode = 0.0
 subtitles = 'off'
 subtitle_title = 'Polski (AI)'
 
+[transcribe]
+# Path 3 of docs/translate.md: a film with no text subtitle at all - or translate.source = 'asr' -
+# has its audio transcribed into subs/<base>.asr.<lang>.srt, which translate then reads exactly as
+# it reads a subtitle track. NOTHING IN THIS TABLE HAS BEEN MEASURED: it was written where there is
+# no GPU and no faster-whisper, so every value below is the library's own default or the common
+# Whisper practice, named as such. Measure on a real episode before tuning by taste.
+#
+# Where faster-whisper runs - never in the pipeline's own interpreter, by the route forced
+# alignment takes (speech.aligner): 'local' feeds the script to the python in `venv`, 'docker' to
+# the container below, and 'auto' takes the venv when one is configured and docker otherwise. With
+# neither, the stage stops before cutting any audio and says how to install one.
+runner = 'auto'
+# A venv with faster-whisper installed (it brings ctranslate2; CUDA needs the cuBLAS/cuDNN wheels,
+# see docs/install.md). Empty means the container.
+venv = ''
+# Empty means speech.asr_container - the borrowed container, whose resident service is itself a
+# faster-whisper large-v3, so the library is already there. This loads a SECOND copy of the model
+# beside the resident one; how much VRAM that takes on top has not been measured.
+container = ''
+
+# large-v3 because it is what the borrowed container already runs and the most accurate of the
+# multilingual checkpoints faster-whisper ships; nothing here compared it to a smaller one. The
+# first run downloads it (~3 GB) into the Hugging Face cache of whichever interpreter runs it.
+model = 'large-v3'
+# 'auto' lets ctranslate2 pick CUDA when it sees a GPU; 'default' then means float16 on CUDA and
+# int8 on the CPU, the library's own choice. 'cpu' works and is far slower; how much slower on an
+# episode is unmeasured.
+device = 'auto'
+compute_type = 'default'
+# faster-whisper's default beam.
+beam_size = 5
+# The library's built-in Silero VAD, which cuts silence out before Whisper sees it - long silences
+# are where Whisper invents text. The three numbers are faster-whisper's VadOptions defaults.
+vad = true
+vad_threshold = 0.5
+vad_min_silence_ms = 2000
+vad_speech_pad_ms = 400
+# Off, against Whisper's default of on: feeding the previous segment's text back as the prompt is
+# what lets one hallucinated phrase repeat for minutes. Widely reported, not measured here.
+condition_on_previous_text = false
+timeout_s = 7200
+
+# --- Hallucination filters: plain Python over what came back, every drop recorded in
+# <base>.asr.json with its reason. A segment goes when:
+#
+# no_speech_prob is above this AND avg_logprob below the next - the pair Whisper's own decoder uses
+# to call a window silence. Either alone also fires on a quiet line decoded with confidence.
+max_no_speech_prob = 0.6
+min_avg_logprob = -1.0
+# gzip compression ratio of its text above this, Whisper's own threshold for "repetitive".
+max_compression_ratio = 2.4
+# one phrase of up to loop_max_ngram words repeated back to back at least loop_min_repeats times
+# and loop_min_words words in all: "No, no, no, no!" is a line, the same sentence eight times in one
+# segment is a decoder stuck.
+loop_max_ngram = 6
+loop_min_repeats = 4
+loop_min_words = 12
+# the same text more than this many segments in a row - a loop across Whisper's 30 s windows, where
+# each copy passes every check on its own. The first copies are kept: "Yeah." "Yeah." is speech.
+max_identical_run = 2
+# less than this share of it inside the VAD's speech regions: decoded over music or silence that
+# the VAD padding let through. Without the regions (an older faster-whisper) nothing is dropped.
+min_speech_overlap = 0.3
+# a phrase from this list makes up at least blacklist_min_cover of its text. These are phrases
+# Whisper is publicly known to produce over silence and credits, learned from captioned video -
+# none was observed on this project's material. Case and punctuation do not matter; whole words.
+blacklist = [
+    'thanks for watching', 'thank you for watching', 'thank you so much for watching',
+    'please subscribe', 'like and subscribe', 'subscribe to my channel',
+    "don't forget to subscribe", 'see you in the next video',
+    'subtitles by the amara org community', 'subtitles by', 'transcription by',
+    'transcribed by', 'translated by', 'captions by',
+    'untertitel im auftrag des zdf', 'untertitel der amara org community',
+    "sous titres réalisés par la communauté d'amara org", 'sous titres par',
+    'subtítulos realizados por la comunidad de amara org',
+    'napisy stworzone przez społeczność amara org', 'dziękuję za uwagę',
+]
+blacklist_min_cover = 0.6
+
+# --- Cutting into cues. Real subtitles, not Whisper's segments: a segment can run 30 s and three
+# sentences. These are the common broadcast/streaming limits - two lines of 42 characters - and the
+# release this pipeline was built on keeps 82-84 ms between cards (speech.py), hence min_gap_ms.
+max_line_chars = 42
+max_lines = 2
+max_cue_ms = 6000
+min_cue_ms = 1000
+min_gap_ms = 80
+# A silence this long always ends a cue; a shorter one past split_pause_ms is the preferred place
+# to split a cue that does not fit, after a sentence end and before a comma.
+max_pause_in_cue_ms = 1000
+split_pause_ms = 250
+# How long a card stays up past its last word, where the next card leaves room. Unmeasured.
+linger_ms = 300
+# Whisper's word times were measured 316 ms EARLY at utterance starts (p50, see speech.py). That is
+# not corrected here by default: these cues are only the grid, `speech` aligns the transcript
+# against the audio afterwards and `retime` moves each line onto its aligned first word - the same
+# as for an authored subtitle, which leads speech on purpose. A value here shifts every cue start
+# later by that much; 0 leaves the placement to alignment.
+onset_shift_ms = 0
+
 [script]
 # Measured on 210 overflowing cues from one real episode, whole-episode prompt, effort medium.
 # This model is a lottery, and that is fine because the losing ticket is detectable for free.
