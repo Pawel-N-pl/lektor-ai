@@ -380,6 +380,24 @@ class TestExtractForTranscription(unittest.TestCase):
         self.assertEqual(calls, [(30, cfg.work_dir / "ep.srt")])
         self.assertNotIn("subtitle_origin", self.sidecar(cfg))
 
+    def test_switching_from_asr_to_a_polish_track_moves_the_translation_aside(self):
+        """A translated transcript left as "srt exists" would be voiced as the film's own text."""
+        from lektorlib import translate as T
+        cfg, _ = self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "asr"})
+        self.assertEqual(T.origin(cfg, "ep"), "asr")
+        srt = cfg.work_dir / "ep.srt"
+        srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nprzekład\n", encoding="utf-8")
+        T.provenance_path(cfg, "ep").write_text(json.dumps({"srt_sha256": T.file_sha256(srt)}),
+                                                encoding="utf-8")
+        cfg, calls = self.run_extract([sub(30, "pol")], translate={"mode": "auto"},
+                                      root=cfg.input_dir)
+        self.assertEqual(calls, [(30, srt)])
+        self.assertEqual(T.origin(cfg, "ep"), "track")
+        self.assertFalse(T.provenance_path(cfg, "ep").exists())
+        kept = list(cfg.work_dir.glob("ep.srt.bak-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn("przekład", kept[0].read_text(encoding="utf-8"))
+
     def test_switching_from_a_subtitle_translation_to_asr_waits_for_the_transcript(self):
         """The translation of the subtitle stays until transcribe and translate replace it - it
         is still a valid Polish text, and stale_source notices the new source once there is one."""

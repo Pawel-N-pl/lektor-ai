@@ -57,7 +57,8 @@ source = 'auto'
 # 'auto', transcribes the audio instead). Two- and three-letter codes and the
 # bibliographic/terminology pairs (ger/deu, fre/fra) are the same language. For transcription a
 # tag here is the language Whisper is told; 'auto' tells it the audio track's own tag, and lets it
-# detect the language only when the track has none.
+# detect the language only when the track has none. Any spelling of a language Whisper knows will
+# do; one it does not know is passed over, and the plan and the stage say so.
 source_language = 'auto'
 
 # Within one language, a plain dialogue track is preferred over SDH. SDH carries "[door creaks]"
@@ -133,8 +134,9 @@ subtitle_title = 'Polski (AI)'
 # Path 3 of docs/translate.md: a film with no text subtitle at all - or translate.source = 'asr' -
 # has its audio transcribed into subs/<base>.asr.<lang>.srt, which translate then reads exactly as
 # it reads a subtitle track. NOTHING IN THIS TABLE HAS BEEN MEASURED: it was written where there is
-# no GPU and no faster-whisper, so every value below is the library's own default or the common
-# Whisper practice, named as such. Measure on a real episode before tuning by taste.
+# no GPU and no faster-whisper. A value whose comment names its source is the library's own default
+# or the common Whisper practice; the rest are this project's own choices, untested, and say so.
+# Measure on a real episode before tuning by taste.
 #
 # Where faster-whisper runs - never in the pipeline's own interpreter, by the route forced
 # alignment takes (speech.aligner): 'local' feeds the script to the python in `venv`, 'docker' to
@@ -169,6 +171,8 @@ vad_speech_pad_ms = 400
 # Off, against Whisper's default of on: feeding the previous segment's text back as the prompt is
 # what lets one hallucinated phrase repeat for minutes. Widely reported, not measured here.
 condition_on_previous_text = false
+# How long one episode's transcription may run before it counts as failed. Chosen here; how long
+# an episode actually takes is unmeasured.
 timeout_s = 7200
 
 # --- Hallucination filters: plain Python over what came back, every drop recorded in
@@ -182,15 +186,17 @@ min_avg_logprob = -1.0
 max_compression_ratio = 2.4
 # one phrase of up to loop_max_ngram words repeated back to back at least loop_min_repeats times
 # and loop_min_words words in all: "No, no, no, no!" is a line, the same sentence eight times in one
-# segment is a decoder stuck.
+# segment is a decoder stuck. All three chosen here, unmeasured.
 loop_max_ngram = 6
 loop_min_repeats = 4
 loop_min_words = 12
 # the same text more than this many segments in a row - a loop across Whisper's 30 s windows, where
 # each copy passes every check on its own. The first copies are kept: "Yeah." "Yeah." is speech.
+# Chosen here, unmeasured.
 max_identical_run = 2
 # less than this share of it inside the VAD's speech regions: decoded over music or silence that
 # the VAD padding let through. Without the regions (an older faster-whisper) nothing is dropped.
+# Chosen here, unmeasured.
 min_speech_overlap = 0.3
 # a phrase from this list makes up at least blacklist_min_cover of its text. These are phrases
 # Whisper is publicly known to produce over silence and credits, learned from captioned video -
@@ -206,6 +212,7 @@ blacklist = [
     'subtítulos realizados por la comunidad de amara org',
     'napisy stworzone przez społeczność amara org', 'dziękuję za uwagę',
 ]
+# Chosen here, unmeasured.
 blacklist_min_cover = 0.6
 
 # --- Cutting into cues. Real subtitles, not Whisper's segments: a segment can run 30 s and three
@@ -217,7 +224,8 @@ max_cue_ms = 6000
 min_cue_ms = 1000
 min_gap_ms = 80
 # A silence this long always ends a cue; a shorter one past split_pause_ms is the preferred place
-# to split a cue that does not fit, after a sentence end and before a comma.
+# to split a cue that does not fit, after a sentence end and before a comma. Both chosen here,
+# unmeasured.
 max_pause_in_cue_ms = 1000
 split_pause_ms = 250
 # How long a card stays up past its last word, where the next card leaves room. Unmeasured.

@@ -235,9 +235,13 @@ alignment does, chosen by `transcribe.runner` (`auto` by default).
 
 The first run downloads `transcribe.model` (`large-v3`, about 3 GB) into the Hugging Face cache of
 whichever interpreter runs it. Unlike `speech`, nothing degrades here: a film with no subtitle has
-no other text, so with no runtime the stage stops **before any audio is cut**, with one message
-naming what is missing – no venv, no docker, a container that is not running, or faster-whisper
-not installed in the one that was found – and `run` prints the same thing in its plan.
+no other text, so with no runtime the stage stops with one message naming what is missing and how
+to install it. A venv with no interpreter (or none configured under `runner = 'local'`), no
+docker, or a container that is not running is caught **before any audio is cut**. faster-whisper
+missing from the interpreter that was found can only be told by running the script, so that one
+is reported after the first episode's audio has been cut, and stops the stage there. `run`'s plan
+checks less still, because printing a plan must not wait on a daemon: only that the venv has an
+interpreter, or that a docker binary is on PATH.
 
 Everything else lives in `lektor.toml`, which every side reads, and nearly every key carries
 a comment saying what it is and what was measured to land on that value. Configuration is two files: `lektor.toml`, 84 lines of what you change per show and by ear, and `lektor.tuning.toml`, all 233 keys with the reasoning behind each. The first overrides the second, so deleting a line falls back to the tuned default rather than to nothing. No secrets in either. Only the second is tracked: `lektor.toml` is gitignored and ships as `lektor.toml.example`, which the loader falls back to until you make the copy.

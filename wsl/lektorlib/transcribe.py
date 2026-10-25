@@ -42,8 +42,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import say
-from .media import (_LANGUAGE_ALIASES, language_key, resolve_source, translate_mode,
-                    translate_settings)
+from .media import (NO_LANGUAGE, language_key, resolve_source, translate_mode,
+                    translate_settings, translate_source)
 from .speech import (ScriptFailed, docker_problem, extract_centre, run_script_docker,
                      run_script_local, tmp_root)
 from .srt import SENTENCE_END
@@ -183,23 +183,57 @@ def transcript_info(cfg, base: str) -> dict:
 # Language
 # ---------------------------------------------------------------------------
 
-# Whisper takes ISO 639-1 codes; mkv tags and this config use 639-2. The inverse of the alias
-# table media already keeps, so a language both sides know is spelled in one place. "no" rather
-# than "nb" for Norwegian, because "no" is the one Whisper knows.
-_WHISPER_CODE = {key: two for two, key in _LANGUAGE_ALIASES.items()
-                 if len(two) == 2 and two != "nb"}
+# Every language Whisper decodes (faster-whisper's tokenizer list, 100 codes, all two letters but
+# its own 'haw' and 'yue'), each with the ISO 639-2 spellings mkv tags and this config use -
+# bibliographic first, terminology after it where the two differ. The alias table in media folds
+# only the thirty languages a subtitle pick is likely to meet; a Croatian film tagged 'hrv' must
+# still be told 'hr', not left to a detection that can answer 'sr' or 'bs'.
+_WHISPER_LANGUAGES = """
+en eng | zh chi zho | de ger deu | es spa | ru rus | ko kor | fr fre fra | ja jpn | pt por
+tr tur | pl pol | ca cat | nl dut nld | ar ara | sv swe | it ita | id ind | hi hin | fi fin
+vi vie | he heb | uk ukr | el gre ell | ms may msa | cs cze ces | ro rum ron | da dan | hu hun
+ta tam | no nor nob | th tha | ur urd | hr hrv | bg bul | lt lit | la lat | mi mao mri | ml mal
+cy wel cym | sk slo slk | te tel | fa per fas | lv lav | bn ben | sr srp | az aze | sl slv
+kn kan | et est | mk mac mkd | br bre | eu baq eus | is ice isl | hy arm hye | ne nep | mn mon
+bs bos | kk kaz | sq alb sqi | sw swa | gl glg | mr mar | pa pan | si sin | km khm | sn sna
+yo yor | so som | af afr | oc oci | ka geo kat | be bel | tg tgk | sd snd | gu guj | am amh
+yi yid | lo lao | uz uzb | fo fao | ht hat | ps pus | tk tuk | nn nno | mt mlt | sa san
+lb ltz | my bur mya | bo tib bod | tl tgl | mg mlg | as asm | tt tat | haw | ln lin | ha hau
+ba bak | jw jav | su sun | yue
+"""
+_WHISPER_NAMES = [names.split() for names in re.split(r"[|\n]", _WHISPER_LANGUAGES)
+                  if names.strip()]
+_WHISPER_CODE = {spelling: names[0] for names in _WHISPER_NAMES for spelling in names}
+# Codes ISO withdrew that still turn up in old tags, and the standard code for the one language
+# Whisper spells its own way. "nb" (Bokmål) is "no" to Whisper, which has no separate entry.
+_WHISPER_CODE.update({"iw": "he", "in": "id", "ji": "yi", "jv": "jw", "nb": "no"})
 
 
 def whisper_code(tag: str) -> str:
-    """The code Whisper is given for a language tag, or '' when there is none to give.
+    """The code Whisper is given for a language tag, or '' when Whisper has no such language.
 
-    A two-letter tag is passed through: Whisper knows ~100 languages and the alias table knows
-    thirty, so 'hr' or 'he' must not be lost for want of a 639-2 spelling.
+    Any spelling of a language Whisper knows - 'hr', 'hrv', 'deu', the withdrawn 'iw' - and
+    nothing else: model.transcribe() rejects a code it does not know with a ValueError, after the
+    audio was cut and the model loaded, so an unknown one must not get that far.
     """
-    key = language_key(tag)
-    if key in _WHISPER_CODE:
-        return _WHISPER_CODE[key]
-    return key if re.fullmatch(r"[a-z]{2}", key or "") else ""
+    t = str(tag or "").strip().casefold()
+    return _WHISPER_CODE.get(t) or _WHISPER_CODE.get(language_key(t), "")
+
+
+def tag_for(code: str) -> str:
+    """The language key a Whisper code is filed under: its 639-2 spelling, folded as media folds
+    tags - 'en' -> 'eng', 'hr' -> 'hrv' - so a transcript is named and compared like a track."""
+    key = str(code or "").strip().casefold()
+    for names in _WHISPER_NAMES:
+        if names[0] == key:
+            return language_key(names[1] if len(names) > 1 else key)
+    return language_key(key)
+
+
+def configured_language(cfg) -> str:
+    """translate.source_language as written, or '' for 'auto'."""
+    wanted = str(translate_settings(cfg).get("source_language", "auto") or "auto").strip()
+    return "" if wanted.lower() == "auto" else wanted
 
 
 def requested_language(cfg, info: dict) -> tuple[str, str]:
@@ -208,17 +242,35 @@ def requested_language(cfg, info: dict) -> tuple[str, str]:
     translate.source_language first, because whoever set it knows the film. Then the audio
     track's own tag, which extract recorded. Only then Whisper's detection, which reads the first
     30 s and can be fooled by a cold open in another language - not measured here, but the reason
-    a tag that exists is trusted over it.
+    a tag that exists is trusted over it. A value Whisper has no language for is passed over, and
+    `unknown_language` says so.
     """
-    wanted = str(translate_settings(cfg).get("source_language", "auto") or "auto").strip()
-    if wanted.lower() != "auto":
-        code = whisper_code(wanted)
-        if code:
-            return code, "config"
+    code = whisper_code(configured_language(cfg))
+    if code:
+        return code, "config"
     code = whisper_code(str(info.get("audio_language") or ""))
     if code:
         return code, "tag"
     return "", "detect"
+
+
+def unknown_language(cfg, info: dict) -> str:
+    """Which language setting `requested_language` had to pass over, said in a sentence, or ''.
+
+    A typo in translate.source_language, or a tag such as 'qaa', is not an error worth stopping a
+    season for - the tag or the detection still gives Whisper a language - but nobody should find
+    out from the transcript that what they set was not used.
+    """
+    wanted = configured_language(cfg)
+    tag = str(info.get("audio_language") or "")
+    _, how = requested_language(cfg, info)
+    then = "the audio track's tag is used" if how == "tag" else "Whisper detects the language"
+    if wanted and not whisper_code(wanted):
+        return (f"translate.source_language '{wanted}' is no language Whisper knows – "
+                f"{then} instead")
+    if how == "detect" and tag and tag.casefold() not in NO_LANGUAGE:
+        return f"the audio track's tag '{tag}' is no language Whisper knows – it detects one"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -689,7 +741,7 @@ def is_done(cfg, base: str) -> bool:
 
 def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, str]:
     """Write the transcript of every episode extract marked as needing one. Returns base -> what
-    happened ("written", "kept", "subs", "track", "never", "failed").
+    happened ("written", "kept", "subs", "track", "never", "subs-only", "failed").
 
     Exits non-zero, after doing every episode it can, when one could not be transcribed - the same
     contract as translate, for the same reason: nothing downstream may run without the text. A
@@ -717,6 +769,13 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             say(f"{base}: translate.mode is 'never' – skipped")
             result[base] = "never"
             continue
+        if translate_source(cfg) == "subs":
+            # An earlier config sent this film here; extract under 'subs' finds no subtitle and
+            # leaves that sidecar as it was. The audio is ruled out all the same.
+            say(f"{base}: translate.source is 'subs' – the audio is not transcribed, and the film "
+                f"has no text subtitle to translate from")
+            result[base] = "subs-only"
+            continue
         stale = stale_transcript(cfg, base, info)
         if transcript_info(cfg, base) and not stale and not force:
             say(f"{base}: {asr_json_path(cfg, base).name} exists, skipping (--force to redo)")
@@ -733,6 +792,9 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             result[base] = "failed"
             continue
         language, how = requested_language(cfg, info)
+        unknown = unknown_language(cfg, info)
+        if unknown:
+            say(f"  !! {unknown}")
         problem = runtime_problem(cfg)
         if problem:
             # Before the audio is cut: a minute of ffmpeg spent on a machine that cannot transcribe
@@ -762,23 +824,28 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             shutil.rmtree(tmp, ignore_errors=True)
 
         meta = raw.get("meta") or {}
-        got = language_key(str(meta.get("language") or language or ""))
+        got = tag_for(str(meta.get("language") or language or ""))
+        target = language_key(cfg["extract"]["subtitle_language"])
         tr = build_transcript(raw, t)
         say(f"  {len(raw.get('segments') or [])} segments in {meta.get('transcribe_s')} s "
             f"({meta.get('rtf_x')}x realtime) on {meta.get('device', '?')}, language '{got}'"
             + (f" (p={meta.get('language_probability')})" if how == "detect" else "")
             + f"; {len(tr.dropped)} dropped by the filters")
-        for seg in tr.dropped[:8]:
+        written = bool(got and tr.cues) and got != target
+        # Where nothing is written every reason is said here, since no <base>.asr.json will hold
+        # them - and an earlier run's file, if there is one, holds other segments.
+        shown = tr.dropped[:8] if written else tr.dropped
+        for seg in shown:
             say(f"    - {_ts(seg.get('start', 0))} {str(seg.get('text', '')).strip()[:48]!r}: "
                 f"{seg['dropped']}")
-        if len(tr.dropped) > 8:
-            say(f"    ... and {len(tr.dropped) - 8} more, all in {asr_json_path(cfg, base).name}")
+        if len(tr.dropped) > len(shown):
+            say(f"    ... and {len(tr.dropped) - len(shown)} more, all in "
+                f"{asr_json_path(cfg, base).name}")
         if not got or not tr.cues:
             why = "no language came back" if not got else "nothing survived the filters"
             failed.append(f"{base}: {why} – no transcript written")
             result[base] = "failed"
             continue
-        target = language_key(cfg["extract"]["subtitle_language"])
         if got == target:
             # A film spoken in the target language needs no lektor, and translating it into
             # itself would only fail translate's own "came back untranslated" check line by line.

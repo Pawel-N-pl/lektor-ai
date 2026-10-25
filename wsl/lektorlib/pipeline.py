@@ -302,6 +302,9 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
                        + ("The chain will stop at transcribe." if certain else
                           "If extract finds no text subtitle to translate from, the chain will "
                           "stop at transcribe."))
+        unknown = transcribe.unknown_language(cfg, translate.source_info(cfg, base))
+        if unknown:
+            out.append(unknown + ".")
     if "translate" in will_run and not os.environ.get("OPENROUTER_API_KEY"):
         # Before extract has run nobody knows yet whether the film has a Polish track, and a film
         # that has one never calls translate - so the stop is only certain for a translated film.
@@ -380,16 +383,24 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
     # steps, the safe way to be wrong about a paid one.
     flip = mode == "always" and org == "track" and "extract" in steps
     source = media.translate_source(cfg)
+    # The same for translate.source changed to 'asr' on a film extracted from a subtitle: extract
+    # runs whatever the plan says, finds the source it is now asked for, and rewrites the sidecar
+    # for transcription - so transcribe runs and translate, handed a new source, bills again.
+    resend = source == "asr" and org == "subs" and "extract" in steps
     # Whether this film's text may come from its audio: it already does, or extract has not run
     # and the config lets it - by name, or under 'auto' when there is no text subtitle at all.
-    may_transcribe = mode != "never" and (org == "asr" or (org == "" and source != "subs")
-                                          or (flip and source == "asr"))
+    # 'subs' rules the audio out even for a film an earlier config sent to transcription.
+    may_transcribe = mode != "never" and source != "subs" and (
+        org in ("asr", "") or (source == "asr" and (flip or resend)))
+    # Certain rather than "only if": the config names the audio and nothing extract can find
+    # changes that.
+    certain = source == "asr" and (mode == "always" or resend)
     if "transcribe" in steps and may_transcribe:
         kind, where = transcribe.runtime(cfg)
         say(f"  audio    transcribed by faster-whisper "
             f"{transcribe.settings(cfg).get('model', 'large-v3')} ({kind}: {where or '?'}), "
             f"local and free"
-            + ("" if org == "asr" or (source == "asr" and mode == "always") else
+            + ("" if org == "asr" or certain else
                " – only if the film has no Polish text track" if source == "asr" else
                " – only if the film has no text subtitle at all"))
     if "translate" in steps and mode != "never" and (org != "track" or flip):
@@ -414,14 +425,20 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
                 f"replaces {art.name} (moved aside) with one to translate")
             will_run.add(step)
             continue
+        if step == "transcribe" and mode == "never":
+            # Whatever extract recorded: the stage itself checks the mode before the origin.
+            say(f"  {step:<10} skip translate.mode is 'never'")
+            continue
+        if step == "transcribe" and org == "asr" and source == "subs":
+            say(f"  {step:<10} skip translate.source is 'subs' and the film has no text subtitle "
+                f"– the chain stops here, with nothing to translate")
+            continue
         if step == "transcribe" and org != "asr":
             # Said for the same reason as translate below: "skip <base>.asr.json is already there"
             # would be a lie, and "run" on a film with subtitles would promise GPU time for nothing.
-            if mode == "never":
-                state = "skip translate.mode is 'never'"
-            elif may_transcribe:
+            if may_transcribe:
                 state = (f"run  -> {art.name}"
-                         + ("" if source == "asr" and (mode == "always" or flip) else
+                         + ("" if certain else
                             ", only if extract finds no Polish text track" if source == "asr" else
                             ", only if extract finds no text subtitle at all"))
                 will_run.add(step)
@@ -456,6 +473,15 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
                 state = f"run  -> {art.name}, only if extract finds no Polish text track"
                 will_run.add(step)
             say(f"  {step:<10} {state}")
+            continue
+        if step == "translate" and "transcribe" in will_run and (org == "asr" or resend) \
+                and step not in redo and art.exists() and translate.srt_state(cfg, base) == "ours":
+            # Judged from the transcript on disk this would read "skip", and the one transcribe is
+            # about to write replaces it: a new language, a new file or new text is a new source,
+            # and the stage translates it again.
+            say(f"  {step:<10} run  {art.name} will be translated from the new transcript – lines "
+                f"the book still holds are free")
+            will_run.add(step)
             continue
         if step == "translate" and not done and step not in redo and art.exists() \
                 and translate.srt_state(cfg, base) == "ours":
@@ -611,6 +637,11 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
             raise HardFail(str(exc).strip()) from exc
         if what == "never":
             return SKIPPED, "translate.mode is 'never'"
+        if what == "subs-only":
+            # The old skip 'subs' promises, reached one step late: extract found no subtitle and
+            # left the sidecar an earlier config wrote, and nothing downstream has a text.
+            raise HardFail("translate.source is 'subs' and the film has no text subtitle – "
+                           "nothing was transcribed, and there is nothing to translate")
         if not transcribe.is_done(cfg, base):
             raise HardFail(f"transcribe wrote no usable {art.name}; its own log above says why")
         data = transcribe.load_asr(cfg, base)

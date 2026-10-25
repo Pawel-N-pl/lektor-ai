@@ -170,12 +170,18 @@ def _translation_cost(cfg: Config, counted: set[str]) -> None:
     pending = [b for b in bases if not (cfg.work_dir / f"{b}.srt").exists()]
     heard = [b for b in bases if translate.origin(cfg, b) == "asr"]
     if heard:
-        waiting = [b for b in heard if not transcribe.is_done(cfg, b)]
+        # Counted the way source_srt counts above: a transcript made for another language than
+        # the one asked for now is still on disk and still in the totals, so it is named apart
+        # rather than said to be left out.
+        waiting = [b for b in heard if not transcribe.transcript_info(cfg, b)]
+        again = [b for b in heard if b not in waiting and not transcribe.is_done(cfg, b)]
         say(f"transcription via faster-whisper "
             f"{transcribe.settings(cfg).get('model', 'large-v3')}: {len(heard)} episode(s) with "
             f"no text subtitle at all, $0.00 - it runs locally."
             + (f" {len(waiting)} not transcribed yet, so the source text below leaves them out."
-               if waiting else ""))
+               if waiting else "")
+            + (f" {len(again)} will be transcribed again for a changed language; the source "
+               f"text below counts their current transcript." if again else ""))
     say(f"translation via {model}: {len(bases)} episode(s) with no Polish track, {n_cues} cues / "
         f"{n_chars} chars of foreign source text.")
     real = sum(read_spend(cfg, base, "translate") for base in bases)

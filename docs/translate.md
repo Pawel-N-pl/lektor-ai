@@ -103,8 +103,9 @@ _Każda faza dopisuje tu, co zrobiła, co zmierzyła i czego nie dało się spra
   angielski, reszta. Whisper wchodzi dopiero w fazie 2.
 - Źródło leży w `subs/<base>.src.<lang>.srt`, nie obok `<base>.srt`: każdy etap globuje `*.srt`
   w katalogu roboczym i wziąłby źródło za osobny odcinek.
-- `translate.source = "asr"` jest przyjmowane, zgłaszane jako niezaimplementowane i odcinek jest
-  pomijany – nie podmieniane po cichu na `subs`.
+- ~~`translate.source = "asr"` jest przyjmowane, zgłaszane jako niezaimplementowane i odcinek jest
+  pomijany – nie podmieniane po cichu na `subs`.~~ Nieaktualne od fazy 2: `asr` wysyła film do
+  `transcribe`.
 - `mode = "always"` bez niczego do tłumaczenia bierze jednak polski track filmu i mówi to
   głośno, zamiast gubić odcinek. W tym trybie film zachowuje swój polski track, a tłumaczenie
   idzie obok jako drugi, inny tekst.
@@ -159,7 +160,7 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
 
 **Otwarte.**
 
-- Fazy 2 i 3; `source = "asr"` czeka na fazę 2.
+- Faza 3. (~~`source = "asr"` czeka na fazę 2~~ – zrobione w fazie 2.)
 - Odcinek za długi na jedno wywołanie jest cięty na kawałki, z których każdy widzi tylko siebie –
   bez kontekstu sąsiadów. Do zrobienia, jeśli prawdziwy odcinek kiedyś się nie zmieści.
 - `mode = "always"` na filmie, którego polski `<base>.srt` był już wyciągnięty wcześniej, trzyma
@@ -168,3 +169,85 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
   `measured_usd_per_episode`, sprawdzić granice długości, model i fallback.
 - README podaje liczbę linii `lektor.toml` i kluczy w `lektor.tuning.toml`, która była nieaktualna
   już przed tą fazą; nie poprawiona.
+
+### Faza 2 – ASR (ścieżka 3): zrobiona
+
+**Co jest.**
+
+- `extract`: film bez polskiego tracku tekstowego i bez obcego (albo z `source = "asr"`) nie
+  odpada, tylko dostaje downmix i sidecar z `subtitle_origin = "asr"` i tagiem języka audio.
+  Niczego tu nie transkrybuje.
+- `transcribe` (`lektorlib/transcribe.py`), krok między `extract` a `translate`: kanał centralny
+  przez `speech.centre_filter` (downmix, gdy centrum brak albo jest ciche), bez Demucsa;
+  faster-whisper poza interpreterem pipeline'u – skrypt na stdin do pythona z `transcribe.venv`
+  albo kontenera, tą samą drogą co forced alignment (`speech.run_script_local/docker`), JSON z
+  powrotem. Brak faster-whisper w tamtym interpreterze to osobny kod wyjścia i jeden komunikat,
+  jak go zainstalować.
+- Filtry halucynacji w czystym Pythonie: `no_speech_prob` z `avg_logprob`, współczynnik
+  kompresji, pętle n-gramów, ten sam tekst w kolejnych segmentach, same nuty / `[Music]`, segment
+  poza regionami mowy z VAD, czarna lista fraz. Każdy odrzucony segment zostaje w
+  `<base>.asr.json` z powodem.
+- Cięcie na karty jak w napisach: ≤ 2 × 42 znaki, ≤ 6 s, najpierw na końcu zdania, potem na
+  pauzie, potem po przecinku, nigdy w środku słowa. Wynik `subs/<base>.asr.<lang>.srt`, który
+  `translate` czyta tak samo jak track z `extract`.
+- Język: `translate.source_language`, potem tag ścieżki audio, potem detekcja Whispera; który i
+  skąd – zapisane. Każdy zapis języka znanego Whisperowi (setka kodów, 639-1 i 639-2 B/T, wycofane
+  `iw`/`in`/`ji`) jest tłumaczony na jego kod; nieznany jest pomijany z komunikatem w planie i
+  logu etapu, zamiast trafić do modelu, który odrzuciłby go dopiero po załadowaniu. Transkrypt
+  zrobiony dla innego języka niż teraz żądany jest robiony od nowa, a stary plik usuwany.
+- `run`, `cost`, `status`, stopka: transkrypcja jako darmowy krok lokalny; plan mówi, kiedy
+  transkrypcja jest pewna, a kiedy zależy od tego, co znajdzie `extract`, i że po nowym
+  transkrypcie `translate` przetłumaczy odcinek jeszcze raz. Napisy (`sidecar`, `mux`) obejmują
+  też film przetłumaczony z transkryptu. Extract i mux z PowerShella omijają film z
+  `subtitle_origin = "asr"` jak przetłumaczony.
+
+**Odstępstwa od planu.**
+
+- Plan mówił, że timestampy Whispera są ~316 ms za wczesne i że start ustala alignment. Nie są
+  korygowane: `transcribe.onset_shift_ms = 0`. Karty z transkryptu to siatka; `speech` wyrównuje
+  angielski transkrypt do audio, a `retime` przesuwa kwestię na pierwsze wyrównane słowo, tak samo
+  jak przy autorskich napisach.
+- Angielski transkrypt jest referencją do alignmentu **przed** skonfigurowanymi wzorcami, nie po
+  nich jak źródło tłumaczenia z fazy 1: `retime` dopasowuje karty po czasie startu, a tylko
+  transkrypt ma ich siatkę.
+- Audio, które Whisper słyszy jako polskie, jest odrzucane – tłumaczenie na samego siebie oblałoby
+  kontrolę „wróciło nieprzetłumaczone” linia po linii.
+- Pod `mode = "always"` film z polskim trackiem jest transkrybowany tylko przy `source = "asr"`;
+  `auto` zostawia mu jego track.
+- `source = "subs"` wyłącza transkrypcję także dla filmu, który wcześniejsza konfiguracja wysłała
+  już do `transcribe`: etap go pomija, a `run` zatrzymuje się na nim z powodem.
+
+**Czego nie zmierzono.** Nic. Transkrypcja nie przeszła przez żaden prawdziwy film: w
+środowisku nie ma GPU, faster-whisper ani kontenera ASR. Niezmierzone są: czas odcinka i
+realtime factor, VRAM drugiej kopii modelu w pożyczonym kontenerze, ile segmentów filtry zrzucają
+na prawdziwym audio, jak często detekcja języka myli się na filmie bez tagu, jakość tłumaczenia z
+transkryptu i lektora czytającego z niego. Wartości `[transcribe]` są domyślnymi biblioteki albo
+powszechną praktyką Whispera tam, gdzie komentarz to mówi; pozostałe (pętle, powtórzenia, udziały
+mowy i czarnej listy, pauzy, `linger_ms`, `timeout_s`) to nieprzetestowane wybory tego projektu.
+Sam skrypt ASR był uruchomiony tylko przeciw atrapie pakietu `faster_whisper`.
+
+**Kluczowe decyzje.**
+
+- Wynik transkrypcji siedzi w `<base>.asr.json`, nie w `<base>.source.json`: sidecar ma jednego
+  pisarza – `extract` – i jego ponowne uruchomienie nie zgubi tego, czego nauczyła się
+  transkrypcja.
+- Brak runtime'u nie degraduje niczego, tylko zatrzymuje etap: film bez napisów nie ma innego
+  tekstu. Venv, docker i działający kontener są sprawdzane przed wycięciem dźwięku; brak samego
+  faster-whisper wychodzi dopiero z uruchomionego skryptu.
+- `condition_on_previous_text = false` wbrew domyślnemu Whispera: podawanie poprzedniego tekstu
+  jako promptu pozwala jednej halucynacji powtarzać się minutami (szeroko opisywane, tu
+  niezmierzone).
+- Ręcznie poprawiony transkrypt jest odkładany na `.bak-*`, zanim `--force` go zastąpi.
+
+**Co sprawdzono.** Pełny zestaw testów: 570 passed, 3 skipped (po fazie 1: 441). Testy
+`test_transcribe*.py` idą offline: filtry i cięcie na karty na skonstruowanych segmentach, etap z
+podmienionym wycinaniem dźwięku i wywołaniem modelu, plan i `run` na prawdziwym `Config`, skrypt
+ASR przeciw atrapie `faster_whisper`. Żaden nie dotyka sieci ani GPU.
+
+**Otwarte.**
+
+- Pierwszy przebieg na prawdziwym filmie: czas, VRAM, odsetek zrzuconych segmentów, jakość cięcia
+  na karty; dopiero potem strojenie progów.
+- Whisper nie daje mówców, więc karta z transkryptu nigdy nie ma myślnika zmiany mówcy.
+- Faza 3: słownik serii, rodzaj gramatyczny mówiącego, aligner wielojęzyczny (MMS_FA) – dziś
+  transkrypt w innym języku niż angielski nie jest referencją do alignmentu.

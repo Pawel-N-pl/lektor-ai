@@ -290,11 +290,31 @@ class TestLanguage(unittest.TestCase):
         self.assertEqual(TR.whisper_code("deu"), "de")
         self.assertEqual(TR.whisper_code("ger"), "de")
         self.assertEqual(TR.whisper_code("nor"), "no")
-        # A two-letter code Whisper knows and the alias table does not passes through.
         self.assertEqual(TR.whisper_code("hr"), "hr")
         self.assertEqual(TR.whisper_code("und"), "")
         self.assertEqual(TR.whisper_code(""), "")
-        self.assertEqual(TR.whisper_code("hrv"), "")
+
+    def test_a_language_outside_the_subtitle_alias_table_is_still_told_to_whisper(self):
+        """mkv tags are 639-2, and the alias table media folds knows thirty languages."""
+        for tag, code in (("hrv", "hr"), ("ara", "ar"), ("heb", "he"), ("hin", "hi"),
+                          ("rum", "ro"), ("ron", "ro"), ("slo", "sk"), ("slk", "sk"),
+                          ("bul", "bg"), ("srp", "sr"), ("tha", "th"), ("vie", "vi"),
+                          ("HRV", "hr"), ("haw", "haw"), ("yue", "yue"), ("jav", "jw")):
+            with self.subTest(tag=tag):
+                self.assertEqual(TR.whisper_code(tag), code)
+        self.assertEqual(len(set(TR._WHISPER_CODE.values())), 100)
+
+    def test_a_withdrawn_or_unknown_code_never_reaches_the_model(self):
+        """faster-whisper raises ValueError on a code it does not know, after loading the model."""
+        self.assertEqual([TR.whisper_code(t) for t in ("iw", "in", "ji", "jv", "nb")],
+                         ["he", "id", "yi", "jw", "no"])
+        for tag in ("xx", "zz", "qaa", "klingon"):
+            with self.subTest(tag=tag):
+                self.assertEqual(TR.whisper_code(tag), "")
+
+    def test_whispers_answer_is_filed_under_the_tag_a_track_would_carry(self):
+        self.assertEqual([TR.tag_for(c) for c in ("en", "de", "no", "hr", "zh", "haw")],
+                         ["eng", "ger", "nor", "hrv", "chi", "haw"])
 
     def test_the_config_wins_then_the_audio_tag_then_detection(self):
         class Cfg:
@@ -307,6 +327,29 @@ class TestLanguage(unittest.TestCase):
                          ("en", "tag"))
         self.assertEqual(TR.requested_language(Cfg("auto"), {"audio_language": ""}),
                          ("", "detect"))
+        self.assertEqual(TR.requested_language(Cfg("hrv"), {"audio_language": "eng"}),
+                         ("hr", "config"))
+        self.assertEqual(TR.requested_language(Cfg("auto"), {"audio_language": "hrv"}),
+                         ("hr", "tag"))
+        self.assertEqual(TR.unknown_language(Cfg("hrv"), {}), "")
+
+    def test_a_setting_whisper_cannot_use_is_passed_over_and_said(self):
+        class Cfg:
+            def __init__(self, wanted):
+                self.raw = {"translate": {"source_language": wanted}}
+
+        self.assertEqual(TR.requested_language(Cfg("xx"), {"audio_language": "eng"}),
+                         ("en", "tag"))
+        self.assertEqual(TR.unknown_language(Cfg("xx"), {"audio_language": "eng"}),
+                         "translate.source_language 'xx' is no language Whisper knows – the "
+                         "audio track's tag is used instead")
+        self.assertEqual(TR.requested_language(Cfg("xx"), {}), ("", "detect"))
+        self.assertIn("Whisper detects the language", TR.unknown_language(Cfg("xx"), {}))
+        self.assertEqual(TR.requested_language(Cfg("auto"), {"audio_language": "qaa"}),
+                         ("", "detect"))
+        self.assertIn("the audio track's tag 'qaa' is no language Whisper knows",
+                      TR.unknown_language(Cfg("auto"), {"audio_language": "qaa"}))
+        self.assertEqual(TR.unknown_language(Cfg("auto"), {"audio_language": ""}), "")
 
 
 if __name__ == "__main__":

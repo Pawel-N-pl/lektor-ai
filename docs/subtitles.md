@@ -101,7 +101,9 @@ paid for in GPU minutes, and `always` with `auto` is about comparing two texts o
 built-in VAD, word timestamps on) in a venv or a container of its own; the pipeline never imports
 it ([install](install.md)). The language is `translate.source_language` when that names one, the
 audio track's tag otherwise, and Whisper's detection only when the track has none; the one used,
-and where it came from, is recorded.
+and where it came from, is recorded. Any spelling of a language Whisper knows will do – `hrv`,
+`hr`, `deu`, the withdrawn `iw` – and a value it does not know is passed over, said in the plan
+and the stage log, rather than handed to the model, which would refuse it after loading.
 
 Then two things in plain Python, before anything is written:
 
@@ -114,7 +116,9 @@ Then two things in plain Python, before anything is written:
   for watching", "Subtitles by the Amara.org community", "Untertitel im Auftrag des ZDF" and the
   like, which Whisper learned from captioned video and writes over silence and credits. Every
   dropped segment is kept in `<base>.asr.json` with its reason. **None of these thresholds has
-  been measured on this project's material**; they are the library's own or the common practice.
+  been measured on this project's material**. The silence pair and the compression ratio are
+  Whisper's own; the loop and repeat counts, the speech-overlap share and the blacklist share
+  were chosen here, and `lektor.tuning.toml` says which is which.
 * **Cutting into cards.** Whisper's segments can run 30 s and three sentences, so its words are
   regrouped the way subtitles are laid out: at most two lines of 42 characters and ~6 s, a silence
   over a second always ends a card, and a card that does not fit is split at a sentence end

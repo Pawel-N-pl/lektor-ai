@@ -108,9 +108,8 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("stage", choices=["run", "extract", "transcribe", "translate", "calibrate",
-                                      "speech",
-                                      "script", "retime", "voice", "pack", "mux", "all", "sample",
-                                      "cost", "status"])
+                                      "speech", "script", "retime", "voice", "pack", "mux", "all",
+                                      "sample", "cost", "status"])
     ap.add_argument("-c", "--config", type=Path, default=DEFAULT_CONFIG)
     ap.add_argument("--only", help="substring filter on the episode filename")
     ap.add_argument("--force", action="store_true", help="redo work that already exists")

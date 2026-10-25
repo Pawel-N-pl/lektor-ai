@@ -34,7 +34,9 @@ What does not work well, stated plainly.
 
 - **Transcription has never run on a real film.** Everything about the `transcribe` stage – the
   hallucination thresholds, the blacklist, the card lengths, the 300 ms linger, `large-v3` itself
-  – ships at the library's defaults or common Whisper practice and is covered by unit tests on
+  – ships at the library's defaults or common Whisper practice where `lektor.tuning.toml` names
+  one, and at this project's own unmeasured choice everywhere else (the loop and repeat counts,
+  the speech-overlap and blacklist shares, the pause lengths), and is covered by unit tests on
   constructed segments only. Nobody has listened to a lektor read from a transcript, nor counted
   how many of Whisper's segments the filters drop on real audio, nor checked how often its
   language detection is wrong when the audio track has no tag. Whisper gives no speakers either,

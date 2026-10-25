@@ -159,7 +159,7 @@ wymagają i co przestaje działać bez nich.
 | **OmniVoice** – klonowanie głosu | osobny venv 3.11 z `torch` i `omnivoice` ([komendy](docs/install.md)), ścieżka w `voice.omnivoice.venv`, próbka 3–10 s w `reference_wav` | brak klonowania na GPU |
 | **Chatterbox** | osobny venv 3.11 z `torch` i `chatterbox` ([komendy](docs/install.md)) | jak wyżej |
 | **kikivoice** | plik sesji z przeglądarki | brak; rozliczany w tygodniowym wiaderku kredytów |
-| **Transkrypcja** (faster-whisper) – tylko dla filmu bez żadnych napisów | venv z `faster-whisper` wskazany w `transcribe.venv` ([komendy](docs/install.md)), **albo** kontener, który go ma | film bez napisów nie dostaje lektora: etap mówi od razu, czego brakuje, zanim cokolwiek wytnie z dźwięku |
+| **Transkrypcja** (faster-whisper) – tylko dla filmu bez żadnych napisów | venv z `faster-whisper` wskazany w `transcribe.venv` ([komendy](docs/install.md)), **albo** kontener, który go ma | film bez napisów nie dostaje lektora: brak venv, dockera albo działającego kontenera etap zgłasza, zanim cokolwiek wytnie z dźwięku; brak samego faster-whisper wychodzi dopiero przy pierwszym odcinku, po wycięciu dźwięku |
 | **Forced alignment** | venv z `torch` i `torchaudio` wskazany w `speech.aligner_venv` ([komendy](docs/install.md)), **albo** kontener i `speech.aligner: "docker"` | zostają same cięcia montażowe: **bez dosuwania lektora na pierwsze słowo aktora i bez pauzowej połowy bramki scalania** |
 
 ---

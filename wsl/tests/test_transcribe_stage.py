@@ -111,6 +111,13 @@ class TestWhichFilms(Base):
         got, calls, _ = self.run_stage()
         self.assertEqual((got, calls), ({"ep": "never"}, []))
 
+    def test_source_subs_rules_out_a_film_an_earlier_config_sent_here(self):
+        self.sidecar(audio_language="eng")
+        self.cfg.raw["translate"]["source"] = "subs"
+        got, calls, centre = self.run_stage()
+        self.assertEqual((got, calls), ({"ep": "subs-only"}, []))
+        centre.assert_not_called()
+
 
 class TestWriting(Base):
     def test_it_writes_the_srt_and_the_raw_record_and_translate_then_finds_it(self):
@@ -152,6 +159,51 @@ class TestWriting(Base):
             self.run_stage(reply(texts=("Thanks for watching!",)))
         self.assertIn("nothing survived the filters", str(cm.exception))
         self.assertFalse((self.work / "ep.asr.json").exists())
+
+    def test_no_language_back_from_detection_writes_nothing(self):
+        self.sidecar(audio_language="")
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage(reply(language=""))
+        self.assertIn("no language came back", str(cm.exception))
+        self.assertFalse((self.work / "ep.asr.json").exists())
+        self.assertEqual(list(self.work.glob("subs/ep.asr.*.srt")), [])
+
+    def test_where_nothing_is_written_every_drop_is_said_and_no_file_is_pointed_at(self):
+        self.sidecar(audio_language="eng")
+        TR.say.reset_mock()
+        with self.assertRaises(SystemExit):
+            self.run_stage(reply(texts=[f"Thanks for watching! {i}" for i in range(10)]))
+        said = "\n".join(str(c.args[0]) for c in TR.say.call_args_list)
+        self.assertEqual(said.count("blacklisted"), 10)
+        self.assertNotIn("ep.asr.json", said)
+        self.assertFalse((self.work / "ep.asr.json").exists())
+
+    def test_where_the_transcript_is_written_the_rest_of_the_drops_point_at_it(self):
+        self.sidecar(audio_language="eng")
+        TR.say.reset_mock()
+        self.run_stage(reply(texts=["Where were you?"]
+                             + [f"Thanks for watching! {i}" for i in range(10)]))
+        said = "\n".join(str(c.args[0]) for c in TR.say.call_args_list)
+        self.assertIn("... and 2 more, all in ep.asr.json", said)
+        self.assertEqual(sum(1 for s in self.asr_json["segments"] if s["dropped"]), 10)
+
+    def test_a_language_whisper_does_not_know_is_said_and_detection_takes_over(self):
+        self.sidecar(audio_language="")
+        self.cfg.raw["translate"]["source_language"] = "xx"
+        TR.say.reset_mock()
+        got, calls, _ = self.run_stage()
+        self.assertEqual((got, calls), ({"ep": "written"}, [""]))
+        said = "\n".join(str(c.args[0]) for c in TR.say.call_args_list)
+        self.assertIn("translate.source_language 'xx' is no language Whisper knows", said)
+
+    def test_a_croatian_tag_is_told_to_whisper_and_names_the_file_as_a_track_would(self):
+        self.sidecar(audio_language="hrv")
+        got, calls, _ = self.run_stage(reply(language="hr", texts=("Gdje si bio?",)))
+        self.assertEqual((got, calls), ({"ep": "written"}, ["hr"]))
+        self.assertTrue((self.work / "subs" / "ep.asr.hrv.srt").is_file())
+        self.assertEqual((self.asr_json["language"], self.asr_json["language_source"]),
+                         ("hrv", "tag"))
+        self.assertTrue(TR.is_done(self.cfg, "ep"))
 
     def test_no_video_is_a_failure_named_per_episode(self):
         self.sidecar(audio_language="eng")
@@ -228,6 +280,51 @@ class TestRuntime(Base):
         self.assertIn("transcribe.venv", msg)
         self.assertIn("docs/install.md", msg)
         self.assertFalse((self.work / "ep.asr.json").exists())
+
+    def two_episodes(self):
+        self.sidecar(audio_language="eng")
+        video = self.cfg.input_dir / "ep2.mkv"
+        video.write_bytes(b"not really an mkv")
+        (self.work / "ep2.source.json").write_text(json.dumps(
+            {"base": "ep2", "source": str(video), "language": "pol", "subtitle_origin": "asr",
+             "audio_language": "eng"}), encoding="utf-8")
+
+    def leftovers(self):
+        tmp = Path(self.cfg.raw["speech"]["tmp_dir"])
+        return sorted(p.name for p in tmp.glob("lektor-asr-*")) if tmp.is_dir() else []
+
+    def test_one_failed_episode_does_not_stop_the_next(self):
+        self.two_episodes()
+        fail = SP.ScriptFailed("transcription", 1, "CUDA out of memory")
+        with mock.patch.object(TR, "extract_centre", return_value="centre"), \
+             mock.patch.object(TR, "runtime_problem", return_value=""), \
+             mock.patch.object(TR, "run_asr", side_effect=[fail, reply()]) as asr:
+            with self.assertRaises(SystemExit) as cm:
+                TR.stage_transcribe(self.cfg, None)
+        msg = str(cm.exception)
+        self.assertIn("transcription did not finish for:", msg)
+        self.assertIn("ep: ", msg)
+        self.assertIn("CUDA out of memory", msg)
+        self.assertEqual(asr.call_count, 2)
+        self.assertFalse((self.work / "ep.asr.json").exists())
+        self.assertTrue((self.work / "ep2.asr.json").is_file())
+        self.assertTrue((self.work / "subs" / "ep2.asr.eng.srt").is_file())
+        self.assertEqual(self.leftovers(), [])
+
+    def test_faster_whisper_missing_mid_stage_stops_with_the_install_message(self):
+        self.two_episodes()
+        missing = TR.RuntimeMissing(TR.missing_runtime_message(
+            "faster-whisper is not installed in the container 'asr'"))
+        with mock.patch.object(TR, "extract_centre", return_value="centre"), \
+             mock.patch.object(TR, "runtime_problem", return_value=""), \
+             mock.patch.object(TR, "run_asr", side_effect=missing) as asr:
+            with self.assertRaises(SystemExit) as cm:
+                TR.stage_transcribe(self.cfg, None)
+        msg = str(cm.exception)
+        self.assertIn("docs/install.md", msg)
+        self.assertNotIn("did not finish", msg)
+        self.assertEqual(asr.call_count, 1)
+        self.assertEqual(self.leftovers(), [])
 
     def test_auto_takes_a_configured_venv_and_the_container_otherwise(self):
         venv = Path(self.tmp.name) / "venv"

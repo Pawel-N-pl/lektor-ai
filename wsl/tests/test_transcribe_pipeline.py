@@ -74,6 +74,17 @@ class Base(unittest.TestCase):
         if translated:
             (self.work / "ep.srt").write_text(SRT, encoding="utf-8")
 
+    def ours(self, source_srt, language):
+        """Stamp ep.srt as translate's own, made from this source - what a finished run leaves."""
+        (self.work / "ep.srt").write_text(SRT, encoding="utf-8")
+        src = self.work / source_srt
+        T.provenance_path(self.cfg, "ep").write_text(json.dumps({
+            "srt_sha256": T.file_sha256(self.work / "ep.srt"), "source_srt": source_srt,
+            "source_language": language, "source_sha256": T.file_sha256(src)}),
+            encoding="utf-8")
+        self.assertEqual((T.srt_state(self.cfg, "ep"), T.stale_source(self.cfg, "ep")),
+                         ("ours", ""))
+
     def plan(self, steps=None, redo=()):
         steps = steps or list(P.STEPS[:P.STEPS.index("pack") + 1])
         buf = io.StringIO()
@@ -156,6 +167,81 @@ class TestPlan(Base):
         self.cfg.raw["translate"]["source_language"] = "ger"
         self.assertIn("transcribe run  it was transcribed as 'en' and the language asked for "
                       "is now 'de'", self.plan())
+
+    def test_a_new_transcript_is_planned_to_be_translated_again(self):
+        """translate judged from the transcript on disk would say skip, and then bill."""
+        self.heard(transcribed=True)
+        self.ours("subs/ep.asr.eng.srt", "eng")
+        self.assertIn("translate  skip ep.srt is already there", self.plan())
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        out = self.plan()
+        self.assertIn("transcribe run  it was transcribed as 'en'", out)
+        self.assertIn("translate  run  ep.srt will be translated from the new transcript – lines "
+                      "the book still holds are free", out)
+        self.cfg.raw["translate"]["source_language"] = "auto"
+        self.assertIn("translate  run  ep.srt will be translated from the new transcript",
+                      self.plan(redo={"transcribe"}))
+
+    def test_source_asr_on_a_subtitled_film_plans_both_steps_that_extract_will_cause(self):
+        (self.work / "subs").mkdir()
+        (self.work / "subs" / "ep.src.eng.srt").write_text(SRT, encoding="utf-8")
+        (self.work / "ep.source.json").write_text(json.dumps(
+            {"base": "ep", "subtitle_origin": "subs", "source_srt": "subs/ep.src.eng.srt",
+             "source_language": "eng"}), encoding="utf-8")
+        self.ours("subs/ep.src.eng.srt", "eng")
+        self.cfg.raw["translate"]["source"] = "asr"
+        out = self.plan()
+        self.assertIn("audio    transcribed by faster-whisper large-v3 (docker: asr), local and "
+                      "free\n", out)
+        self.assertIn("transcribe run  -> ep.asr.json\n", out)
+        self.assertIn("translate  run  ep.srt will be translated from the new transcript", out)
+        # Without extract in the chain nothing rewrites the sidecar, and nothing is transcribed.
+        out = self.plan(steps=["transcribe", "translate"])
+        self.assertIn("transcribe skip the film has a text subtitle to translate from", out)
+        self.assertIn("translate  skip ep.srt is already there", out)
+
+    def test_source_subs_on_a_film_sent_to_transcription_earlier_stops_there(self):
+        self.heard()
+        self.cfg.raw["translate"]["source"] = "subs"
+        out = self.plan()
+        self.assertIn("transcribe skip translate.source is 'subs' and the film has no text "
+                      "subtitle – the chain stops here", out)
+        self.assertNotIn("faster-whisper", out)
+        self.assertNotIn("transcribe run", out)
+
+    def test_mode_never_skips_transcribe_whatever_extract_recorded(self):
+        self.heard()
+        self.cfg.raw["translate"]["mode"] = "never"
+        with mock.patch.object(TR, "runtime_problem", return_value="docker is not on PATH"):
+            out = self.plan()
+        self.assertIn("transcribe skip translate.mode is 'never'", out)
+        self.assertNotIn("transcribe run", out)
+        self.assertNotIn("no runtime for transcription", out)
+        self.heard(transcribed=True)
+        (self.work / "subs" / "ep.asr.eng.srt").unlink()
+        self.assertIn("transcribe skip translate.mode is 'never'", self.plan())
+
+    def test_mode_always_with_source_asr_plans_transcribe_for_certain(self):
+        (self.work / "ep.source.json").write_text(json.dumps({"base": "ep"}), encoding="utf-8")
+        self.cfg.raw["translate"].update(mode="always", source="asr")
+        out = self.plan()
+        self.assertIn("transcribe run  -> ep.asr.json\n", out)
+        self.assertNotIn("only if", out.split("transcribe run")[1].splitlines()[0])
+        self.cfg.raw["translate"]["source"] = "auto"
+        self.assertIn("transcribe skip under translate.mode 'always' the audio is transcribed "
+                      "only when translate.source is 'asr'", self.plan())
+
+    def test_a_transcript_whose_srt_was_deleted_is_planned_as_run(self):
+        self.heard(transcribed=True)
+        (self.work / "subs" / "ep.asr.eng.srt").unlink()
+        self.assertIn("transcribe run  its .srt is gone – transcribing again, local and free",
+                      self.plan())
+
+    def test_a_language_whisper_does_not_know_is_said_in_the_plan(self):
+        self.heard()
+        self.cfg.raw["translate"]["source_language"] = "xx"
+        self.assertIn("translate.source_language 'xx' is no language Whisper knows – the audio "
+                      "track's tag is used instead.", self.plan())
 
     def test_a_film_with_subtitles_or_a_polish_track_says_why_it_skips(self):
         (self.work / "ep.source.json").write_text(json.dumps(
@@ -256,6 +342,16 @@ class TestRunStep(Base):
                 self.step()
         self.assertIn("transcribe wrote no usable ep.asr.json", str(cm.exception))
 
+    def test_source_subs_on_a_film_sent_to_transcription_earlier_stops_the_chain(self):
+        self.heard()
+        self.cfg.raw["translate"]["source"] = "subs"
+        with mock.patch.object(TR, "run_asr") as asr, mock.patch.object(TR, "extract_centre"):
+            with self.assertRaises(P.HardFail) as cm:
+                self.step()
+        asr.assert_not_called()
+        self.assertIn("translate.source is 'subs' and the film has no text subtitle",
+                      str(cm.exception))
+
     def test_extract_that_sent_the_film_to_transcribe_is_a_success(self):
         def fake(cfg, only, force=False):
             self.heard()
@@ -286,6 +382,16 @@ class TestFooterCostStatus(Base):
         self.heard(transcribed=True)
         out = self.quiet(pricing.stage_cost, self.cfg, "creator")
         self.assertNotIn("not transcribed yet", out)
+        self.assertIn("1 cues / 6 chars", out)
+
+    def test_cost_does_not_say_a_stale_transcript_is_left_out_while_counting_it(self):
+        from lektorlib import pricing
+        self.heard(transcribed=True)
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        out = self.quiet(pricing.stage_cost, self.cfg, "creator")
+        self.assertNotIn("not transcribed yet", out)
+        self.assertIn("1 will be transcribed again for a changed language; the source text below "
+                      "counts their current transcript", out)
         self.assertIn("1 cues / 6 chars", out)
 
     def test_status_follows_a_heard_film_from_asr_to_src_to_tr(self):

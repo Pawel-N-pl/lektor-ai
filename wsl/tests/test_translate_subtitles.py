@@ -45,7 +45,7 @@ class Cfg:
             side["subtitle_origin"] = origin
         (self.work_dir / "ep.source.json").write_text(json.dumps(side), encoding="utf-8")
         (self.work_dir / "ep.srt").write_text(SRT, encoding="utf-8")
-        if origin == "subs" and ours:
+        if origin in T.TRANSLATED and ours:
             (self.work_dir / "ep.translate.json").write_text(json.dumps(
                 {"srt_sha256": T.file_sha256(self.work_dir / "ep.srt")}), encoding="utf-8")
 
@@ -118,6 +118,13 @@ class TestWhenSubtitlesExist(unittest.TestCase):
     def test_only_a_translated_episode_has_polish_subtitles_to_offer(self):
         cfg = Cfg(self.tmp.name, origin="subs")
         self.assertEqual(M.polish_subtitle_for(cfg, "ep"), cfg.work_dir / "ep.srt")
+
+    def test_a_transcribed_and_translated_episode_offers_its_subtitles_too(self):
+        cfg = Cfg(self.tmp.name, "sidecar", origin="asr")
+        self.assertEqual(M.polish_subtitle_for(cfg, "ep"), cfg.work_dir / "ep.srt")
+        side = M.sync_sidecar(cfg, "ep")
+        self.assertEqual(side, cfg.input_dir / "ep.pl.srt")
+        self.assertEqual(side.read_text(encoding="utf-8"), SRT)
 
     def test_a_polish_track_is_never_duplicated(self):
         cfg = Cfg(self.tmp.name, "sidecar", origin=None)
