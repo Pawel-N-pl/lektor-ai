@@ -243,8 +243,8 @@ class TestExtractBranches(unittest.TestCase):
 
     def test_mode_always_with_nothing_to_translate_falls_back_to_the_polish_track(self):
         # Losing an episode that extracts fine under 'auto' was never what 'always' asked for.
-        for tr in ({"mode": "always"}, {"mode": "always", "source": "asr"},
-                   {"mode": "always", "source_language": "ger"}):
+        # Nor does 'always' reach for the audio under source 'auto': see the next test.
+        for tr in ({"mode": "always"}, {"mode": "always", "source_language": "ger"}):
             with self.subTest(**tr):
                 cfg, calls = self.run_extract([sub(2, "eng", forced=1), sub(30, "pol")],
                                               translate=tr)
@@ -299,31 +299,97 @@ class TestExtractBranches(unittest.TestCase):
 
     def test_a_bitmap_polish_track_with_nothing_to_translate_still_says_ocr_in_the_log(self):
         # The one fact that rescues this episode is that its Polish track can be OCRed; the log
-        # a season run reads has to say so, not only that there was no foreign track.
+        # a season run reads has to say so, not only that there was no foreign track. Under
+        # source 'auto' the audio would be transcribed instead, so this is source 'subs'.
         cfg, calls = self.run_extract([sub(30, "pol", codec="hdmv_pgs_subtitle")],
-                                      translate={"mode": "auto"})
+                                      translate={"mode": "auto", "source": "subs"})
         self.assertEqual(calls, [])
         log = (cfg.work_dir / "error_log.txt").read_text(encoding="utf-8")
         self.assertEqual(len(log.splitlines()), 1)
         self.assertIn("bitmap 'pol' subtitle stream (hdmv_pgs_subtitle) – OCR it first", log)
         self.assertIn("to translate from", log)
 
-    def test_asr_is_reported_as_not_implemented_and_skipped(self):
-        cfg, calls = self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "asr"})
-        self.assertEqual(calls, [])
-        log = (cfg.work_dir / "error_log.txt").read_text(encoding="utf-8")
-        self.assertIn("not implemented", log)
-        self.assertFalse((cfg.work_dir / "ep.source.json").exists())
-
     def test_nothing_to_translate_from_is_logged_like_a_missing_track(self):
-        cfg, calls = self.run_extract([sub(2, "eng", forced=1)], translate={"mode": "auto"})
+        cfg, calls = self.run_extract([sub(2, "eng", forced=1)],
+                                      translate={"mode": "auto", "source": "subs"})
         self.assertEqual(calls, [])
         self.assertIn("to translate from",
                       (cfg.work_dir / "error_log.txt").read_text(encoding="utf-8"))
 
+    def test_a_misspelled_source_is_an_error_not_a_guess(self):
+        with self.assertRaises(ValueError):
+            self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "whisper"})
+
     def test_a_misspelled_mode_is_an_error_not_a_guess(self):
         with self.assertRaises(ValueError):
             self.run_extract([sub(30, "pol")], translate={"mode": "sometimes"})
+
+
+class TestExtractForTranscription(unittest.TestCase):
+    """No text subtitle at all: extract cuts the downmix and sends the film to `transcribe`."""
+
+    run_extract = TestExtractBranches.run_extract
+    sidecar = TestExtractBranches.sidecar
+
+    def test_no_text_subtitle_at_all_sends_the_film_to_transcribe(self):
+        cfg, calls = self.run_extract([sub(2, "eng", forced=1)], audio=[aud(1, "eng")],
+                                      translate={"mode": "auto"})
+        self.assertEqual(calls, [])
+        d = self.sidecar(cfg)
+        self.assertEqual(d["subtitle_origin"], "asr")
+        self.assertEqual(d["audio_language"], "eng")
+        self.assertIsNone(d["subtitle_stream"])
+        self.assertNotIn("source_srt", d)
+        # Whisper decides the language unless the config names one.
+        self.assertEqual(d["source_language"], "")
+        self.assertEqual(d["language"], "pol")
+        # Not a failure: nothing goes to the log a season run reads for the episodes it lost.
+        self.assertFalse((cfg.work_dir / "error_log.txt").exists())
+
+    def test_a_bitmap_polish_track_and_nothing_else_is_transcribed_under_auto(self):
+        cfg, _ = self.run_extract([sub(30, "pol", codec="hdmv_pgs_subtitle")],
+                                  translate={"mode": "auto"})
+        self.assertEqual(self.sidecar(cfg)["subtitle_origin"], "asr")
+
+    def test_source_asr_transcribes_even_when_a_foreign_subtitle_is_there(self):
+        cfg, calls = self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "asr"})
+        self.assertEqual(calls, [])
+        self.assertEqual(self.sidecar(cfg)["subtitle_origin"], "asr")
+
+    def test_a_named_source_language_is_recorded_folded(self):
+        cfg, _ = self.run_extract([], translate={"mode": "auto", "source_language": "deu"})
+        d = self.sidecar(cfg)
+        self.assertEqual((d["subtitle_origin"], d["source_language"]), ("asr", "ger"))
+
+    def test_source_subs_keeps_the_old_skip(self):
+        cfg, _ = self.run_extract([], translate={"mode": "auto", "source": "subs"})
+        self.assertFalse((cfg.work_dir / "ep.source.json").exists())
+        self.assertIn("to translate from",
+                      (cfg.work_dir / "error_log.txt").read_text(encoding="utf-8"))
+
+    def test_mode_always_with_source_asr_transcribes_over_a_polish_track(self):
+        """Named by hand, the audio is the source - 'always' then means what it says."""
+        from lektorlib import translate as T
+        cfg, calls = self.run_extract([sub(30, "pol")], translate={"mode": "always",
+                                                                   "source": "asr"})
+        self.assertEqual(calls, [])
+        self.assertEqual(T.origin(cfg, "ep"), "asr")
+
+    def test_mode_always_with_source_auto_keeps_the_polish_track(self):
+        cfg, calls = self.run_extract([sub(30, "pol")], translate={"mode": "always"})
+        self.assertEqual(calls, [(30, cfg.work_dir / "ep.srt")])
+        self.assertNotIn("subtitle_origin", self.sidecar(cfg))
+
+    def test_switching_from_a_subtitle_translation_to_asr_waits_for_the_transcript(self):
+        """The translation of the subtitle stays until transcribe and translate replace it - it
+        is still a valid Polish text, and stale_source notices the new source once there is one."""
+        from lektorlib import translate as T
+        cfg, _ = self.run_extract([sub(2, "eng")], translate={"mode": "auto"})
+        self.assertEqual(T.origin(cfg, "ep"), "subs")
+        cfg, _ = self.run_extract([sub(2, "eng")], translate={"mode": "auto", "source": "asr"},
+                                  root=cfg.input_dir)
+        self.assertEqual(T.origin(cfg, "ep"), "asr")
+        self.assertIsNone(T.source_srt(cfg, "ep"))
 
 
 if __name__ == "__main__":

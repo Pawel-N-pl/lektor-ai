@@ -795,5 +795,55 @@ class TestStage(WorkDir):
         self.assertEqual(p.calls, [])
 
 
+class TestStageFromTranscript(WorkDir):
+    """Path 3: the source is the transcript `transcribe` wrote, found through <base>.asr.json."""
+
+    def setUp(self):
+        super().setUp()
+        self.src.unlink()
+        self.write_sidecar({"subtitle_origin": "asr", "source_language": "", "audio_language": ""})
+
+    def transcribed(self, language="eng", text=SOURCE):
+        asr = self.work / "subs" / f"ep.asr.{language}.srt"
+        asr.write_text(text, encoding="utf-8")
+        (self.work / "ep.asr.json").write_text(json.dumps({
+            "srt": f"subs/{asr.name}", "language": language}), encoding="utf-8")
+        return asr
+
+    def test_it_is_translated_exactly_like_a_subtitle_track(self):
+        self.transcribed()
+        got, p = self.run_stage()
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual([c.start_ms for c in parse_srt(self.srt)], [1000, 3000, 8000, 60000])
+        prov = json.loads((self.work / "ep.translate.json").read_text(encoding="utf-8"))
+        self.assertEqual(prov["source_srt"], "subs/ep.asr.eng.srt")
+        self.assertEqual(prov["source_language"], "eng")
+        self.assertEqual(prov["subtitle_origin"], "asr")
+        self.assertTrue(T.is_translated(self.cfg, "ep"))
+
+    def test_before_transcribe_has_run_it_fails_and_says_which_stage_is_missing(self):
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage()
+        self.assertIn("run transcribe first", str(cm.exception))
+        self.assertFalse(self.srt.exists())
+
+    def test_a_new_transcript_is_translated_again(self):
+        self.transcribed()
+        self.run_stage()
+        self.transcribed(text=SOURCE.replace("I'm ready.", "I am ready.", 1))
+        self.assertTrue(T.stale_source(self.cfg, "ep"))
+        got, p = self.run_stage()
+        self.assertEqual(got, {"ep": "written"})
+        self.assertEqual(len(p.calls), 1)
+
+    def test_the_sidecar_is_never_rewritten_with_what_the_transcript_learned(self):
+        self.transcribed()
+        info = T.source_info(self.cfg, "ep")
+        self.assertEqual((info["source_srt"], info["source_language"]),
+                         ("subs/ep.asr.eng.srt", "eng"))
+        on_disk = json.loads((self.work / "ep.source.json").read_text(encoding="utf-8"))
+        self.assertNotIn("source_srt", on_disk)
+
+
 if __name__ == "__main__":
     unittest.main()

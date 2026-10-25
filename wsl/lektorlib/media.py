@@ -467,7 +467,7 @@ def polish_subtitle_for(cfg, base: str) -> Path | None:
     from . import translate     # translate imports this module
 
     srt = cfg.work_dir / f"{base}.srt"
-    if translate.origin(cfg, base) != "subs" or not srt.is_file():
+    if not translate.is_translated(cfg, base) or not srt.is_file():
         return None
     if translate.srt_state(cfg, base) not in ("ours", "edited"):
         return None
@@ -626,36 +626,44 @@ def _downmix(cfg, video: Path, flac: Path, force: bool) -> None:
         say("  -> downmix exists, skipping (--force to redo)")
 
 
+def translate_source(cfg) -> str:
+    """translate.source, checked: a typo here must not quietly mean 'auto'."""
+    source = str(translate_settings(cfg).get("source", "auto") or "auto").strip().lower()
+    if source not in ("auto", "subs", "asr"):
+        raise ValueError(f"translate.source: {source!r} – pick from auto, subs, asr")
+    return source
+
+
 def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = False,
                             polish_fallback: bool = False, log_prefix: str = "") -> Path | None:
-    """The foreign half of extract: `subs/<base>.src.<lang>.srt`, the downmix, and the sidecar.
+    """The foreign half of extract: `subs/<base>.src.<lang>.srt`, the downmix, and the sidecar -
+    or, for a film with no text subtitle at all, the downmix and a sidecar that sends it to
+    `transcribe`.
 
-    Returns the source subtitle, or None when there is nothing to translate from - which is
-    logged to error_log.txt exactly as a missing Polish track always was, so a season run still
-    names every episode it could not do. With `polish_fallback` the caller still has the film's
-    own Polish track to fall back on, so a miss is neither "skipped" nor logged. `log_prefix` is
-    what the caller already knows about the Polish track, put in front of a logged miss so the
-    one line says everything that would rescue the episode.
+    Returns the source subtitle (the sidecar, for a film left to transcribe), or None when there
+    is nothing to translate from - which is logged to error_log.txt exactly as a missing Polish
+    track always was, so a season run still names every episode it could not do. With
+    `polish_fallback` the caller still has the film's own Polish track to fall back on, so a miss
+    is neither "skipped" nor logged. `log_prefix` is what the caller already knows about the
+    Polish track, put in front of a logged miss so the one line says everything that would rescue
+    the episode.
+
+    The audio is a source only when asked for by name, or under 'auto' when the film has no usable
+    Polish text track either. 'always' on a film that HAS one, with no foreign subtitle beside it,
+    keeps the Polish track rather than transcribing: what 'always' compares is two texts of the
+    same film, and a transcript is a guess at one, paid for in GPU minutes.
     """
     end = "" if polish_fallback else " – skipped"
     ffmpeg, ffprobe = ffmpeg_bin(cfg), ffprobe_bin(cfg)
     ex = cfg["extract"]
     tr = translate_settings(cfg)
     work_dir = cfg.work_dir
-    source = str(tr.get("source", "auto") or "auto").strip().lower()
-    if source not in ("auto", "subs", "asr"):
-        raise ValueError(f"translate.source: {source!r} – pick from auto, subs, asr")
-    if source == "asr":
-        # Said, not quietly swapped for 'subs': whoever set it asked for a transcription of the
-        # audio, and a translation of a subtitle track is a different thing to hand them.
-        say("  !! translate.source is 'asr': transcribing the audio is phase 2 of "
-            f"docs/translate.md and not implemented yet{end}")
-        if not polish_fallback:
-            log_extract_error(work_dir, base,
-                              f"{log_prefix}translate.source 'asr' is not implemented yet")
-        return None
-
+    source = translate_source(cfg)
     audio = audio_language(probe_streams(ffprobe, video, "a"), ex.get("audio_stream", "a:0"))
+    if source == "asr":
+        return _extract_for_transcription(cfg, video, base, audio, force,
+                                          "translate.source is 'asr'")
+
     pick = pick_translation_source(subs, ex["subtitle_language"], audio,
                                    tr.get("source_language", "auto"),
                                    ex.get("reject_title_patterns"),
@@ -664,8 +672,11 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
         wanted = str(tr.get("source_language", "auto") or "auto")
         what = ("no text subtitle in another language" if wanted.lower() == "auto"
                 else f"no '{wanted}' text subtitle")
-        tail = (" either, and transcribing the audio (translate.source 'asr') is not implemented "
-                "yet" if source == "auto" else "")
+        if source == "auto" and not polish_fallback:
+            return _extract_for_transcription(cfg, video, base, audio, force,
+                                              f"{what} to translate from")
+        tail = (" – the film's own Polish track is used rather than a transcript of its audio"
+                if source == "auto" else "")
         say(f"  !! {what} to translate from{tail}{end}")
         if not polish_fallback:
             log_extract_error(work_dir, base, f"{log_prefix}{what} to translate from")
@@ -695,6 +706,35 @@ def extract_for_translation(cfg, video: Path, base: str, subs, force: bool = Fal
     say(f"  OK  {src.parent.name}/{src.name}" + (f" + {flac.name}" if flac.exists() else "")
         + f" – `translate` turns it into {base}.srt")
     return src
+
+
+def _extract_for_transcription(cfg, video: Path, base: str, audio: str, force: bool,
+                               why: str) -> Path:
+    """The downmix and a sidecar with `subtitle_origin = "asr"`: nothing is transcribed here.
+
+    Transcription is its own stage, because it is the one step on this path that needs a GPU and
+    a model, and a stage of its own is what lets `run` skip it, redo it and time it like the rest.
+    The language is NOT decided here unless the config names one: Whisper reads it off the audio,
+    and `transcribe` records what it found in `<base>.asr.json`.
+    """
+    ex = cfg["extract"]
+    tr = translate_settings(cfg)
+    wanted = str(tr.get("source_language", "auto") or "auto").strip()
+    say(f"  .. {why} – the film's audio will be transcribed (`transcribe`) and translated from")
+    flac = cfg.work_dir / f"{base}.orig.flac"
+    _downmix(cfg, video, flac, force)
+    sidecar = cfg.work_dir / f"{base}.source.json"
+    write_source_json(sidecar, base, video, SubtitleChoice(index=-1), ex["subtitle_language"],
+                      extra={
+                          "subtitle_stream": None,
+                          "subtitle_origin": "asr",
+                          "source_language": "" if wanted.lower() == "auto"
+                          else language_key(wanted),
+                          "audio_language": audio,
+                      })
+    say(f"  OK  {sidecar.name}" + (f" + {flac.name}" if flac.exists() else "")
+        + f" – `transcribe` writes the source, `translate` turns it into {base}.srt")
+    return sidecar
 
 
 def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
@@ -773,7 +813,7 @@ def stage_extract(cfg, only: str | None = None, force: bool = False) -> None:
         flag = f" – rejected fallback: {choice.reason}" if choice.rejected else ""
         say(f"  -> subtitle stream 0:{choice.index} [{choice.codec}]{note}{flag}")
 
-        if was == "subs" and translate.srt_state(cfg, base) in ("ours", "edited"):
+        if was in translate.TRANSLATED and translate.srt_state(cfg, base) in ("ours", "edited"):
             # The translation from the old mode. Skipped as "srt exists", it would be voiced as
             # the film's own track from here on while that track went unused.
             keep = translate.set_aside(srt)

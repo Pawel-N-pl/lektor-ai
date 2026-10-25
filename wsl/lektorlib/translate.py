@@ -47,7 +47,12 @@ from .script import CallStats, Validation, _ask, append_spend, spend_path
 from .srt import SENTENCE_END, SPEAKER_DASH, Cue, parse_srt
 
 __all__ = ["stage_translate", "origin", "source_info", "source_srt", "srt_state",
-           "stale_source"]
+           "stale_source", "TRANSLATED", "is_translated"]
+
+# The two `subtitle_origin`s whose Polish text this stage writes: a foreign subtitle track extract
+# pulled out of the film, and the transcript `transcribe` made of its audio. "track" - or no key at
+# all - is the film's own Polish track, which nothing here touches.
+TRANSLATED = ("subs", "asr")
 
 # ---------------------------------------------------------------------------
 # Prompt
@@ -464,7 +469,13 @@ def split_by_book(cues, language: str, book: dict[str, dict], s: dict, t: dict
 
 
 def source_info(cfg, base: str) -> dict:
-    """`<base>.source.json`, or {} when there is none or it will not parse."""
+    """`<base>.source.json`, or {} when there is none or it will not parse.
+
+    For a film transcribed from its audio, `source_srt` and `source_language` come from the
+    transcript (`<base>.asr.json`) once there is one: extract cannot know them, since Whisper
+    decides the language, and every reader below - this stage, `speech`, the plan - then sees one
+    shape whichever path the foreign text took.
+    """
     p = cfg.work_dir / f"{base}.source.json"
     if not p.is_file():
         return {}
@@ -472,11 +483,17 @@ def source_info(cfg, base: str) -> dict:
         data = read_source_json(p)
     except (OSError, ValueError):
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    if data.get("subtitle_origin") == "asr":
+        from . import transcribe        # transcribe imports this module
+        data.update(transcribe.transcript_info(cfg, base))
+    return data
 
 
 def origin(cfg, base: str) -> str:
-    """Where this episode's Polish text comes from: "track", "subs", or "" when nothing says yet.
+    """Where this episode's Polish text comes from: "track", "subs", "asr", or "" when nothing
+    says yet.
 
     A sidecar with no `subtitle_origin` is a Polish extract - this side's, which only writes the
     key for a translation, or the PowerShell's, which predates the idea.
@@ -487,14 +504,21 @@ def origin(cfg, base: str) -> str:
     return str(info.get("subtitle_origin") or "track")
 
 
+def is_translated(cfg, base: str) -> bool:
+    """Is (or will) this episode's Polish text be a translation this stage writes?"""
+    return origin(cfg, base) in TRANSLATED
+
+
 def source_srt(cfg, base: str, info: dict | None = None) -> Path | None:
-    """The foreign subtitle extract wrote for this episode, if it is still there."""
+    """The foreign subtitle this episode is translated from - extract's, or the transcript - if it
+    is still there."""
     info = source_info(cfg, base) if info is None else info
     rel = info.get("source_srt")
     if rel:
         p = cfg.work_dir / str(rel)
         return p if p.is_file() else None
-    hits = sorted((cfg.work_dir / "subs").glob(f"{base}.src.*.srt"))
+    kind = "asr" if info.get("subtitle_origin") == "asr" else "src"
+    hits = sorted((cfg.work_dir / "subs").glob(f"{base}.{kind}.*.srt"))
     return hits[0] if hits else None
 
 
@@ -709,7 +733,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
 
     for base in bases:
         info = source_info(cfg, base)
-        if (info.get("subtitle_origin") or "track") != "subs":
+        if (info.get("subtitle_origin") or "track") not in TRANSLATED:
             say(f"{base}: Polish subtitle track in the film – nothing to translate")
             result[base] = "track"
             continue
@@ -740,7 +764,9 @@ def stage_translate(cfg, only: str | None, force: bool = False,
         say(f"\n{base}")
         src = source_srt(cfg, base, info)
         if src is None:
-            failed.append(f"{base}: the foreign subtitle extract wrote is gone – run extract "
+            failed.append(f"{base}: no transcript of the audio yet – run transcribe first"
+                          if info.get("subtitle_origin") == "asr" else
+                          f"{base}: the foreign subtitle extract wrote is gone – run extract "
                           f"--force")
             result[base] = "failed"
             continue
@@ -816,6 +842,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             if cfg.work_dir in src.parents else str(src),
             "source_language": language,
             "source_sha256": file_sha256(src),
+            "subtitle_origin": info.get("subtitle_origin", "subs"),
             "model": s["openrouter_model"],
             "fallback_model": t.get("fallback_model", ""),
             "prompt": prompt_fingerprint(),

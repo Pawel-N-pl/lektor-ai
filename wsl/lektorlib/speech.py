@@ -20,7 +20,9 @@ container that is already up, because torchaudio 2.6 ships the aligner; shot det
 Deliberately NOT here: Whisper. The running ASR service is not called at all. Its raw word
 timestamps were measured 316 ms early at utterance starts (p50), which makes them useless for
 anything time-critical, and the merge gate reads word spans from forced alignment instead. Skipping
-it takes the episode from ~3.5 min of GPU to ~10 s.
+it takes the episode from ~3.5 min of GPU to ~10 s. A film with no subtitle at all is transcribed by
+Whisper in `transcribe.py`, and for the same reason those cues are only a grid: this module aligns
+the English transcript against the audio like any other reference.
 """
 
 from __future__ import annotations
@@ -460,7 +462,14 @@ def find_reference_srt(cfg, base: str) -> Path | None:
     Stream 3 is the near-verbatim transcript - it keeps "Ooh", the stutters and the reaction
     sounds - which is what is actually uttered, so it aligns better than the cleaned reading
     version in stream 2. Stream 2 is the fallback, and the Polish track is never a candidate.
+
+    A film transcribed from its audio is the exception, and its English transcript comes FIRST:
+    retime matches the Polish cards to the aligned ones by start time, and the Polish cards of
+    such a film sit on the transcript's grid, which no authored English subtitle shares.
     """
+    asr = translation_reference(cfg, base, "asr")
+    if asr is not None:
+        return asr
     tag = episode_tag(base)
     for pat in cfg["speech"]["reference_srt_patterns"]:
         p = cfg.work_dir / pat.format(tag=tag, base=base)
@@ -469,20 +478,22 @@ def find_reference_srt(cfg, base: str) -> Path | None:
     return translation_reference(cfg, base)
 
 
-def translation_reference(cfg, base: str) -> Path | None:
-    """The English subtitle extract pulled for a translation, when that is what it pulled.
+def translation_reference(cfg, base: str, kind: str | None = None) -> Path | None:
+    """The English text a translation was made from - extract's subtitle, or the transcript of the
+    audio - when that is what it was made from. `kind` keeps only one of the two origins.
 
-    The last candidate, after every configured pattern: a film translated from English already has
-    the verbatim English text on disk, on the very grid the Polish cues inherit, and asking the
-    film for it a second time would only re-read the same stream. Any other source language is not
-    a candidate - the acoustic model is English.
+    The last candidate for a subtitle, after every configured pattern: a film translated from
+    English already has the verbatim English text on disk, on the very grid the Polish cues
+    inherit, and asking the film for it a second time would only re-read the same stream. Any
+    other source language is not a candidate - the acoustic model is English.
     """
     # Lazy, as everywhere in this module: translate imports script, which imports this module.
     from . import translate
     from .media import language_key
 
     info = translate.source_info(cfg, base)
-    if (info.get("subtitle_origin") or "track") != "subs":
+    org = info.get("subtitle_origin") or "track"
+    if org not in translate.TRANSLATED or (kind is not None and org != kind):
         return None
     if language_key(str(info.get("source_language") or "")) != "eng":
         return None
@@ -509,7 +520,8 @@ def choose_reference(cfg, base: str, video: Path | None) -> Path | None:
     from . import translate
 
     info = translate.source_info(cfg, base)
-    if info.get("source_sdh"):
+    if info.get("source_sdh") or info.get("subtitle_origin") == "asr":
+        # SDH on another grid would cost a transcribed film its onsets; see find_reference_srt.
         return ref
     pick = reference_stream(cfg, video)
     if pick is None or pick.index == info.get("subtitle_stream") or not (
