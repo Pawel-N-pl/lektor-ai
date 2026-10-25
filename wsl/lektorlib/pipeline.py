@@ -2,9 +2,9 @@
 
 `lektor.py run --only S23E01` walks extract -> translate -> speech -> script -> retime -> voice
 -> pack (-> mux) and stops where the chain would otherwise ship something wrong. translate only
-does anything on a film extract found no Polish track in; on every other film it is a skip. It adds no processing of its own:
-every step is the same function the single-stage CLI calls, so `run` and six manual invocations
-produce byte-identical artefacts.
+does anything on a film extract found no Polish track in; on every other film it is a skip. It
+adds no processing of its own: every step is the same function the single-stage CLI calls, so
+`run` and the same stages invoked by hand produce byte-identical artefacts.
 
 Three things make that safe to fire and forget:
 
