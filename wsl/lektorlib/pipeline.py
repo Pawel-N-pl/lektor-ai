@@ -301,6 +301,12 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
         else:
             out.append(f"no English reference subtitle yet; `speech` will pull stream "
                        f"{pick.index} ({pick.title or pick.language}) out of the episode itself.")
+    subs = media.subtitles_mode(cfg)
+    if subs == "mux" and "mux" not in will_run and translate.origin(cfg, base) != "track" \
+            and media.translate_mode(cfg) != "never":
+        out.append("translate.subtitles is 'mux', but this chain does not remux: the Polish "
+                   "subtitles go into a .mkv only with `--to mux`. 'sidecar' puts them beside the "
+                   "film instead.")
     track = artefact(cfg, base, "voice")
     if "voice" in will_run and track.exists():
         # <base>.lektor.<ext> carries no backend tag, so the file gives no hint of what made it.
@@ -528,7 +534,11 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
 
     if step == "pack":
         if existed and not force:
-            return SKIPPED, f"{art.name} was already there ({_mb(art)})"
+            # The sidecar is synced on a skip too: a fix to the translation has to reach the copy
+            # beside the film even when the .mka has nothing new in it.
+            side = media.sync_sidecar(cfg, base)
+            return SKIPPED, (f"{art.name} was already there ({_mb(art)})"
+                             + (f"; {side.name} up to date" if side else ""))
         track = artefact(cfg, base, "voice")
         if not track.exists():
             raise HardFail(f"nothing to pack: {track.name} was never written, and pack only "
@@ -536,7 +546,10 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
         media.stage_pack(cfg, base, force)
         if not art.exists():
             raise HardFail(f"pack produced no {art.name}")
-        return OK, f"{art.name} ({_mb(art)})"
+        side = media.sidecar_srt_path(cfg, base)
+        written = media.subtitles_mode(cfg) == "sidecar" and side.exists() \
+            and media.polish_subtitle_for(cfg, base) is not None
+        return OK, f"{art.name} ({_mb(art)})" + (f" + {side.name}" if written else "")
 
     if step == "mux":
         if existed and not force:
@@ -588,6 +601,9 @@ def print_summary(cfg: Config, base: str, results: list[StepResult], steps: list
                         ("script   ", cfg.work_dir / f"{base}.lektor.json"),
                         ("track    ", cfg.work_dir / f"{base}.lektor.{ext}"),
                         ("output   ", media.output_path(cfg, base))):
+        if label.startswith("output") and translated and media.subtitles_mode(cfg) == "sidecar":
+            side = media.sidecar_srt_path(cfg, base)
+            say(f"  pl subs    {side if side.exists() else '-  (' + side.name + ' not written)'}")
         say(f"  {label}  {path if path.exists() else '-  (' + path.name + ' not written)'}"
             + (f"   {_mb(path)}" if path.exists() else ""))
 
@@ -704,6 +720,13 @@ def stage_run(cfg: Config, only: str | None, args) -> int:
     """
     try:
         steps = select_steps(args.from_step, args.to_step, args.skip)
+        # Checked up front: a typo in either would otherwise surface as a traceback out of the
+        # plan, or - for subtitles - only once the chain reached pack.
+        try:
+            media.translate_mode(cfg)
+            media.subtitles_mode(cfg)
+        except ValueError as exc:
+            raise UsageError(str(exc)) from exc
         base = resolve_episode(cfg, only)
         redo = set(steps) if (args.redo or "").strip().lower() == "all" \
             else set(_named_steps(args.redo or "", "--redo"))

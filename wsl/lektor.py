@@ -25,6 +25,7 @@ what it skipped and why, what it cost and where the file is, when it finishes.
   --redo STEP[,STEP]|all  rebuild artefacts that already exist (--force means --redo all)
   --require-speech        treat a failed measurement as fatal instead of a degradation
   --dry-run               print the plan and touch nothing
+  --subs off|sidecar|mux  Polish subtitles from a translation, this run only (translate.subtitles)
 
 Stages, one at a time
 ---------------------
@@ -135,6 +136,10 @@ def main(argv: list[str] | None = None) -> None:
                          "with the pause gate off")
     ap.add_argument("--dry-run", action="store_true",
                     help="run: print the plan and touch nothing")
+    ap.add_argument("--subs", choices=["off", "sidecar", "mux"],
+                    help="run, all, pack, mux: override translate.subtitles for this run - Polish "
+                         "subtitles from the translation as <film>.pl.srt beside the film, or as "
+                         "a stream in the remuxed .mkv. Only for films that were translated.")
     args = ap.parse_args(argv)
 
     # A flag that means nothing to the chosen stage is a usage error, not a no-op. `voice
@@ -150,7 +155,13 @@ def main(argv: list[str] | None = None) -> None:
         ap.error(f"only `run` and `all` take {', '.join(chain_only)}; the stage {args.stage!r} would "
                  f"ignore that and do the work anyway")
 
+    if args.subs and args.stage not in ("run", "all", "pack", "mux"):
+        ap.error(f"only `run`, `all`, `pack` and `mux` take --subs; the stage {args.stage!r} "
+                 f"writes no subtitles")
+
     cfg = Config(args.config)
+    if args.subs:
+        cfg.raw.setdefault("translate", {})["subtitles"] = args.subs
     if args.backend:
         cfg.raw["voice"]["backend"] = check_backends([args.backend])[0]
     backends = check_backends([b.strip() for b in args.backends.split(",") if b.strip()])

@@ -142,6 +142,12 @@ class TestPlan(Base):
         with mock.patch.dict(os.environ, {"OPENROUTER_API_KEY": ""}):
             self.assertIn("OPENROUTER_API_KEY is not set: translate cannot run", self.plan())
 
+    def test_subtitles_meant_for_a_remux_the_chain_will_not_do_are_flagged(self):
+        self.translated()
+        self.cfg.raw["translate"]["subtitles"] = "mux"
+        self.assertIn("go into a .mkv only with `--to mux`", self.plan())
+        self.assertNotIn("only with `--to mux`", self.plan(steps=list(P.STEPS)))
+
     def test_mode_never(self):
         self.cfg.raw["translate"]["mode"] = "never"
         self.translated()

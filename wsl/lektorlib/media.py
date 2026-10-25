@@ -193,6 +193,12 @@ def probe_streams(ffprobe: str, path: Path | str, select: str | None = None,
         return []
 
 
+def count_subtitle_streams(ffprobe: str, path: Path | str) -> int:
+    """How many subtitle streams the source has - where an appended Polish one lands. Strict, for
+    the reason `count_audio_streams` gives: a guessed 0 retags the film's first subtitle."""
+    return len(probe_streams(ffprobe, path, "s", strict=True))
+
+
 def count_audio_streams(ffprobe: str, path: Path | str) -> int:
     """How many audio streams the source already has – the number the mux indexes everything off.
 
@@ -437,6 +443,59 @@ def translate_settings(cfg) -> dict:
     only `raw`, and the defaults below have to be the same ones lektor.tuning.toml ships.
     """
     return dict((getattr(cfg, "raw", None) or {}).get("translate") or {})
+
+
+SUBTITLE_MODES = ("off", "sidecar", "mux")
+
+
+def subtitles_mode(cfg) -> str:
+    """translate.subtitles, checked: a typo here would otherwise just mean "off", silently."""
+    mode = str(translate_settings(cfg).get("subtitles", "off") or "off").strip().lower()
+    if mode not in SUBTITLE_MODES:
+        raise ValueError(f"translate.subtitles: {mode!r} – pick from {', '.join(SUBTITLE_MODES)}")
+    return mode
+
+
+def polish_subtitle_for(cfg, base: str) -> Path | None:
+    """`<base>.srt`, but only for an episode this pipeline translated.
+
+    A film whose Polish text came from its own track already carries that track - duplicating it
+    as an "AI" one would put two Polish subtitle streams side by side, one of them a copy. So the
+    sidecar and the muxed stream exist only where the translation is the only Polish text there is.
+    """
+    from . import translate     # translate imports this module
+
+    srt = cfg.work_dir / f"{base}.srt"
+    if translate.origin(cfg, base) != "subs" or not srt.is_file():
+        return None
+    return srt
+
+
+def sidecar_srt_path(cfg, base: str) -> Path:
+    """`<film>.pl.srt`, beside the film and the .mka, which is the name players match on."""
+    return pack_path(cfg, base).with_name(f"{base}.pl.srt")
+
+
+def sync_sidecar(cfg, base: str) -> Path | None:
+    """Put the Polish subtitles beside the film when translate.subtitles is 'sidecar'.
+
+    Rewritten whenever it differs from `<base>.srt` rather than only when missing: it is a small
+    file, and the case that matters is a hand fix to the translation after the first pack, which
+    a "skip if it exists" rule would leave out of the copy the viewer actually sees.
+    """
+    if subtitles_mode(cfg) != "sidecar":
+        return None
+    src = polish_subtitle_for(cfg, base)
+    if src is None:
+        return None
+    dest = sidecar_srt_path(cfg, base)
+    data = src.read_bytes()
+    if dest.is_file() and dest.read_bytes() == data:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(data)
+    say(f"  -> {dest.name} beside {dest.parent} (Polish subtitles from the translation)")
+    return dest
 
 
 def translate_mode(cfg) -> str:
@@ -741,7 +800,8 @@ def resolve_source(cfg, base: str) -> Path | None:
     return find_video(cfg, base)
 
 
-def mux_args(source: Path, track: Path, n_audio: int, dest: Path) -> list[str]:
+def mux_args(source: Path, track: Path, n_audio: int, dest: Path, subs: Path | None = None,
+             n_subs: int = 0, sub_title: str = "Polski (AI)") -> list[str]:
     """Verbatim argv of Invoke-Mux, in its order, because every part of it is load-bearing.
 
     `-map 0` keeps every original stream – all 43 subtitles, the attachments, the chapters – and
@@ -752,26 +812,42 @@ def mux_args(source: Path, track: Path, n_audio: int, dest: Path) -> list[str]:
 
     The dispositions are zeroed on all originals and set to `default` on the new track, so the
     player reaches for the lektor without the viewer picking it out of a menu.
+
+    `subs` appends the translated Polish subtitles the same way, after every original subtitle
+    stream and indexed off their probed count, tagged pol and explicitly NOT default: subtitles
+    switching themselves on is a choice for the viewer, not for this pipeline. Without `subs` the
+    argv is exactly what it always was.
     """
-    args = ["-y", "-i", str(source), "-i", str(track),
-            "-map", "0", "-map", "1:a:0",
-            "-c", "copy",
-            f"-metadata:s:a:{n_audio}", "language=pol",
-            f"-metadata:s:a:{n_audio}", "title=Lektor AI (PL)"]
+    args = ["-y", "-i", str(source), "-i", str(track)]
+    if subs is not None:
+        args += ["-i", str(subs)]
+    args += ["-map", "0", "-map", "1:a:0"]
+    if subs is not None:
+        args += ["-map", "2:0"]
+    args += ["-c", "copy",
+             f"-metadata:s:a:{n_audio}", "language=pol",
+             f"-metadata:s:a:{n_audio}", "title=Lektor AI (PL)"]
     for i in range(n_audio):
         args += [f"-disposition:a:{i}", "0"]
-    args += [f"-disposition:a:{n_audio}", "default", str(dest)]
+    args += [f"-disposition:a:{n_audio}", "default"]
+    if subs is not None:
+        args += [f"-metadata:s:s:{n_subs}", "language=pol",
+                 f"-metadata:s:s:{n_subs}", f"title={sub_title}",
+                 f"-disposition:s:{n_subs}", "0"]
+    args += [str(dest)]
     return args
 
 
 def mux(ffmpeg: str, ffprobe: str, source: Path, track: Path, dest: Path,
-        force: bool = False) -> Path | None:
+        force: bool = False, subs: Path | None = None,
+        sub_title: str = "Polski (AI)") -> Path | None:
     """Stream copy of the source plus the lektor into `dest`. None when there was nothing to do."""
     if dest.exists() and not force:
         return None
     dest.parent.mkdir(parents=True, exist_ok=True)
     n_audio = count_audio_streams(ffprobe, source)
-    run_ffmpeg(ffmpeg, mux_args(source, track, n_audio, dest), "mux")
+    n_subs = count_subtitle_streams(ffprobe, source) if subs is not None else 0
+    run_ffmpeg(ffmpeg, mux_args(source, track, n_audio, dest, subs, n_subs, sub_title), "mux")
     return dest
 
 
@@ -814,6 +890,10 @@ def stage_pack(cfg, only: str | None = None, force: bool = False, suffix: str = 
     say(f"\nPACK – {len(tracks)} track(s)\n")
     for base, track in tracks:
         say(base)
+        # Before the skip, so a fix to the translation reaches the viewer's copy even when the
+        # .mka itself has nothing new to say.
+        if not suffix:
+            sync_sidecar(cfg, base)
         dest = pack_path(cfg, base, suffix)
         if dest.exists() and not force:
             say("  -> .mka exists, skipping (--force to redo)")
@@ -842,7 +922,11 @@ def stage_mux(cfg, only: str | None = None, force: bool = False, suffix: str = "
             say(f"  !! no source video for {base} – skipped")
             continue
         dest = output_path(cfg, base, suffix)
-        out = mux(ffmpeg, ffprobe, source, track, dest, force)
+        subs = polish_subtitle_for(cfg, base) if subtitles_mode(cfg) == "mux" else None
+        if subs is not None:
+            say(f"  + Polish subtitles from {subs.name}, not default")
+        out = mux(ffmpeg, ffprobe, source, track, dest, force, subs,
+                  str(translate_settings(cfg).get("subtitle_title") or "Polski (AI)"))
         if out is None:
             say("  -> output exists, skipping (--force to redo)")
             continue
