@@ -352,8 +352,8 @@ function Invoke-Extract {
         # track. Untested: there is no PowerShell box here, only the reading of the code.
         if (Test-Path $nfoPath) {
             $prev = Get-Content -Path $nfoPath -Raw -Encoding UTF8 | ConvertFrom-Json
-            if ($prev.subtitle_origin -eq 'subs') {
-                Write-Warn2 "translated by the WSL side (subtitle_origin 'subs') -- left alone; run 'python3 wsl/lektor.py extract' for it"
+            if ($prev.subtitle_origin -eq 'subs' -or $prev.subtitle_origin -eq 'asr') {
+                Write-Warn2 "translated by the WSL side (subtitle_origin '$($prev.subtitle_origin)') -- left alone; run 'python3 wsl/lektor.py extract' for it"
                 continue
             }
         }
@@ -444,7 +444,7 @@ function Invoke-Mux {
         # <base>.srt as a 'Polski (AI)' stream when translate.subtitles is 'mux'. This one does
         # not, and nobody has a PowerShell box here to test a third input against, so it warns
         # rather than ship a .mkv the user believes carries those subtitles.
-        if ($nfo.subtitle_origin -eq 'subs' -and "$($cfg.translate.subtitles)" -eq 'mux') {
+        if (($nfo.subtitle_origin -eq 'subs' -or $nfo.subtitle_origin -eq 'asr') -and "$($cfg.translate.subtitles)" -eq 'mux') {
             Write-Warn2 "$base -- translate.subtitles is 'mux', but this mux does not add the Polish subtitles; run 'python3 wsl/lektor.py mux' for them"
         }
 
