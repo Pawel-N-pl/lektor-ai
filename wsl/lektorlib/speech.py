@@ -595,6 +595,12 @@ def find_video(cfg, base: str) -> Path | None:
     return None
 
 
+def tmp_root(cfg) -> Path:
+    """Where the 16 kHz mono extract is cut: speech.tmp_dir, or the system temp when that is empty."""
+    d = cfg["speech"].get("tmp_dir")
+    return Path(d).expanduser() if d else Path(gettempdir())
+
+
 def _run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
@@ -822,15 +828,8 @@ def _align_local(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
 
     cues_json = tmp / "fa_cues.json"
     cues_json.write_text(json.dumps(cues), encoding="utf-8")
-    out = tmp / "fa.json"
-    run = subprocess.run(
-        [str(python), "-", str(wav), str(cues_json), str(out), str(s["fa_window_s"])],
-        input=_FA_SCRIPT, capture_output=True, text=True, timeout=s["fa_timeout_s"])
-    if run.returncode != 0:
-        raise RuntimeError(f"forced alignment failed: {run.stderr.strip()[-400:]}")
-    if not out.is_file():
-        raise RuntimeError("forced alignment wrote no output")
-    return json.loads(out.read_text(encoding="utf-8"))
+    return run_script_local(python, _FA_SCRIPT, [wav, cues_json], tmp / "fa.json",
+                            [str(s["fa_window_s"])], s["fa_timeout_s"], "forced alignment")
 
 
 def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
@@ -841,36 +840,86 @@ def _align_docker(cfg, wav: Path, cues: list[dict], tmp: Path) -> dict:
     smaller model, measured at +1461 MiB resident and +3617 MiB peak alongside it.
     """
     s = cfg["speech"]
-    name = s["asr_container"]
-    if not shutil.which("docker"):
-        raise RuntimeError("docker is not on PATH")
-    probe = _run(["docker", "inspect", "-f", "{{.State.Running}}", name], timeout=30)
-    if probe.returncode != 0 or probe.stdout.strip() != "true":
-        raise RuntimeError(f"container {name!r} is not running")
-
-    remote = f"/tmp/lektor-speech-{int(time.time())}"
     cues_json = tmp / "fa_cues.json"
     cues_json.write_text(json.dumps(cues), encoding="utf-8")
+    return run_script_docker(s["asr_container"], _FA_SCRIPT, [wav, cues_json], tmp / "fa.json",
+                             [str(s["fa_window_s"])], s["fa_timeout_s"], s["docker_timeout_s"],
+                             "forced alignment")
+
+
+# ---------------------------------------------------------------------------
+# Delivering a script to an interpreter that is not this one
+# ---------------------------------------------------------------------------
+#
+# Two scripts in this package need a model this interpreter must never import: the forced aligner
+# above and the transcriber in transcribe.py. Both are a string fed on stdin to someone else's
+# python, which reads its input files and the output path from argv and writes JSON there. The
+# delivery is the same for both, so it lives here once: the argv order is inputs, then the output,
+# then whatever the script takes after that.
+
+
+class ScriptFailed(RuntimeError):
+    """The script ran and exited non-zero. The exit code is kept, so a caller can tell a script
+    that refused on purpose - a missing import, say - from one that crashed."""
+
+    def __init__(self, what: str, code: int, stderr: str):
+        self.code = code
+        self.stderr = stderr or ""
+        super().__init__(f"{what} failed: {self.stderr.strip()[-400:]}")
+
+
+def run_script_local(python: Path, script: str, inputs: list[Path], out: Path, extra: list[str],
+                     timeout: float, what: str) -> dict:
+    """Run `script` with the interpreter of a venv on this machine and return the JSON it wrote."""
+    run = subprocess.run([str(python), "-", *map(str, inputs), str(out), *extra],
+                         input=script, capture_output=True, text=True, timeout=timeout)
+    if run.returncode != 0:
+        raise ScriptFailed(what, run.returncode, run.stderr)
+    if not out.is_file():
+        raise RuntimeError(f"{what} wrote no output")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def docker_problem(name: str) -> str:
+    """Why the container cannot take a script, or '' when it is up."""
+    if not shutil.which("docker"):
+        return "docker is not on PATH"
+    probe = _run(["docker", "inspect", "-f", "{{.State.Running}}", name], timeout=30)
+    if probe.returncode != 0 or probe.stdout.strip() != "true":
+        return f"container {name!r} is not running"
+    return ""
+
+
+def run_script_docker(name: str, script: str, inputs: list[Path], out: Path, extra: list[str],
+                      timeout: float, copy_timeout: float, what: str) -> dict:
+    """Run `script` inside a running container and return the JSON it wrote, copied back to `out`.
+
+    The container is treated as read-only apart from one scratch directory under its /tmp, which
+    is removed afterwards, whatever happened.
+    """
+    problem = docker_problem(name)
+    if problem:
+        raise RuntimeError(problem)
+    remote = f"/tmp/lektor-{out.stem}-{int(time.time())}"
     try:
         _run(["docker", "exec", name, "mkdir", "-p", remote], timeout=60)
-        for src in (wav, cues_json):
+        for src in inputs:
             cp = _run(["docker", "cp", str(src), f"{name}:{remote}/{src.name}"],
-                      timeout=s["docker_timeout_s"])
+                      timeout=copy_timeout)
             if cp.returncode != 0:
                 raise RuntimeError(f"docker cp failed: {cp.stderr.strip()[:200]}")
         # `python3`, not `python`: the image has no `python` on PATH.
         run = subprocess.run(
             ["docker", "exec", "-i", name, "python3", "-",
-             f"{remote}/{wav.name}", f"{remote}/{cues_json.name}", f"{remote}/fa.json",
-             str(s["fa_window_s"])],
-            input=_FA_SCRIPT, capture_output=True, text=True, timeout=s["fa_timeout_s"])
+             *[f"{remote}/{src.name}" for src in inputs], f"{remote}/{out.name}", *extra],
+            input=script, capture_output=True, text=True, timeout=timeout)
         if run.returncode != 0:
-            raise RuntimeError(f"forced alignment failed: {run.stderr.strip()[-400:]}")
-        got = _run(["docker", "cp", f"{name}:{remote}/fa.json", str(tmp / "fa.json")],
-                   timeout=s["docker_timeout_s"])
+            raise ScriptFailed(what, run.returncode, run.stderr)
+        got = _run(["docker", "cp", f"{name}:{remote}/{out.name}", str(out)],
+                   timeout=copy_timeout)
         if got.returncode != 0:
             raise RuntimeError(f"docker cp back failed: {got.stderr.strip()[:200]}")
-        return json.loads((tmp / "fa.json").read_text(encoding="utf-8"))
+        return json.loads(out.read_text(encoding="utf-8"))
     finally:
         _run(["docker", "exec", name, "rm", "-rf", remote], timeout=60)
 
@@ -909,7 +958,6 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
     signals it actually contains - so the gate can only ever act on evidence that exists.
     """
     s = cfg["speech"]
-    tmp_root = Path(s["tmp_dir"]).expanduser() if s.get("tmp_dir") else Path(gettempdir())
     srts = sorted(cfg.work_dir.glob("*.srt"))
     if only:
         srts = [p for p in srts if only in p.name]
@@ -930,7 +978,7 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
             say(f"  !! no video beside the subtitles in {cfg.input_dir} – nothing to measure")
             continue
 
-        tmp = tmp_root / f"lektor-speech-{base[:40]}"
+        tmp = tmp_root(cfg) / f"lektor-speech-{base[:40]}"
         tmp.mkdir(parents=True, exist_ok=True)
         payload: dict = {
             "base": base,
