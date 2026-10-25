@@ -12,6 +12,11 @@ What it does, in the order it matters:
     episode does not have. An episode longer than translate.max_prompt_chars is split into
     contiguous chunks as a fallback, and each chunk is shown translate.context_cues of its
     neighbours' cues on either side, to read but not to return.
+  * What a person settled for the whole series - who is a man and who a woman, who says 'ty'
+    and who 'pan' to whom, how a term is rendered - comes from the series glossary
+    (glossary.py) and is binding; who speaks a line, where an SDH label says so, comes from the
+    source itself (speakers.py) and is shown as a hint in front of the line, the label taken out
+    of it. An episode with neither is sent, and keyed, exactly as before they existed.
   * The translation is faithful and in subtitle style, NOT condensed. Shortening to the time
     window is `script`'s job and its prompt is not touched; it needs the full line to know what
     may go. The same file is therefore also usable as Polish subtitles.
@@ -43,9 +48,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import say
+from .glossary import HEADINGS, Glossary, GlossaryError, load_glossary
 from .media import read_source_json, translate_mode, translate_settings
 from .script import CallStats, Validation, _ask, append_spend, spend_path
-from .srt import SENTENCE_END, SPEAKER_DASH, Cue, parse_srt
+from .speakers import HINT_FORMATS, SpeakerHints, harvest, speaker_turns
+from .srt import SENTENCE_END, Cue, parse_srt
 
 __all__ = ["stage_translate", "origin", "source_info", "source_srt", "srt_state",
            "stale_source", "TRANSLATED", "is_translated"]
@@ -103,6 +110,27 @@ CZEGO NIE RUSZASZ
   w tych samych nawiasach. Znak ♪ zostawiasz tam, gdzie stał.
 
 Odpowiadasz wyłącznie obiektem JSON: {"cues":[{"id":<int>,"text":"<polska kwestia>"}]}"""
+
+# Appended to the system prompt only for an episode that has a series glossary, and then part of
+# the prompt fingerprint. An episode without one is sent - and keyed - exactly as before.
+GLOSSARY_RULES = """SŁOWNIK SERII
+Poniżej jest słownik serii, ustalony przez człowieka, który zna cały serial. Ma pierwszeństwo
+przed twoimi domysłami i obowiązuje w każdej kwestii:
+- płeć postaci rozstrzyga formy rodzajowe jej własnych kwestii i kwestii skierowanych do niej;
+- forma zwracania się podana dla pary postaci obowiązuje w całym odcinku, w obie strony tylko
+  wtedy, gdy podano obie;
+- termin tłumaczysz zawsze tak, jak podano, odmieniając go zgodnie z polską gramatyką;
+- opis postaci to kontekst, nie tekst do wstawienia."""
+
+# Appended only for an episode with at least one speaker hint (speakers.py), likewise.
+HINT_RULES = """WSKAZÓWKI O MÓWIĄCYCH
+Niektóre kwestie zaczynają się wskazówką w nawiasie klamrowym, np. {mówi: Ted, mężczyzna}.
+Wzięto ją z podpisu mówiącego w oryginalnych napisach. NIE jest częścią kwestii: nie tłumaczysz
+jej i nie przepisujesz do odpowiedzi. Mówi, kto mówi – według niej i słownika serii ustalasz
+rodzaj gramatyczny form mówiącego (byłem/byłam) i trzymasz go konsekwentnie we wszystkich
+kwestiach tej postaci. {mówią po kolei: A, B} znaczy, że po kolejnych myślnikach mówią te osoby,
+zwracając się do siebie nawzajem. {mówiących: 2} znaczy, że w kwestii mówią dwie osoby, choć
+pierwszy myślnik zgubiono – zmiana mówiącego jest tam, gdzie stoi myślnik."""
 
 # The per-cue line format, as a constant for the same reason script.py keeps its markers as
 # constants: it is part of what the model is told, so it is part of the cache key.
@@ -167,8 +195,11 @@ def source_cues(path: Path) -> list[Cue]:
     return out
 
 
-def translate_prompt(cues) -> str:
-    return "\n".join(LINE_FORMAT.format(id=c.idx, text=c.text) for c in cues)
+def translate_prompt(cues, hints: dict[int, str] | None = None) -> str:
+    hints = hints or {}
+    return "\n".join(LINE_FORMAT.format(id=c.idx, text=(f"{hints[c.idx]} {c.text}"
+                                                       if c.idx in hints else c.text))
+                     for c in cues)
 
 
 def request_note(ids, reasons: dict[int, str] | None = None, partial: bool = True) -> str:
@@ -180,15 +211,79 @@ def request_note(ids, reasons: dict[int, str] | None = None, partial: bool = Tru
             "samym formacie JSON:\n" + "\n".join(lines))
 
 
-def prompt_fingerprint() -> str:
+def prompt_fingerprint(extras: tuple[str, ...] = ()) -> str:
     """Hash of everything the model is told. Edit any of it and every cached line misses.
 
+    `extras` are the rule sections an episode's Brief adds - the glossary's and the hints' - and
+    only when it adds them, so an episode with neither hashes exactly as it did before they
+    existed. The glossary's ENTRIES are not here: they go into each line's key with the scope
+    each one has (Glossary.key_part), or one edited term would retranslate a whole season.
+
     `request_note` is deliberately out, as `retry_note` is in script.py: it only names cues, and
-    its wording cannot change a line that came back right the first time.
+    its wording cannot change a line that came back right the first time. So is the read-only
+    context a chunk is shown (`with_context`): where an episode is cut is not in the key either.
     """
     blob = "\n".join([TRANSLATE_SYSTEM, LINE_FORMAT,
-                      json.dumps(TRANSLATE_SCHEMA, sort_keys=True, ensure_ascii=False)])
+                      json.dumps(TRANSLATE_SCHEMA, sort_keys=True, ensure_ascii=False),
+                      *extras])
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:12]
+
+
+@dataclass
+class Brief:
+    """What one episode's prompt carries beyond its cues: the part of the series glossary it can
+    use, and the speaker hints its source subtitle gave. Empty, it changes nothing - the prompt,
+    the fingerprint and every cache key are byte-identical to an episode translated before
+    either existed."""
+
+    glossary: Glossary | None = None
+    hints: SpeakerHints = field(default_factory=SpeakerHints)
+
+    @property
+    def extras(self) -> tuple[str, ...]:
+        out: tuple[str, ...] = ()
+        if self.glossary:
+            out += (GLOSSARY_RULES, json.dumps(HEADINGS, sort_keys=True, ensure_ascii=False))
+        if self.hints:
+            out += (HINT_RULES, json.dumps(HINT_FORMATS, sort_keys=True, ensure_ascii=False))
+        return out
+
+    def system(self) -> str:
+        parts = [TRANSLATE_SYSTEM]
+        if self.glossary:
+            parts += [GLOSSARY_RULES, self.glossary.render()]
+        if self.hints:
+            parts.append(HINT_RULES)
+        return "\n\n".join(parts)
+
+    def key_parts(self, cue) -> tuple[str, str]:
+        """(hint, glossary) for one line's cache key; ('', '') for a line that has neither."""
+        hint = self.hints.text.get(cue.idx, "") if self.hints else ""
+        gloss = self.glossary.key_part(cue.text) if self.glossary else ""
+        return hint, gloss
+
+    def glossary_fingerprint(self) -> str:
+        return self.glossary.fingerprint() if self.glossary else ""
+
+
+# A hint the model copied into its answer despite being told not to. Braces never reach the model
+# from the source (source_cues strips them as markup), so a leading pair in a reply is ours.
+_ECHO_RE = re.compile(r"^\s*\{[^}]*\}\s*")
+
+
+def prepare(cues, glossary: Glossary | None) -> tuple[list[Cue], Brief]:
+    """The cues as the model is shown them, and the Brief that goes with them.
+
+    Speaker labels come out of the text and become hints (speakers.harvest); a card that was
+    nothing but a label is dropped, as an empty card already is. The glossary is cut down to what
+    this episode can use, judged on the text with the labels gone and the labels themselves.
+    """
+    hints = harvest(cues, glossary)
+    cues = [c for c in cues if c.text]
+    kept = {c.idx for c in cues}
+    hints.text = {i: h for i, h in hints.text.items() if i in kept}
+    episode = glossary.for_episode([c.text for c in cues], hints.names) if glossary else None
+    return cues, Brief(glossary=episode or None, hints=hints)
 
 
 # ---------------------------------------------------------------------------
@@ -315,14 +410,20 @@ def with_context(cues, chunk, n: int) -> list:
     return list(cues[max(0, lo - n):lo]) + list(chunk) + list(cues[hi:hi + n])
 
 
-def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutcome:
+def translate_episode(cues, todo: set[int], cfg, api_key: str,
+                      brief: Brief | None = None) -> TranslateOutcome:
     """Translate the cues in `todo`, showing the model every cue of their chunk as context.
+
+    `brief` adds the episode's glossary to the system prompt and its speaker hints in front of
+    their lines; without one the request is exactly what it was before either existed.
 
     Per chunk: one call; one targeted retry naming every miss and why; then the fallback model
     for whatever the primary still could not produce. A primary that fails outright - out of
     retries, refusing, gone - goes straight to the fallback, which is what a fallback is for.
     """
     t = translate_settings(cfg)
+    brief = brief or Brief()
+    system = brief.system()
     primary = call_settings(cfg)
     fallback_model = str(t.get("fallback_model") or "")
     out = TranslateOutcome(asked=len(todo))
@@ -342,12 +443,14 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
 
     def attempt(s: dict, chunk, want: set[int], note: str, purpose: str) -> tuple[Validation, str]:
         nonlocal use_schema
-        messages = [{"role": "system", "content": TRANSLATE_SYSTEM},
-                    {"role": "user", "content": translate_prompt(chunk)}]
+        messages = [{"role": "system", "content": system},
+                    {"role": "user", "content": translate_prompt(chunk, brief.hints.text)}]
         if note:
             messages.append({"role": "user", "content": note})
         got, use_schema, err = _ask(s, api_key, messages, use_schema, out, purpose,
                                     schema=TRANSLATE_SCHEMA)
+        if brief.hints:
+            got = {i: _ECHO_RE.sub("", text) for i, text in got.items()}
         wanted = {c.idx: c.text for c in chunk if c.idx in want}
         v = validate(got, wanted, t)
         rejected.update(v.rejected)
@@ -410,7 +513,7 @@ def translate_episode(cues, todo: set[int], cfg, api_key: str) -> TranslateOutco
 CACHE_VERSION = 1
 
 
-def cache_key(cue, language: str, s: dict) -> str:
+def cache_key(cue, language: str, s: dict, brief: Brief | None = None) -> str:
     """Everything that decides what a translated line comes back as, and one thing more.
 
     The start time is in the key although it changes nothing about the words, because the same
@@ -418,13 +521,22 @@ def cache_key(cue, language: str, s: dict) -> str:
     Polish puts the speaker's gender into the translation. Keyed on the text alone, the first
     "Jestem gotowa." would be stamped on every later "I'm ready." for good.
 
+    The Brief adds the line's speaker hint and the part of the glossary it depends on
+    (Glossary.key_part), and its rule sections to the fingerprint - each only when there is one, so
+    a line with neither keeps the key it had before glossaries and hints existed, and the book a
+    season already paid for still answers.
+
     Out, as in script.cache_key: temperature (the draw, not the contract) and the fallback model
     (it only ever runs once the primary has failed, against the same validation).
     """
-    blob = json.dumps(
-        [CACHE_VERSION, language, int(cue.start_ms), cue.text, str(s.get("openrouter_model", "")),
-         str(s.get("reasoning_effort", "medium")), prompt_fingerprint()],
-        ensure_ascii=False, sort_keys=True)
+    brief = brief or Brief()
+    fields = [CACHE_VERSION, language, int(cue.start_ms), cue.text,
+              str(s.get("openrouter_model", "")), str(s.get("reasoning_effort", "medium")),
+              prompt_fingerprint(brief.extras)]
+    hint, gloss = brief.key_parts(cue)
+    if hint or gloss:
+        fields += [hint, gloss]
+    blob = json.dumps(fields, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:24]
 
 
@@ -461,7 +573,8 @@ def write_book(cfg, base: str, entries: dict[str, dict]) -> Path:
         "prompt": prompt_fingerprint(),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "_note": ("Translated lines, keyed on (source language, start time, source text, model, "
-                  "effort, prompt hash). A hit is reused instead of paid for again. Delete this "
+                  "effort, prompt hash, and the line's speaker hint and glossary entries where it "
+                  "has any). A hit is reused instead of paid for again. Delete this "
                   "file, or run `translate --redraw`, to pay for a clean translation."),
         "entries": entries,
     }
@@ -469,14 +582,14 @@ def write_book(cfg, base: str, entries: dict[str, dict]) -> Path:
     return p
 
 
-def split_by_book(cues, language: str, book: dict[str, dict], s: dict, t: dict
-                  ) -> tuple[dict[int, str], set[int]]:
+def split_by_book(cues, language: str, book: dict[str, dict], s: dict, t: dict,
+                  brief: Brief | None = None) -> tuple[dict[int, str], set[int]]:
     """(hits, misses). A stored line is checked by the same rule as a fresh one: off disk a month
     later it has earned no more trust than it had on the day."""
     hits: dict[int, str] = {}
     todo: set[int] = set()
     for c in cues:
-        entry = book.get(cache_key(c, language, s))
+        entry = book.get(cache_key(c, language, s, brief))
         text = entry.get("text") if entry else None
         if isinstance(text, str) and not check_line(c.text, text, t):
             hits[c.idx] = text
@@ -585,7 +698,8 @@ def srt_state(cfg, base: str) -> str:
     return "ours" if recorded == file_sha256(srt) else "edited"
 
 
-def stale_source(cfg, base: str, info: dict | None = None) -> str:
+def stale_source(cfg, base: str, info: dict | None = None,
+                 glossary: Glossary | None | bool = True) -> str:
     """What the existing translation was made from, when that is no longer what extract names;
     '' while it still is, or when nothing was recorded to compare.
 
@@ -594,6 +708,12 @@ def stale_source(cfg, base: str, info: dict | None = None) -> str:
     read, and `speech` meanwhile aligns against the new one. The language and the path catch the
     first case; the source's own hash catches the second, which lands on the same path. A
     provenance written before the hash was recorded is compared on the other two only.
+
+    The series glossary is the other input a user changes: the part of it this episode uses is
+    hashed into the provenance, and a different hash now means the translation is stale too. The
+    rerun pays only for the lines the change reaches (Glossary.key_part). `glossary` is the one
+    the caller already loaded, or True to load it here; a glossary that will not load is the
+    stage's to report, so here it counts as unchanged.
     """
     try:
         prov = json.loads(provenance_path(cfg, base).read_text(encoding="utf-8"))
@@ -611,6 +731,18 @@ def stale_source(cfg, base: str, info: dict | None = None) -> str:
     recorded = prov.get("source_sha256")
     if recorded and src is not None and file_sha256(src) != recorded:
         return f"an earlier {src.name}, and extract has since rewritten it"
+    if src is not None:
+        try:
+            g = load_glossary(cfg) if glossary is True else glossary
+        except GlossaryError:
+            return ""
+        _, brief = prepare(source_cues(src), g or None)
+        was, now = str(prov.get("glossary_sha") or ""), brief.glossary_fingerprint()
+        if was != now:
+            return (f"{src.name} " + ("with an earlier version of the series glossary"
+                                      if was and now else
+                                      "without the series glossary" if now else
+                                      "with a series glossary that no longer applies"))
     return ""
 
 
@@ -630,20 +762,6 @@ def _ts(ms: int) -> str:
 # Where a speaker's line may begin inside a joined card: whitespace, then a dash, with or without
 # a space after it - "-Hi. -Hello." is a house style of its own on some rips.
 _TURN_RE = re.compile(r"\s+(?=[-\u2013\u2014])")
-
-
-def speaker_turns(raw: str) -> int:
-    """How many speakers a source card holds, read off its own line breaks; 0 for a plain card.
-
-    `source_cues` joins the lines for the model, so this is the one place the card's layout is
-    still known. A card whose later lines start with a dash is a dialogue card even when the first
-    line carries no dash of its own, which some rips leave off.
-    """
-    lines = [ln for ln in _TAG_RE.sub("", raw).split("\n") if ln.strip()]
-    dashed = sum(1 for ln in lines if SPEAKER_DASH.match(ln))
-    if not any(SPEAKER_DASH.match(ln) for ln in lines[1:]):
-        return 0
-    return dashed + (0 if SPEAKER_DASH.match(lines[0]) else 1)
 
 
 def wrap_subtitle(text: str, width: int = 42, speakers: int = 0) -> str:
@@ -677,11 +795,15 @@ def wrap_subtitle(text: str, width: int = 42, speakers: int = 0) -> str:
     return text[:cut] + "\n" + text[cut + 1:]
 
 
-def format_srt(cues, texts: dict[int, str]) -> str:
-    """The Polish SubRip: the source's timings untouched, renumbered from 1, one card per cue."""
+def format_srt(cues, texts: dict[int, str], turns: dict[int, int] | None = None) -> str:
+    """The Polish SubRip: the source's timings untouched, renumbered from 1, one card per cue.
+
+    `turns` overrides the speaker count of a card whose layout does not show it - speaker labels
+    on lines with no dashes (SpeakerHints.turns)."""
+    turns = turns or {}
     blocks = []
     for n, c in enumerate(cues, 1):
-        card = wrap_subtitle(texts[c.idx], speakers=speaker_turns(c.raw))
+        card = wrap_subtitle(texts[c.idx], speakers=turns.get(c.idx) or speaker_turns(c.raw))
         blocks.append(f"{n}\n{_ts(c.start_ms)} --> {_ts(c.end_ms)}\n{card}\n")
     return "\n".join(blocks)
 
@@ -764,6 +886,16 @@ def stage_translate(cfg, only: str | None, force: bool = False,
     if not bases:
         say(f"no <base>.source.json in {cfg.work_dir} – run extract first")
         return result
+    try:
+        glossary = load_glossary(cfg)
+    except GlossaryError as exc:
+        # Before any episode: every one of them would be translated without the glossary
+        # somebody wrote for them, and filed under keys that say so.
+        raise SystemExit(f"translate.glossary: {exc}") from None
+    if glossary is not None:
+        say(f"series glossary {glossary.path}: {len(glossary.characters)} character(s), "
+            f"{len(glossary.address) + bool(glossary.address_default)} form(s) of address, "
+            f"{len(glossary.terms)} term(s)")
 
     for base in bases:
         info = source_info(cfg, base)
@@ -777,7 +909,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             continue
         out_srt = cfg.work_dir / f"{base}.srt"
         state = srt_state(cfg, base)
-        stale = stale_source(cfg, base, info) if state == "ours" else ""
+        stale = stale_source(cfg, base, info, glossary) if state == "ours" else ""
         if stale and not force:
             say(f"{base}: {out_srt.name} was translated from {stale} – translating it again")
         elif state == "ours" and not force:
@@ -805,7 +937,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             result[base] = "failed"
             continue
         language = str(info.get("source_language") or src.name.split(".")[-2])
-        cues = source_cues(src)
+        cues, brief = prepare(source_cues(src), glossary)
         if not cues:
             failed.append(f"{base}: {src.name} holds no text to translate")
             result[base] = "failed"
@@ -813,10 +945,18 @@ def stage_translate(cfg, only: str | None, force: bool = False,
         s = call_settings(cfg)
         say(f"  {len(cues)} cues, {sum(len(c.text) for c in cues)} chars of '{language}' from "
             f"{src.parent.name}/{src.name}")
+        if brief.hints:
+            say(f"  {len(brief.hints.text)} cue(s) carry a speaker hint from the source "
+                f"({len(brief.hints.names)} label(s) taken out of the text)")
+        if brief.glossary:
+            g = brief.glossary
+            say(f"  glossary for this episode: {len(g.characters)} character(s), "
+                f"{len(g.address) + bool(g.address_default)} form(s) of address, "
+                f"{len(g.terms)} term(s)")
 
         reuse = bool(t.get("reuse_previous", True)) and not redraw
         book = load_book(cfg, base) if reuse else {}
-        hits, todo = split_by_book(cues, language, book, s, t) if reuse \
+        hits, todo = split_by_book(cues, language, book, s, t, brief) if reuse \
             else ({}, {c.idx for c in cues})
         if hits:
             say(f"  reusing {len(hits)} of {len(cues)} lines from {book_path(cfg, base).name}; "
@@ -833,7 +973,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
         if todo:
             say(f"  translating {len(todo)} cues with {s['openrouter_model']} "
                 f"(effort {s.get('reasoning_effort', 'medium')}), whole episode as context")
-            drawn = translate_episode(cues, todo, cfg, api_key)
+            drawn = translate_episode(cues, todo, cfg, api_key, brief)
             spent += drawn.usd
             if drawn.usd:
                 say(f"  openrouter billed ${drawn.usd:.4f} for this episode "
@@ -844,7 +984,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             # on. Off, the book is not read, and is written only when --redraw asked for a fresh
             # draw to be filed - the same `reuse or redraw` rule script applies to its own.
             by_id = {c.idx: c for c in cues}
-            fresh = {cache_key(by_id[i], language, s): {
+            fresh = {cache_key(by_id[i], language, s, brief): {
                          "text": text, "id": i, "start_ms": by_id[i].start_ms, "src": by_id[i].text,
                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
                      for i, text in drawn.texts.items() if i in by_id}
@@ -866,7 +1006,7 @@ def stage_translate(cfg, only: str | None, force: bool = False,
         if state in ("edited", "foreign"):
             keep = set_aside(out_srt)
             say(f"  previous {out_srt.name} copied aside as {keep.name}")
-        _write_atomic(out_srt, format_srt(cues, texts))
+        _write_atomic(out_srt, format_srt(cues, texts, brief.hints.turns))
         _write_atomic(provenance_path(cfg, base), json.dumps({
             "base": base,
             "srt": out_srt.name,
@@ -879,7 +1019,13 @@ def stage_translate(cfg, only: str | None, force: bool = False,
             "subtitle_origin": info.get("subtitle_origin", "subs"),
             "model": s["openrouter_model"],
             "fallback_model": t.get("fallback_model", ""),
-            "prompt": prompt_fingerprint(),
+            "prompt": prompt_fingerprint(brief.extras),
+            # The glossary file and the hash of the part of it this episode used: a change to
+            # that part makes this translation stale (stale_source), and the rerun reuses every
+            # line the change does not reach.
+            "glossary": str(glossary.path) if brief.glossary and glossary else "",
+            "glossary_sha": brief.glossary_fingerprint(),
+            "speaker_hints": len(brief.hints.text),
             "cues": len(cues),
             "reused": len(hits),
             "translated": len(drawn.texts),

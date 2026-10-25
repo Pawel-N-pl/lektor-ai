@@ -119,8 +119,31 @@ min_check_chars = 24
 
 # Reuse lines from <base>.translated.json instead of paying for them again. The key is the source
 # line, its start time (so two identical "I'm ready." cards spoken by different people stay two
-# entries), the source language, the model, the effort and a hash of the prompt.
+# entries), the source language, the model, the effort and a hash of the prompt - and, only for a
+# line that has them, its speaker hint and the glossary entries it depends on (below).
 reuse_previous = true
+
+# The series glossary: characters with their gender, who says 'ty' and who 'pan'/'pani' to whom,
+# and terms rendered the same way in every episode - decided once by somebody who has watched the
+# show, and given to the model as binding. 'auto' reads lektor.glossary.toml in the episode
+# directory (input_dir) when there is one; a path names another file (relative to input_dir, and
+# then it must exist); 'off' ignores it. Format and reasoning: wsl/lektorlib/glossary.py and
+# docs/translate.md.
+#
+# What an edit costs: only the entries an episode can use reach its prompt (a character named in
+# it or labelling one of its lines, a pair of two such, a term it says). A change to a character
+# or a form of address retranslates every line of each episode that character is in - who speaks
+# to whom is read from context, not from a line's words, so no narrower rule would be honest. A
+# change to a term retranslates only the lines that say it. An entry an episode cannot use costs
+# that episode nothing. The model has not been run with a glossary here: whether it follows one,
+# and how often, is unmeasured.
+glossary = 'auto'
+
+# SDH speaker labels - 'JOHN:', and '[Mary]' for a name the glossary or another label knows - are
+# taken out of each line and shown to the model as a hint in front of it instead; without that they
+# were translated and read out by the lektor. A card whose first speaker's dash the rip dropped
+# gets a hint saying how many people speak in it. A file with neither is sent exactly as before.
+# Not a setting: wsl/lektorlib/speakers.py says what counts as a label and why it is that narrow.
 
 # Reference figure for `cost` until an episode has really been translated. 0 because nothing has
 # been: `cost` says "unmeasured" rather than printing a made-up number, and switches to what

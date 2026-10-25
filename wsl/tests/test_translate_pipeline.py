@@ -193,6 +193,22 @@ class TestPlan(Base):
         self.assertIn("translate  run  ep.srt was translated from subs/ep.src.ger.srt, and "
                       "extract now names subs/ep.src.eng.srt", self.plan())
 
+    def test_a_translation_made_before_a_glossary_change_is_planned_as_run(self):
+        self.translated(with_srt=True)
+        T.provenance_path(self.cfg, "ep").write_text(json.dumps({
+            "srt_sha256": T.file_sha256(self.work / "ep.srt"), "source_language": "eng",
+            "source_srt": "subs/ep.src.eng.srt"}), encoding="utf-8")
+        self.assertTrue(P.satisfied(self.cfg, "ep", "translate"))
+        # A glossary entry this episode never meets leaves it finished...
+        glossary = self.cfg.input_dir / "lektor.glossary.toml"
+        glossary.write_text("[terms]\n'Goodbye' = 'Do widzenia'\n", encoding="utf-8")
+        self.assertTrue(P.satisfied(self.cfg, "ep", "translate"))
+        # ...and one it does say makes it a paid step again, said as such.
+        glossary.write_text("[terms]\n'Hello' = 'Dzień dobry'\n", encoding="utf-8")
+        self.assertFalse(P.satisfied(self.cfg, "ep", "translate"))
+        self.assertIn("translate  run  ep.srt was translated from ep.src.eng.srt without the "
+                      "series glossary", self.plan())
+
 
 class TestRunStep(Base):
     def step(self, step, force=False):
