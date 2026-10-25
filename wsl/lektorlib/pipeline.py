@@ -335,12 +335,23 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
                    f"optional, and it costs six TTS calls.")
     # A film still waiting for its transcript has no reference YET, and an English one will be its
     # own: warning that alignment cannot run would describe a state transcribe is about to end.
-    pending_ref = "transcribe" in will_run and translate.origin(cfg, base) == "asr" \
+    # Before extract has run that is only a possibility - the film may yet turn out to have a
+    # subtitle in another language, or audio that is not English - so the warning stays, said as
+    # what it depends on.
+    heard_ref = "transcribe" in will_run \
         and transcribe.requested_language(cfg, translate.source_info(cfg, base))[0] in ("en", "")
-    if "speech" in will_run and not pending_ref and find_reference_srt(cfg, base) is None:
+    org = translate.origin(cfg, base)
+    if "speech" in will_run and not (heard_ref and org == "asr") \
+            and find_reference_srt(cfg, base) is None:
         video = video_for(cfg, base)
         pick = reference_stream(cfg, video) if video is not None else None
-        if pick is None:
+        if pick is None and heard_ref and org == "":
+            out.append("no English reference subtitle beside the episode and none in the file "
+                       "either: if extract sends the film to transcribe and Whisper hears "
+                       "English, that transcript is the reference; otherwise forced alignment "
+                       "cannot run, so this episode gets shot cuts only and the pause gate stays "
+                       "off.")
+        elif pick is None:
             out.append("no English reference subtitle beside the episode and none in the file "
                        "either: forced alignment cannot run, so this episode gets shot cuts only "
                        "and the pause gate stays off.")

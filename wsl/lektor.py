@@ -35,7 +35,8 @@ Stages, one at a time
              A film with no Polish text track gets its best foreign text track instead, to
              translate from (translate.mode; 'never' restores the old skip), and a film with no
              text subtitle at all is sent to transcribe.
-  transcribe Only for those last films: the audio's centre channel through faster-whisper, in
+  transcribe Only for those last films (for every film translate takes up, under
+             translate.source = 'asr'): the audio's centre channel through faster-whisper, in
              a venv or container of its own, filtered for hallucinations and cut into subtitle
              cards - the foreign text translate then reads. Local and free; needs the model.
   translate  For every film extract found no Polish track in: the foreign subtitle, or the

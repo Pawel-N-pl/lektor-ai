@@ -122,9 +122,12 @@ Then two things in plain Python, before anything is written:
 * **Cutting into cards.** Whisper's segments can run 30 s and three sentences, so its words are
   regrouped the way subtitles are laid out: at most two lines of 42 characters and ~6 s, a silence
   over a second always ends a card, and a card that does not fit is split at a sentence end
-  first, then at a pause between words, then after a comma – never inside a word. Cards stay up
-  300 ms past their last word and at least a second, as far as the next one allows, with the
-  80 ms gap this release keeps between cards.
+  first, then at a pause between words, then after a comma – never inside a word. The full-width
+  marks Chinese and Japanese are written with count as sentence ends and commas too. No split
+  leaves a card less than 400 ms before the next one (`min_cue_room_ms`, chosen here, unmeasured):
+  a short "Yes." with the next line 10 ms behind it would otherwise become a card 1 ms long. Cards
+  stay up 300 ms past their last word and at least a second, as far as the next one allows, with
+  the 80 ms gap this release keeps between cards.
 
 The result is `subs/<base>.asr.<lang>.srt` – in `subs/` for the same reason as a subtitle extract
 – and `<base>.asr.json`, which holds the raw segments and words, the filters' verdicts, the
@@ -133,7 +136,9 @@ reads the transcript exactly as it reads a subtitle track, with the same provena
 staleness check (a new transcript is translated again) and the same hand-edit guard. A hand
 correction to the transcript itself – a name Whisper misheard – is copied aside before
 `transcribe --force` replaces it. A transcript made for another language than the one now asked
-for is redone rather than skipped as "exists". Audio Whisper hears as Polish is refused: it needs
+for is redone rather than skipped as "exists", and until it is, nothing downstream reads the old
+one: `translate` says to run transcribe, even when the redo failed and left the old file on disk.
+Audio Whisper hears as Polish is refused: it needs
 no lektor, and translating it into itself would fail line by line.
 
 **Whisper's timings are a grid, not a placement.** Its word times were measured 316 ms early at
@@ -143,7 +148,8 @@ anyway, and the same machinery fixes both – an English transcript is `speech`'
 reference (before any configured pattern, and never swapped for an SDH stream, since only the
 transcript shares the Polish cards' grid and `retime` matches cards by start time), and `retime`
 moves each line onto its aligned first word. A transcript in another language has no reference,
-as with a translation from one. Snapping cards to the shot cuts is not done: `speech` measures the
+as with a translation from one, so its cards ship as early as Whisper placed them unless
+`onset_shift_ms` is set. Snapping cards to the shot cuts is not done: `speech` measures the
 cuts after this stage runs.
 
 ## The mux

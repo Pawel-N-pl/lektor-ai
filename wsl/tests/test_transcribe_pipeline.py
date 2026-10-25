@@ -259,6 +259,20 @@ class TestPlan(Base):
         self.heard(language="ger")
         with mock.patch.object(P, "reference_stream", return_value=None):
             self.assertIn("no English reference subtitle", self.plan())
+        # No tag and no source_language: Whisper detects the language, which may well be English.
+        self.heard(language="")
+        with mock.patch.object(P, "reference_stream", return_value=None):
+            self.assertNotIn("no English reference subtitle", self.plan())
+
+    def test_before_extract_a_missing_reference_is_said_to_depend_on_what_extract_finds(self):
+        """The film this phase is for: no subtitle stream at all, nothing extracted yet."""
+        (self.cfg.input_dir / "ep.mkv").write_bytes(b"not really an mkv")
+        with mock.patch.object(P, "reference_stream", return_value=None):
+            out = self.plan()
+        self.assertIn("transcribe run  -> ep.asr.json, only if extract finds no text subtitle", out)
+        self.assertIn("if extract sends the film to transcribe and Whisper hears English, that "
+                      "transcript is the reference; otherwise forced alignment cannot run", out)
+        self.assertNotIn("either: forced alignment cannot run", out)
 
     def test_a_missing_runtime_is_said_before_minute_two(self):
         self.heard()
@@ -281,6 +295,16 @@ class TestPlan(Base):
         with redirect_stdout(buf):
             self.assertEqual(P.stage_run(self.cfg, "ep", args), 2)
         self.assertIn("transcribe.runner", buf.getvalue())
+
+    def test_a_misspelled_source_is_a_usage_error_not_a_traceback_from_the_plan(self):
+        self.heard()
+        self.cfg.raw["translate"]["source"] = "whisper"
+        args = SimpleNamespace(from_step="extract", to_step="pack", skip="", redo="",
+                               force=False, redraw=False, dry_run=True, require_speech=False)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(P.stage_run(self.cfg, "ep", args), 2)
+        self.assertIn("translate.source: 'whisper'", buf.getvalue())
 
 
 class TestRunStep(Base):
@@ -342,6 +366,16 @@ class TestRunStep(Base):
                 self.step()
         self.assertIn("transcribe wrote no usable ep.asr.json", str(cm.exception))
 
+    def test_mode_never_is_a_skip_not_a_failure(self):
+        """A film an earlier config sent to transcription, now under 'never': the real stage
+        transcribes nothing, and that must not read as "wrote no usable ep.asr.json"."""
+        self.heard()
+        self.cfg.raw["translate"]["mode"] = "never"
+        with mock.patch.object(TR, "run_asr") as asr:
+            status, note = self.step()
+        asr.assert_not_called()
+        self.assertEqual((status, note), (P.SKIPPED, "translate.mode is 'never'"))
+
     def test_source_subs_on_a_film_sent_to_transcription_earlier_stops_the_chain(self):
         self.heard()
         self.cfg.raw["translate"]["source"] = "subs"
@@ -384,15 +418,15 @@ class TestFooterCostStatus(Base):
         self.assertNotIn("not transcribed yet", out)
         self.assertIn("1 cues / 6 chars", out)
 
-    def test_cost_does_not_say_a_stale_transcript_is_left_out_while_counting_it(self):
+    def test_cost_names_a_stale_transcript_apart_and_does_not_count_it(self):
         from lektorlib import pricing
         self.heard(transcribed=True)
         self.cfg.raw["translate"]["source_language"] = "ger"
         out = self.quiet(pricing.stage_cost, self.cfg, "creator")
         self.assertNotIn("not transcribed yet", out)
-        self.assertIn("1 will be transcribed again for a changed language; the source text below "
-                      "counts their current transcript", out)
-        self.assertIn("1 cues / 6 chars", out)
+        self.assertIn("1 will be transcribed again for a changed language, and the source text "
+                      "below leaves their old transcript out", out)
+        self.assertIn("0 cues / 0 chars", out)
 
     def test_status_follows_a_heard_film_from_asr_to_src_to_tr(self):
         from lektorlib import stages
@@ -402,6 +436,18 @@ class TestFooterCostStatus(Base):
         self.assertRegex(self.quiet(stages.stage_status, self.cfg), r"\nep\s+src ")
         self.heard(transcribed=True, translated=True)
         self.assertRegex(self.quiet(stages.stage_status, self.cfg), r"\nep\s+tr ")
+        # A transcript for a language no longer asked for is waiting for transcribe again.
+        (self.work / "ep.srt").unlink()
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        self.assertRegex(self.quiet(stages.stage_status, self.cfg), r"\nep\s+asr ")
+
+    def test_status_never_sends_a_subtitled_film_whose_source_is_gone_to_transcribe(self):
+        from lektorlib import stages
+        (self.work / "ep.source.json").write_text(json.dumps(
+            {"base": "ep", "subtitle_origin": "subs", "source_srt": "subs/ep.src.eng.srt",
+             "source_language": "eng"}), encoding="utf-8")
+        self.assertIsNone(T.source_srt(self.cfg, "ep"))
+        self.assertRegex(self.quiet(stages.stage_status, self.cfg), r"\nep\s+src ")
 
 
 if __name__ == "__main__":

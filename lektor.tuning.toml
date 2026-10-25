@@ -223,6 +223,12 @@ max_lines = 2
 max_cue_ms = 6000
 min_cue_ms = 1000
 min_gap_ms = 80
+# A cue is never split where either half would get less than this on screen before the next card
+# (its first word to the next one's, less min_gap_ms): without it a short sentence whose next word
+# follows at once - " Yes." and the next line 10 ms later - is cut off as a card 1 ms long, and
+# translate copies that timing to the Polish card. Chosen here, unmeasured; low enough that a
+# four-word sentence spoken at an even pace still gets its own card.
+min_cue_room_ms = 400
 # A silence this long always ends a cue; a shorter one past split_pause_ms is the preferred place
 # to split a cue that does not fit, after a sentence end and before a comma. Both chosen here,
 # unmeasured.
@@ -231,10 +237,12 @@ split_pause_ms = 250
 # How long a card stays up past its last word, where the next card leaves room. Unmeasured.
 linger_ms = 300
 # Whisper's word times were measured 316 ms EARLY at utterance starts (p50, see speech.py). That is
-# not corrected here by default: these cues are only the grid, `speech` aligns the transcript
+# not corrected here by default: an ENGLISH transcript's cues are only the grid, `speech` aligns it
 # against the audio afterwards and `retime` moves each line onto its aligned first word - the same
-# as for an authored subtitle, which leads speech on purpose. A value here shifts every cue start
-# later by that much; 0 leaves the placement to alignment.
+# as for an authored subtitle, which leads speech on purpose. A transcript in any other language is
+# not aligned (the acoustic model is English; a multilingual aligner is phase 3), so its cues ship
+# as early as Whisper placed them unless this is set. A value here shifts every cue start later by
+# that much; 0 leaves the placement to alignment where there is one.
 onset_shift_ms = 0
 
 [script]

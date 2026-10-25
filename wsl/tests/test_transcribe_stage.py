@@ -241,6 +241,35 @@ class TestSkipping(Base):
         self.assertEqual(sorted(p.name for p in (self.work / "subs").iterdir()),
                          ["ep.asr.ger.srt"])
 
+    def test_a_hand_corrected_transcript_in_the_old_language_is_kept_when_the_language_changes(
+            self):
+        self.sidecar(audio_language="eng")
+        self.run_stage()
+        old = self.work / "subs" / "ep.asr.eng.srt"
+        old.write_text(old.read_text(encoding="utf-8").replace("home", "Hulme"), encoding="utf-8")
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        self.run_stage(reply(language="de", texts=("Hallo.",)))
+        kept = list(old.parent.glob("ep.asr.eng.srt.bak-*"))
+        self.assertEqual(len(kept), 1)
+        self.assertIn("Hulme", kept[0].read_text(encoding="utf-8"))
+        self.assertFalse(old.exists())
+        self.assertTrue((self.work / "subs" / "ep.asr.ger.srt").is_file())
+
+    def test_a_failed_rerun_for_a_new_language_leaves_nothing_downstream_a_source(self):
+        """The old transcript stays on disk, but translate and speech must not read it as current:
+        the stage's own exit says nothing downstream will run on this film."""
+        self.sidecar(audio_language="eng")
+        self.run_stage()
+        self.cfg.raw["translate"]["source_language"] = "ger"
+        with self.assertRaises(SystemExit) as cm:
+            self.run_stage(reply(language="de", texts=("Thanks for watching!",)))
+        self.assertIn("nothing survived the filters", str(cm.exception))
+        self.assertTrue((self.work / "subs" / "ep.asr.eng.srt").is_file())
+        self.assertNotIn("source_srt", T.source_info(self.cfg, "ep"))
+        self.assertIsNone(T.source_srt(self.cfg, "ep"))
+        self.assertIsNone(SP.translation_reference(self.cfg, "ep"))
+        self.assertFalse(TR.is_done(self.cfg, "ep"))
+
     def test_polish_audio_is_not_sent_on_to_be_translated_into_itself(self):
         self.sidecar(audio_language="")
         with self.assertRaises(SystemExit) as cm:
@@ -314,7 +343,7 @@ class TestRuntime(Base):
     def test_faster_whisper_missing_mid_stage_stops_with_the_install_message(self):
         self.two_episodes()
         missing = TR.RuntimeMissing(TR.missing_runtime_message(
-            "faster-whisper is not installed in the container 'asr'"))
+            "faster-whisper cannot be imported in the container 'asr'"))
         with mock.patch.object(TR, "extract_centre", return_value="centre"), \
              mock.patch.object(TR, "runtime_problem", return_value=""), \
              mock.patch.object(TR, "run_asr", side_effect=missing) as asr:
@@ -387,7 +416,23 @@ class TestRunAsr(Base):
              mock.patch.object(TR, "run_script_docker", side_effect=fail):
             with self.assertRaises(TR.RuntimeMissing) as cm:
                 TR.run_asr(self.cfg, Path("a.wav"), Path(self.tmp.name), "")
-        self.assertIn("faster-whisper is not installed in the container 'asr'", str(cm.exception))
+        self.assertIn("faster-whisper cannot be imported in the container 'asr' "
+                      "(No module named x)", str(cm.exception))
+
+    def test_faster_whisper_missing_in_the_venv_is_the_runtime_message_with_its_import_error(self):
+        """A broken install exits 3 too; the import error is what tells it from a missing one."""
+        venv = Path(self.tmp.name) / "venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "bin" / "python").write_text("", encoding="utf-8")
+        self.cfg.raw["transcribe"]["venv"] = str(venv)
+        err = "faster-whisper is not importable here: numpy.core.multiarray failed to import\n"
+        fail = SP.ScriptFailed("transcription", TR.NO_RUNTIME_EXIT, err)
+        with mock.patch.object(TR, "run_script_local", side_effect=fail):
+            with self.assertRaises(TR.RuntimeMissing) as cm:
+                TR.run_asr(self.cfg, Path("a.wav"), Path(self.tmp.name), "")
+        msg = str(cm.exception)
+        self.assertIn(f"faster-whisper cannot be imported in the venv {venv}", msg)
+        self.assertIn("numpy.core.multiarray failed to import", msg)
 
     def test_any_other_script_failure_stays_an_episode_failure(self):
         fail = SP.ScriptFailed("transcription", 1, "CUDA out of memory")
@@ -482,7 +527,8 @@ class TestAlignmentReference(Base):
         srt = self.work / "subs" / f"ep.asr.{language}.srt"
         srt.write_text("1\n00:00:01,000 --> 00:00:02,000\nHi.\n", encoding="utf-8")
         (self.work / "ep.asr.json").write_text(json.dumps(
-            {"srt": f"subs/{srt.name}", "language": language}), encoding="utf-8")
+            {"srt": f"subs/{srt.name}", "language": language,
+             "language_requested": TR.whisper_code(language)}), encoding="utf-8")
         return srt
 
     def test_an_english_transcript_is_the_reference_even_before_a_configured_pattern(self):

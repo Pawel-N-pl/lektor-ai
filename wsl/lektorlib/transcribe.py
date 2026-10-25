@@ -21,15 +21,19 @@ What it does, in the order it matters:
   * Whisper's output is filtered in plain Python before anything is written: segments it marks
     as no speech, repetition loops, phrases Whisper is known to invent over silence, music, and
     segments its own VAD says sit outside speech. Nothing here has been measured on this
-    project's material - there is no GPU where it was written - so every threshold ships at the
-    value the library or the wider Whisper practice uses, and says so.
+    project's material - there is no GPU where it was written. The silence pair, the compression
+    ratio and the VAD numbers are Whisper's or faster-whisper's own; the loop, repeat, overlap,
+    blacklist-share, pause, linger and timeout values were chosen here and are untested.
+    lektor.tuning.toml says which is which.
   * Word timestamps are regrouped into subtitle-shaped cues: at most two lines of 42 characters,
     at most ~6 s, split at sentence ends first, then at pauses, then at commas, never inside a
     word. Whisper's word times were measured 316 ms early at utterance starts (speech.py), so
-    these cues are a GRID, not a placement: `speech` aligns the English transcript against the
+    these cues are a GRID, not a placement: `speech` aligns an English transcript against the
     audio afterwards, and `retime` moves a line onto the aligned first word exactly as it does
-    for an authored subtitle, which leads speech on purpose anyway. transcribe.onset_shift_ms can
-    shift every cue start later, and ships at 0.
+    for an authored subtitle, which leads speech on purpose anyway. A transcript in any other
+    language is not aligned - the acoustic model is English, and a multilingual aligner is left
+    to phase 3 - so it ships Whisper's early grid as it is. transcribe.onset_shift_ms can shift
+    every cue start later, and ships at 0.
 """
 
 from __future__ import annotations
@@ -55,8 +59,10 @@ __all__ = ["stage_transcribe", "asr_json_path", "transcript_info", "runtime_prob
 
 # Runs OUTSIDE this interpreter - in transcribe.venv, or in the container - fed on stdin to its
 # python, exactly like speech._FA_SCRIPT and for the same reason: it needs a model and a runtime
-# (ctranslate2, CUDA) the pipeline must not import. A missing faster-whisper exits 3 rather than
-# with a traceback, so the caller can tell "not installed" from "crashed" and say how to fix it.
+# (ctranslate2, CUDA) the pipeline must not import. A faster-whisper that will not import - missing,
+# or installed against a numpy, av or ctranslate2 it cannot load - exits 3 rather than with a
+# traceback, so the caller can tell "no runtime" from "crashed", say how to fix it, and pass on
+# the import error that says which of the two it was.
 #
 # condition_on_previous_text defaults to off in the config: the previous segment's text in the
 # prompt is what lets one hallucinated phrase repeat for minutes, which is the loop the filters
@@ -128,7 +134,7 @@ json.dump({"meta": {"model": opts["model"], "device": str(device),
 print(json.dumps({"ok": True, "n_segments": len(rows)}))
 '''
 
-# The exit code the script uses for "faster-whisper is not installed here".
+# The exit code the script uses for "faster-whisper will not import here".
 NO_RUNTIME_EXIT = 3
 
 
@@ -491,7 +497,11 @@ def layout(text: str, width: int = 42, max_lines: int = 2) -> str:
     return "\n".join(lines)
 
 
-_CLAUSE_END = re.compile(r"[,;:–—][\"'”»)\]]*\s*$")
+_CLAUSE_END = re.compile(r"[,;:–—、，；：][\"'”»)\]」』）]*\s*$")
+# srt.SENTENCE_END reads only [.!?], which is right for the Polish text the other stages check.
+# Whisper writes Chinese, Japanese and Cantonese with the full-width marks, and a transcript in
+# one of those must split at its sentence ends too.
+_WIDE_SENTENCE_END = re.compile(r"[。！？][\"'”»)\]」』）]*\s*$")
 
 
 def split_kind(prev: Word, nxt: Word, t: dict) -> int:
@@ -502,7 +512,8 @@ def split_kind(prev: Word, nxt: Word, t: dict) -> int:
     one; the pause second because it is where the actor breathed, which is also where a lektor
     can; the comma last because it marks grammar, not timing.
     """
-    if SENTENCE_END.search(prev.text) or prev.text.rstrip().endswith("…"):
+    if SENTENCE_END.search(prev.text) or _WIDE_SENTENCE_END.search(prev.text) \
+            or prev.text.rstrip().endswith("…"):
         return 0
     if nxt.start - prev.end >= int(t.get("split_pause_ms", 250)):
         return 1
@@ -520,31 +531,43 @@ def fits(words: list[Word], t: dict) -> bool:
                       int(t.get("max_lines", 2)))
 
 
-def best_split(words: list[Word], t: dict) -> int:
+def best_split(words: list[Word], t: dict, until: int | None = None) -> int:
     """Where to cut a run of words that does not fit one cue: the index the second half starts at.
 
     The best kind of seam wins (see split_kind). Among pauses the longest one; among the rest the
     one nearest the middle by characters, so the two halves come out even rather than one full
     card and a stub - recursing on both halves then finds the next seam inside each.
+
+    Before any of that, a seam must leave each half min_cue_room_ms on screen: a card ends
+    min_gap_ms before the next one starts, so a short sentence whose next word follows at once -
+    " Yes." and the next line 10 ms later - would otherwise be cut off as a card one millisecond
+    long, and `translate` copies that timing to the Polish card. `until` is where the word after
+    this run starts, which bounds the second half; None when nothing follows.
     """
     total = len(cue_text(words)) or 1
+    gap_ms = int(t.get("min_gap_ms", 80))
+    room_ms = int(t.get("min_cue_room_ms", 400))
     best_key, best_i = None, len(words) // 2
     for i in range(1, len(words)):
         prev, nxt = words[i - 1], words[i]
         kind = split_kind(prev, nxt, t)
         balance = abs(len(cue_text(words[:i])) - len(cue_text(words[i:]))) / total
         gap = nxt.start - prev.end
-        key = (kind, -gap if kind == 1 else 0, balance)
+        room = nxt.start - words[0].start
+        if until is not None:
+            room = min(room, until - nxt.start)
+        cramped = room - gap_ms < room_ms
+        key = (cramped, kind, -gap if kind == 1 else 0, balance)
         if best_key is None or key < best_key:
             best_key, best_i = key, i
     return best_i
 
 
-def _fit(words: list[Word], t: dict) -> list[list[Word]]:
+def _fit(words: list[Word], t: dict, until: int | None = None) -> list[list[Word]]:
     if len(words) <= 1 or fits(words, t):
         return [words]
-    i = best_split(words, t)
-    return _fit(words[:i], t) + _fit(words[i:], t)
+    i = best_split(words, t, until)
+    return _fit(words[:i], t, words[i].start) + _fit(words[i:], t, until)
 
 
 def segment_words(words: list[Word], t: dict) -> list[list[Word]]:
@@ -565,8 +588,8 @@ def segment_words(words: list[Word], t: dict) -> list[list[Word]]:
     if cur:
         groups.append(cur)
     out: list[list[Word]] = []
-    for g in groups:
-        out.extend(_fit(g, t))
+    for k, g in enumerate(groups):
+        out.extend(_fit(g, t, groups[k + 1][0].start if k + 1 < len(groups) else None))
     return out
 
 
@@ -704,9 +727,13 @@ def run_asr(cfg, wav: Path, tmp: Path, language: str) -> dict:
                                  "transcription")
     except ScriptFailed as exc:
         if exc.code == NO_RUNTIME_EXIT:
+            # Not "is not installed": a broken install exits the same way, and reinstalling over
+            # it is the wrong advice when the import error names a numpy or a missing library.
             what = f"the container {where!r}" if kind == "docker" else f"the venv {where}"
+            err = exc.stderr.strip()[-400:]
             raise RuntimeMissing(missing_runtime_message(
-                f"faster-whisper is not installed in {what}")) from exc
+                f"faster-whisper cannot be imported in {what}"
+                + (f" ({err})" if err else ""))) from exc
         raise
 
 
@@ -865,8 +892,9 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             say(f"  previous {old_srt.name} was edited by hand – copied aside as {keep.name}")
         _write_atomic(srt, format_srt(tr.cues, t))
         if old_srt is not None and old_srt != srt and old_srt.is_file():
-            # The transcript of an earlier language, untouched: nothing reads it any more, and the
-            # glob translate falls back on must not find it first.
+            # The transcript of an earlier language, untouched: nothing reads it any more -
+            # source_srt finds a transcript only through <base>.asr.json - and left beside the new
+            # one it would look as current as it.
             old_srt.unlink()
         payload = {
             "base": base,
@@ -888,8 +916,11 @@ def stage_transcribe(cfg, only: str | None, force: bool = False) -> dict[str, st
             "segments": sorted(tr.dropped + [dict(s, dropped=None) for s in tr.kept],
                                key=lambda s: (s.get("start", 0), s.get("id", 0))),
             "_note": ("Written by the transcribe stage. Cue timings come from Whisper's word "
-                      "times, which run early at utterance starts; speech aligns the English "
-                      "against the audio and retime moves lines onto the first aligned word."),
+                      "times, which run early at utterance starts; "
+                      + ("speech aligns this English transcript against the audio and retime "
+                         "moves lines onto the first aligned word." if got == "eng" else
+                         "only an English transcript is aligned, so these stay as Whisper "
+                         "placed them.")),
         }
         _write_atomic(asr_json_path(cfg, base), json.dumps(payload, ensure_ascii=False, indent=1))
         say(f"  -> {srt.parent.name}/{srt.name} ({len(tr.cues)} cues) + "

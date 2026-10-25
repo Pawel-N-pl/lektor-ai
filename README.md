@@ -63,10 +63,10 @@ Szczegóły, liczby i przypadki brzegowe: **[docs/](docs/)**.
 
 ## Instalacja
 
-Konfiguracja to **dwa pliki**. `lektor.toml` ma 84 linie i trzyma to, co zmieniasz przy każdym
+Konfiguracja to **dwa pliki**. `lektor.toml` ma 171 linii i trzyma to, co zmieniasz przy każdym
 serialu i po uchu: ścieżki, silnik, głos, poziom, model. W repo leży jako
 `lektor.toml.example`; skopiuj go pod właściwą nazwą, bo ta jest w `.gitignore` i twoje
-ścieżki nigdy nie wylądują w commicie. Dopóki kopii nie ma, pipeline czyta sam szablon. `lektor.tuning.toml` trzyma wszystkie 233
+ścieżki nigdy nie wylądują w commicie. Dopóki kopii nie ma, pipeline czyta sam szablon. `lektor.tuning.toml` trzyma wszystkie 302
 klucze wraz z pomiarem, który za każdym stoi. Pierwszy nadpisuje drugi, więc **skasowanie linijki
 cofa cię do zmierzonej wartości domyślnej, a nie do pustki**.
 
@@ -192,7 +192,7 @@ python3 wsl/lektor.py sample --backends piper,omnivoice --seconds 60
 | etap | robi |
 |---|---|
 | `extract` | wyciąga polskie napisy i zapisuje, z którego pliku pochodzą; gdy polskich nie ma – najlepsze obcojęzyczne tekstowe, do tłumaczenia, a gdy nie ma żadnych – kieruje film do `transcribe` |
-| `transcribe` | tylko dla filmu bez żadnych napisów: kanał centralny przez faster-whisper (lokalnie, za darmo), filtr halucynacji, podział na karty jak w napisach – `subs/<base>.asr.<lang>.srt` |
+| `transcribe` | tylko dla filmu bez żadnych napisów (a przy `translate.source = "asr"` – dla każdego, który `translate` bierze na siebie): kanał centralny przez faster-whisper (lokalnie, za darmo), filtr halucynacji, podział na karty jak w napisach – `subs/<base>.asr.<lang>.srt` |
 | `translate` | tylko dla filmów bez polskich napisów: obcojęzyczne napisy albo transkrypcję, cały odcinek jednym wywołaniem LLM na polski `<base>.srt`, wiernie i z czasami karta w kartę; ręcznych poprawek nie nadpisuje bez `--force` |
 | `speech` | forced alignment, ciszę między słowami, cięcia montażowe – lokalnie, za darmo |
 | `script` | napisy na skróconą listę dialogową; **otwórz i popraw przed wydaniem na TTS** |

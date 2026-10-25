@@ -87,7 +87,8 @@ class TestDropReason(unittest.TestCase):
 
     def test_the_blacklist_matches_whole_words_only(self):
         t = dict(T, blacklist=["the end"], blacklist_min_cover=0.1)
-        self.assertEqual(TR.drop_reason(seg("They lend money."), t), "")
+        # "breathe endlessly" holds "the end" as letters, not as words.
+        self.assertEqual(TR.drop_reason(seg("Breathe endlessly."), t), "")
         self.assertIn("blacklisted", TR.drop_reason(seg("This is the end."), t))
 
     def test_no_speech_needs_both_halves_of_whisper_own_rule(self):
@@ -196,6 +197,39 @@ class TestSegmentWords(unittest.TestCase):
         got = self.cues(ws, max_line_chars=30)
         self.assertTrue(got[0].endswith("seven"), got)
 
+    def test_among_pauses_the_longest_wins_not_the_most_balanced(self):
+        ws = [TR.Word(w[0], w[1], w[2]) for w in words(
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+            "fifteen sixteen", step=150, dur=120)]
+        # 600 ms after 'three', far from the middle; 300 ms after 'ten', nearer it.
+        for after, extra in (("three", 570), ("ten", 270)):
+            k = next(i for i, w in enumerate(ws) if w.text.strip() == after) + 1
+            for w in ws[k:]:
+                w.start += extra
+                w.end += extra
+        got = self.cues(ws, max_line_chars=30)
+        self.assertEqual(got[0], "one two three", got)
+
+    def test_full_width_sentence_and_clause_marks_rank_like_their_latin_ones(self):
+        self.assertEqual(TR.split_kind(TR.Word(0, 100, "好。"), TR.Word(110, 200, "我"), T), 0)
+        self.assertEqual(TR.split_kind(TR.Word(0, 100, "好！」"), TR.Word(110, 200, "我"), T), 0)
+        self.assertEqual(TR.split_kind(TR.Word(0, 100, "好，"), TR.Word(110, 200, "我"), T), 2)
+        self.assertEqual(TR.split_kind(TR.Word(0, 100, "好、"), TR.Word(110, 200, "我"), T), 2)
+        self.assertEqual(TR.split_kind(W("so…", 0, 100), W("then", 110, 200), T), 0)
+
+    def test_a_chinese_run_splits_at_its_sentence_ends(self):
+        text = "我们今天去了公园。然后我们回家了，吃了很多好吃的东西，非常开心。明天我们还要去学校上课。"
+        ws, at = [], 0
+        for ch in text:
+            if ch in "。，":
+                ws[-1].text += ch
+                continue
+            ws.append(TR.Word(at, at + 190, ch))
+            at += 200
+        got = self.cues(ws, max_line_chars=14, max_lines=1)
+        self.assertTrue(all(c.endswith(("。", "，")) for c in got[:-1]), got)
+        self.assertEqual(got[0], "我们今天去了公园。")
+
     def test_with_neither_the_comma_is_taken(self):
         ws = [TR.Word(w[0], w[1], w[2]) for w in words(
             "one two three four five, six seven eight nine ten eleven twelve thirteen fourteen",
@@ -208,6 +242,19 @@ class TestSegmentWords(unittest.TestCase):
               W("slow.", 3500, 7500)]
         got = self.cues(ws)
         self.assertEqual(got, ["So slow.", "Very slow."])
+
+    def test_a_short_sentence_with_the_next_word_right_behind_is_not_cut_off_as_a_flash(self):
+        """' Yes.' then the next line 10 ms later: a sentence end, but a card cut there would have
+        to end min_gap_ms before the next one starts - before it even began."""
+        rest = " ".join(f"w{i}" for i in range(30))
+        ws = [W("Yes.", 6950, 7000)] + [TR.Word(w[0], w[1], w[2])
+                                        for w in words(rest, start=7010, step=170, dur=150)]
+        groups = TR.segment_words(ws, T)
+        self.assertNotEqual(TR.cue_text(groups[0]), "Yes.")
+        cues = TR.time_cues(groups, T)
+        for c in cues:
+            self.assertGreaterEqual(c.end_ms - c.start_ms, T["min_cue_room_ms"], c.text)
+        self.assertEqual(cues[0].start_ms, 6950)
 
     def test_a_split_never_falls_inside_a_word(self):
         ws = [TR.Word(w[0], w[1], w[2]) for w in words("supercalifragilistic " * 6, step=200)]
@@ -268,6 +315,17 @@ class TestBuildTranscript(unittest.TestCase):
             back = parse_srt(p)
         self.assertEqual([(c.start_ms, c.end_ms, c.raw) for c in back],
                          [(c.start_ms, c.end_ms, c.text) for c in tr.cues])
+
+
+    def test_a_long_cue_is_written_as_two_lines_that_fit(self):
+        text = "I told you a hundred times that we would never go back there"
+        raw = {"segments": [seg(" " + text, 300, 4300, words(text, start=300))]}
+        tr = TR.build_transcript(raw, T)
+        self.assertEqual([c.text for c in tr.cues], [text])
+        with tempfile_srt(TR.format_srt(tr.cues, T)) as p:
+            (back,) = parse_srt(p)
+        self.assertEqual(back.raw.count("\n"), 1)
+        self.assertTrue(all(len(line) <= 42 for line in back.raw.split("\n")), back.raw)
 
 
 class tempfile_srt:

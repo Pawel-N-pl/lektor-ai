@@ -475,6 +475,11 @@ def source_info(cfg, base: str) -> dict:
     transcript (`<base>.asr.json`) once there is one: extract cannot know them, since Whisper
     decides the language, and every reader below - this stage, `speech`, the plan - then sees one
     shape whichever path the foreign text took.
+
+    A transcript made for another language than the one asked for now is left out: until
+    transcribe has written its replacement this film has no source, so `translate` says to run
+    transcribe rather than translating the old language, and `speech` does not align against it.
+    A re-run that fails leaves that old file on disk, and this is what keeps it unread.
     """
     p = cfg.work_dir / f"{base}.source.json"
     if not p.is_file():
@@ -487,7 +492,8 @@ def source_info(cfg, base: str) -> dict:
         return {}
     if data.get("subtitle_origin") == "asr":
         from . import transcribe        # transcribe imports this module
-        data.update(transcribe.transcript_info(cfg, base))
+        if not transcribe.stale_transcript(cfg, base, data):
+            data.update(transcribe.transcript_info(cfg, base))
     return data
 
 
@@ -511,14 +517,20 @@ def is_translated(cfg, base: str) -> bool:
 
 def source_srt(cfg, base: str, info: dict | None = None) -> Path | None:
     """The foreign subtitle this episode is translated from - extract's, or the transcript - if it
-    is still there."""
+    is still there.
+
+    A transcript is found only through `<base>.asr.json`, never by its name: one that file does not
+    name - a stale language's, or one whose record is gone - is not a finished transcript, and
+    transcribe will write the one this film is translated from.
+    """
     info = source_info(cfg, base) if info is None else info
     rel = info.get("source_srt")
     if rel:
         p = cfg.work_dir / str(rel)
         return p if p.is_file() else None
-    kind = "asr" if info.get("subtitle_origin") == "asr" else "src"
-    hits = sorted((cfg.work_dir / "subs").glob(f"{base}.{kind}.*.srt"))
+    if info.get("subtitle_origin") == "asr":
+        return None
+    hits = sorted((cfg.work_dir / "subs").glob(f"{base}.src.*.srt"))
     return hits[0] if hits else None
 
 

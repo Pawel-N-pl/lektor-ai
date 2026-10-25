@@ -754,11 +754,14 @@ def stage_status(cfg: Config) -> None:
         mark = lambda q: "yes" if q.exists() else "-"  # noqa: E731
         # SRT says where the Polish text came from: "yes" a Polish track, "tr" a translation,
         # "src" a foreign subtitle or a transcript still waiting for `translate`, and "asr" a film
-        # with no text subtitle at all, still waiting for `transcribe`.
+        # with no text subtitle at all, still waiting for `transcribe`. A subtitled film whose
+        # extracted source is gone stays "src": transcribe never runs on it, `extract --force`
+        # brings the source back, and `translate` says so.
         srt = "yes"
         if translate.is_translated(cfg, b):
             srt = "tr" if (cfg.work_dir / f"{b}.srt").exists() else \
-                "src" if translate.source_srt(cfg, b) is not None else "asr"
+                "asr" if translate.origin(cfg, b) == "asr" \
+                and translate.source_srt(cfg, b) is None else "src"
         # AUDIO is whatever the mix would actually be laid over, which in a surround layout is the
         # film itself and not the FLAC downmix the stereo path wants.
         say(f"{b[:52]:<52} {srt:>4} "

@@ -167,8 +167,9 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
   ten plik do `--redo translate` (albo `--force`).
 - Pierwszy przebieg na prawdziwym filmie i prawdziwym API: zmierzyć koszt odcinka i wpisać go do
   `measured_usd_per_episode`, sprawdzić granice długości, model i fallback.
-- README podaje liczbę linii `lektor.toml` i kluczy w `lektor.tuning.toml`, która była nieaktualna
-  już przed tą fazą; nie poprawiona.
+- ~~README podaje liczbę linii `lektor.toml` i kluczy w `lektor.tuning.toml`, która była
+  nieaktualna już przed tą fazą~~ – poprawione po fazie 2 (171 linii, 302 klucze), razem z
+  `docs/install.md`.
 
 ### Faza 2 – ASR (ścieżka 3): zrobiona
 
@@ -188,13 +189,18 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
   poza regionami mowy z VAD, czarna lista fraz. Każdy odrzucony segment zostaje w
   `<base>.asr.json` z powodem.
 - Cięcie na karty jak w napisach: ≤ 2 × 42 znaki, ≤ 6 s, najpierw na końcu zdania, potem na
-  pauzie, potem po przecinku, nigdy w środku słowa. Wynik `subs/<base>.asr.<lang>.srt`, który
-  `translate` czyta tak samo jak track z `extract`.
+  pauzie, potem po przecinku, nigdy w środku słowa; chińskie i japońskie znaki pełnej szerokości
+  (`。！？`, `、，；：`) liczą się tak samo. Żadne cięcie nie zostawia karcie mniej niż
+  `min_cue_room_ms` (400 ms, niezmierzone) do następnej – bez tego krótkie „Yes.” tuż przed
+  następnym słowem dostawało kartę 1 ms, a `translate` kopiuje czasy 1:1. Wynik
+  `subs/<base>.asr.<lang>.srt`, który `translate` czyta tak samo jak track z `extract`.
 - Język: `translate.source_language`, potem tag ścieżki audio, potem detekcja Whispera; który i
   skąd – zapisane. Każdy zapis języka znanego Whisperowi (setka kodów, 639-1 i 639-2 B/T, wycofane
   `iw`/`in`/`ji`) jest tłumaczony na jego kod; nieznany jest pomijany z komunikatem w planie i
   logu etapu, zamiast trafić do modelu, który odrzuciłby go dopiero po załadowaniu. Transkrypt
-  zrobiony dla innego języka niż teraz żądany jest robiony od nowa, a stary plik usuwany.
+  zrobiony dla innego języka niż teraz żądany jest robiony od nowa, a stary plik usuwany; do
+  tego czasu nikt go nie czyta – `translate` każe uruchomić `transcribe`, także gdy ponowna
+  transkrypcja się nie udała i stary plik został na dysku.
 - `run`, `cost`, `status`, stopka: transkrypcja jako darmowy krok lokalny; plan mówi, kiedy
   transkrypcja jest pewna, a kiedy zależy od tego, co znajdzie `extract`, i że po nowym
   transkrypcie `translate` przetłumaczy odcinek jeszcze raz. Napisy (`sidecar`, `mux`) obejmują
@@ -239,7 +245,7 @@ Sam skrypt ASR był uruchomiony tylko przeciw atrapie pakietu `faster_whisper`.
   niezmierzone).
 - Ręcznie poprawiony transkrypt jest odkładany na `.bak-*`, zanim `--force` go zastąpi.
 
-**Co sprawdzono.** Pełny zestaw testów: 570 passed, 3 skipped (po fazie 1: 441). Testy
+**Co sprawdzono.** Pełny zestaw testów: 582 passed, 3 skipped (po fazie 1: 441). Testy
 `test_transcribe*.py` idą offline: filtry i cięcie na karty na skonstruowanych segmentach, etap z
 podmienionym wycinaniem dźwięku i wywołaniem modelu, plan i `run` na prawdziwym `Config`, skrypt
 ASR przeciw atrapie `faster_whisper`. Żaden nie dotyka sieci ani GPU.
@@ -250,4 +256,7 @@ ASR przeciw atrapie `faster_whisper`. Żaden nie dotyka sieci ani GPU.
   na karty; dopiero potem strojenie progów.
 - Whisper nie daje mówców, więc karta z transkryptu nigdy nie ma myślnika zmiany mówcy.
 - Faza 3: słownik serii, rodzaj gramatyczny mówiącego, aligner wielojęzyczny (MMS_FA) – dziś
-  transkrypt w innym języku niż angielski nie jest referencją do alignmentu.
+  transkrypt w innym języku niż angielski nie jest referencją do alignmentu, więc jego karty
+  zostają tak wczesne, jak postawił je Whisper (`onset_shift_ms = 0`).
+- Linie karty z transkryptu łamią się tylko na spacjach: tekst chiński czy japoński bez spacji
+  mieści się w karcie tylko jako jedna linia (`layout`/`fits_lines`).
