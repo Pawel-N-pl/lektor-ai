@@ -1,7 +1,8 @@
 """The whole pipeline for one episode, in one command, with nobody watching.
 
-`lektor.py run --only S23E01` walks extract -> speech -> script -> retime -> voice -> mux and
-stops where the chain would otherwise ship something wrong. It adds no processing of its own:
+`lektor.py run --only S23E01` walks extract -> translate -> speech -> script -> retime -> voice
+-> pack (-> mux) and stops where the chain would otherwise ship something wrong. translate only
+does anything on a film extract found no Polish track in; on every other film it is a skip. It adds no processing of its own:
 every step is the same function the single-stage CLI calls, so `run` and six manual invocations
 produce byte-identical artefacts.
 
@@ -31,11 +32,12 @@ Three things make that safe to fire and forget:
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import media, say, stages
+from . import media, say, stages, translate
 from .config import Config, cps_path
 from .mix import encode_profile, is_surround
 from .script import read_spend
@@ -43,7 +45,7 @@ from .speech import find_reference_srt, find_video, reference_stream
 
 __all__ = ["STEPS", "stage_run", "select_steps", "resolve_episode", "satisfied"]
 
-STEPS = ("extract", "speech", "script", "retime", "voice", "pack", "mux")
+STEPS = ("extract", "translate", "speech", "script", "retime", "voice", "pack", "mux")
 # Where a chain stops when nobody says otherwise. `pack`, not `mux`: the deliverable is the lektor
 # track as a .mka beside the film, which a player loads by itself, while `mux` writes a second copy
 # of the video - 3.6 GB against 300 MB on a 45-minute episode - for a file the viewer already has.
@@ -129,6 +131,13 @@ def candidate_bases(cfg: Config) -> list[str]:
         if out_dir in video.resolve().parents:
             continue
         bases.add(video.stem)
+    # A translated episode has no <base>.srt until `translate` has run, and its film may not be
+    # under input_dir any more; its sidecar is then the only thing on disk that names it.
+    tail = ".source.json"
+    for p in cfg.work_dir.glob(f"*{tail}"):
+        base = p.name[: -len(tail)]
+        if translate.origin(cfg, base) == "subs":
+            bases.add(base)
     return sorted(bases)
 
 
@@ -161,11 +170,25 @@ def resolve_episode(cfg: Config, only: str | None) -> str:
     return base
 
 
+def extract_artefact(cfg: Config, base: str) -> Path:
+    """What extract wrote for this episode: <base>.srt, or the foreign subtitle to translate from.
+
+    Read off the sidecar, because only extract knows which of the two a film gets. Before extract
+    has run there is no sidecar, and the answer is the Polish file - which is also the right
+    answer for every work dir the Windows side filled, whose sidecars predate translation.
+    """
+    info = translate.source_info(cfg, base)
+    if (info.get("subtitle_origin") or "track") == "subs" and info.get("source_srt"):
+        return cfg.work_dir / str(info["source_srt"])
+    return cfg.work_dir / f"{base}.srt"
+
+
 def artefact(cfg: Config, base: str, step: str) -> Path | None:
     """The file whose existence lets a step skip. None for retime, which produces no new file."""
     work = cfg.work_dir
     return {
-        "extract": work / f"{base}.srt",
+        "extract": extract_artefact(cfg, base),
+        "translate": work / f"{base}.srt",
         "speech": work / f"{base}.speech.json",
         "script": work / f"{base}.lektor.json",
         "retime": None,
@@ -197,7 +220,12 @@ def satisfied(cfg: Config, base: str, step: str) -> bool:
     from <base>.orig.mka), and where there is no film in the tree it can never be written anyway.
     Demanding it in either case prints "run" against a step whose work is already done - and in
     the surround case actually re-cuts 300 MB that nothing will read.
+
+    `translate` is satisfied by <base>.srt, and also by having nothing to do: a film whose Polish
+    text came from its own track is finished with this step before it starts.
     """
+    if step == "translate" and translate.origin(cfg, base) == "track":
+        return True
     art = artefact(cfg, base, step)
     if art is None or not art.exists():
         return False
@@ -246,6 +274,9 @@ def warnings_for(cfg: Config, base: str, will_run: set[str]) -> list[str]:
     describes a render that is not going to happen.
     """
     out: list[str] = []
+    if "translate" in will_run and not os.environ.get("OPENROUTER_API_KEY"):
+        out.append("OPENROUTER_API_KEY is not set: translate cannot run, and a film with no Polish "
+                   "track has no Polish text without it – the chain will stop at that step.")
     # Gated on the ENGINE, not just on the missing file. Four of the five backends never predict a
     # duration - piper binary-searches length_scale, omnivoice is handed the length in seconds,
     # chatterbox measures after the fact and kikivoice meets the window locally - and all four
@@ -291,14 +322,40 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
         + (f" / {b['model_id']}" if b.get("model_id") else "")
         + f", {m.get('channel_layout') or 'stereo'} -> "
         + f"{base}.lektor.{encode_profile(cfg)['extension']}")
+    org = translate.origin(cfg, base)
+    mode = media.translate_mode(cfg)
+    if "translate" in steps and mode != "never" and org != "track":
+        t = media.translate_settings(cfg)
+        fb = str(t.get("fallback_model") or "")
+        say(f"  text     translated by {t.get('openrouter_model', '?')}"
+            + (f" (fallback {fb})" if fb else "")
+            + f", subtitles {t.get('subtitles', 'off') or 'off'}"
+            + ("" if org == "subs" else " – only if the film has no Polish text track"))
     say("")
     will_run: set[str] = set()
     for step in STEPS:
         if step not in steps:
-            say(f"  {step:<8} -    {excluded[step]}")
+            say(f"  {step:<9} -    {excluded[step]}")
             continue
         art = artefact(cfg, base, step)
         done = satisfied(cfg, base, step)
+        if step == "translate" and (mode == "never" or org != "subs"):
+            # Said rather than printed as "skip <base>.srt is already there", which on a film with
+            # a Polish track reads as if something had been translated.
+            if mode == "never":
+                state = "skip translate.mode is 'never'"
+            elif org == "track" or art.exists():
+                state = "skip the Polish text comes from the film's own track"
+            else:
+                state = f"run  -> {art.name}, only if extract finds no Polish text track"
+                will_run.add(step)
+            say(f"  {step:<9} {state}")
+            continue
+        if step == "translate" and done and step not in redo \
+                and translate.srt_state(cfg, base) == "edited":
+            say(f"  {step:<9} skip {art.name} was edited by hand – kept (--redo translate replaces "
+                f"it, after copying it aside)")
+            continue
         if step == "retime":
             state = "run  free: recomputes delay_ms, changes no text, bills nothing"
         elif done and step not in redo:
@@ -314,7 +371,7 @@ def print_plan(cfg: Config, base: str, steps: list[str], redo: set[str],
             state = f"run  -> {art.name}" if art is not None else "run"
         if step == "retime" or step in redo or not done:
             will_run.add(step)
-        say(f"  {step:<8} {state}")
+        say(f"  {step:<9} {state}")
     for note in warnings_for(cfg, base, will_run):
         say(f"\n  !! {note}")
     say(RULE)
@@ -351,10 +408,19 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
         flac = cfg.work_dir / f"{base}.orig.flac"
         existed = satisfied(cfg, base, step)
         media.stage_extract(cfg, base, force)
+        # Asked again afterwards: extract is what decides whether this film gets its Polish
+        # track or a foreign one to translate, and a skip only means something when the answer
+        # did not change under it.
+        art, before = artefact(cfg, base, step), art
+        existed = existed and art == before
         if not art.exists():
-            raise HardFail(f"no {art.name}: nothing here has a "
-                           f"'{cfg['extract']['subtitle_language']}' subtitle stream to extract, "
-                           f"and every later step needs one")
+            lang = cfg["extract"]["subtitle_language"]
+            if media.translate_mode(cfg) == "never":
+                raise HardFail(f"no {art.name}: nothing here has a '{lang}' subtitle stream to "
+                               f"extract, and every later step needs one")
+            raise HardFail(f"no {art.name}: nothing here has a '{lang}' text subtitle stream, nor "
+                           f"one in another language to translate from (the extract log above "
+                           f"says which), and every later step needs one")
         if existed and not force:
             if flac.exists():
                 return SKIPPED, f"{art.name} + {flac.name} were already there"
@@ -375,6 +441,37 @@ def _run_step(cfg: Config, base: str, step: str, force: bool, redraw: bool,
                    if is_surround(cfg) else "no video here to downmix from")
             have += f" (no {flac.name}: {why})"
         return OK, have
+
+    if step == "translate":
+        org = translate.origin(cfg, base)
+        if org != "subs":
+            return SKIPPED, ("the Polish text comes from the film's own track – nothing to "
+                             "translate" if org == "track" else
+                             f"no {base}.source.json; {art.name} is taken as the Polish text")
+        before = read_spend(cfg, base, "translate")
+        try:
+            what = translate.stage_translate(cfg, base, force).get(base, "")
+        except SystemExit as exc:
+            # Same contract as script: no Polish file means nothing downstream may run, and the
+            # footer still prints before the exit code.
+            raise HardFail(str(exc).strip()) from exc
+        finally:
+            state["translate_usd"] = max(0.0, read_spend(cfg, base, "translate") - before)
+        if what == "never":
+            return SKIPPED, "translate.mode is 'never'"
+        if not art.exists():
+            raise HardFail(f"translate wrote no {art.name}; its own log above says why")
+        if what == "edited":
+            return SKIPPED, (f"{art.name} was edited by hand after it was translated – kept "
+                             f"(--redo translate replaces it, after copying it aside)")
+        if what == "foreign":
+            return SKIPPED, (f"{art.name} was already there and translate did not write it – "
+                             f"kept (--redo translate replaces it, after copying it aside)")
+        if what == "kept":
+            return SKIPPED, f"{art.name} was already there"
+        info = translate.source_info(cfg, base)
+        return OK, (f"{art.name} from '{info.get('source_language', '?')}', "
+                    f"${state['translate_usd']:.4f}")
 
     if step == "speech":
         try:
@@ -476,12 +573,16 @@ def print_summary(cfg: Config, base: str, results: list[StepResult], steps: list
         r = next((x for x in results if x.step == step), None)
         if r is None:
             why = "not reached – the chain stopped earlier" if step in steps else "not selected"
-            say(f"  {step:<8} {'-':<8} {'':>8}  {why}")
+            say(f"  {step:<9} {'-':<8} {'':>8}  {why}")
             continue
-        say(f"  {step:<8} {r.status:<8} {r.seconds:>7.1f}s  {r.note}")
+        say(f"  {step:<9} {r.status:<8} {r.seconds:>7.1f}s  {r.note}")
 
     say("")
     ext = encode_profile(cfg)["extension"]
+    translated = translate.origin(cfg, base) == "subs"
+    if translated:
+        say(f"  source     {extract_artefact(cfg, base)}   (the foreign text the Polish was "
+            f"translated from)")
     for label, path in (("subtitles", cfg.work_dir / f"{base}.srt"),
                         ("speech   ", cfg.work_dir / f"{base}.speech.json"),
                         ("script   ", cfg.work_dir / f"{base}.lektor.json"),
@@ -510,6 +611,11 @@ def print_summary(cfg: Config, base: str, results: list[StepResult], steps: list
     say("")
     say(f"  cost  condensation ${run_usd:.4f} this run, ${total_usd:.4f} for this episode so far "
         f"({base}.spend.json)")
+    if translated or "translate_usd" in state:
+        # The so-far figure above already includes it: one spend record per episode, two stages
+        # appending to it.
+        say(f"        translation  ${state.get('translate_usd', 0.0):.4f} this run, "
+            f"${read_spend(cfg, base, 'translate'):.4f} of that total")
     if cfg.backend_name in ("piper", "chatterbox", "omnivoice"):
         say(f"        speech $0.00 – {cfg.backend_name} runs locally")
     elif cfg.backend_name == "kikivoice":
@@ -609,7 +715,8 @@ def stage_run(cfg: Config, only: str | None, args) -> int:
                 "surgical version. Neither deletes anything already paid for: <base>.condensed"
                 ".json and the TTS cache are consulted as usual, and only --redraw throws the "
                 "condensation away. What does cost money is redoing speech, whose new merge gate "
-                "changes the cue texts and therefore misses the TTS cache line by line.")
+                "changes the cue texts and therefore misses the TTS cache line by line. A "
+                "hand-edited translation is replaced too, after being copied aside.")
             redo |= set(steps)
         if args.redraw:
             # --redraw already implies --force inside stage_script, so it has to pull script into
