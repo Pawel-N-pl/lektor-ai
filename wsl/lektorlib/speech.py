@@ -466,7 +466,56 @@ def find_reference_srt(cfg, base: str) -> Path | None:
         p = cfg.work_dir / pat.format(tag=tag, base=base)
         if p.is_file():
             return p
-    return None
+    return translation_reference(cfg, base)
+
+
+def translation_reference(cfg, base: str) -> Path | None:
+    """The English subtitle extract pulled for a translation, when that is what it pulled.
+
+    The last candidate, after every configured pattern: a film translated from English already has
+    the verbatim English text on disk, on the very grid the Polish cues inherit, and asking the
+    film for it a second time would only re-read the same stream. Any other source language is not
+    a candidate - the acoustic model is English.
+    """
+    # Lazy, as everywhere in this module: translate imports script, which imports this module.
+    from . import translate
+    from .media import language_key
+
+    info = translate.source_info(cfg, base)
+    if (info.get("subtitle_origin") or "track") != "subs":
+        return None
+    if language_key(str(info.get("source_language") or "")) != "eng":
+        return None
+    return translate.source_srt(cfg, base, info)
+
+
+def choose_reference(cfg, base: str, video: Path | None) -> Path | None:
+    """The English text to align against, extracting one from the film when nothing is on disk.
+
+    One exception to "whatever is on disk wins": the translation source was chosen for the
+    OPPOSITE reason. Translation prefers the plain dialogue track; alignment prefers SDH, which
+    keeps the stutters and the reaction sounds and so matches what was actually uttered. When the
+    film carries an SDH stream that is not the one translated from, that is extracted and used
+    instead, and from then on the configured pattern finds it first. Without one, the
+    translation source is the reference - the same text, already extracted.
+    """
+    ref = find_reference_srt(cfg, base)
+    if video is None:
+        return ref
+    if ref is None:
+        return extract_reference_srt(cfg, base, video)
+    if ref != translation_reference(cfg, base):
+        return ref
+    from . import translate
+
+    info = translate.source_info(cfg, base)
+    if info.get("source_sdh"):
+        return ref
+    pick = reference_stream(cfg, video)
+    if pick is None or pick.index == info.get("subtitle_stream") or not (
+            pick.disposition.get("hearing_impaired") == 1 or _SDH_RE.search(pick.title)):
+        return ref
+    return extract_reference_srt(cfg, base, video, pick) or ref
 
 
 # "English [SDH]", "English CC", "English (Hearing Impaired)" - the near-verbatim transcript, under
@@ -506,7 +555,7 @@ def reference_stream(cfg, video: Path):
     return cands[0]
 
 
-def extract_reference_srt(cfg, base: str, video: Path) -> Path | None:
+def extract_reference_srt(cfg, base: str, video: Path, pick=None) -> Path | None:
     """Pull the English reference out of the mkv, when no one has put one beside the subtitles.
 
     Nothing in this pipeline used to create these files. The season's Polish subtitles extracted
@@ -517,8 +566,10 @@ def extract_reference_srt(cfg, base: str, video: Path) -> Path | None:
     SDH is preferred over the plain English track for the reason `find_reference_srt` gives: it
     keeps the stutters and the reaction sounds, so it matches what was actually uttered. A forced
     track is never a candidate - it carries signage, not dialogue.
+
+    `pick` skips the probe when the caller has already chosen the stream.
     """
-    pick = reference_stream(cfg, video)
+    pick = pick if pick is not None else reference_stream(cfg, video)
     if pick is None:
         return None
     out = reference_srt_path(cfg, base)
@@ -874,9 +925,7 @@ def stage_speech(cfg, only: str | None, force: bool) -> None:
 
         say(f"\n{base}")
         video = find_video(cfg, base)
-        ref = find_reference_srt(cfg, base)
-        if ref is None and video is not None:
-            ref = extract_reference_srt(cfg, base, video)
+        ref = choose_reference(cfg, base, video)
         if video is None:
             say(f"  !! no video beside the subtitles in {cfg.input_dir} – nothing to measure")
             continue
