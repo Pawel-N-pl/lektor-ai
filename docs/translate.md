@@ -431,6 +431,16 @@ komendę `glossary` w CLI.
 alignera na atrapie torcha i torchaudio, plan na prawdziwym `Config`. Żaden nie
 dotyka sieci ani GPU.
 
+**Świadomie bez zmian.**
+
+- Przy wyłączonym `speech.multilingual_aligner` angielska referencja dalej jest wyrównywana do
+  ścieżki audio w innym języku, jak przed fazą 3.
+- Tekst do alignmentu angielskiego zachowuje podpisy SDH: `speech` nie korzysta ze `speakers.py`.
+- W pożyczonym kontenerze `asr` nic nie jest instalowane, więc referencja w piśmie niełacińskim
+  zostaje tam przy samych cięciach.
+- Adresat nie jest wnioskowany z kart dookoła: forma zwracania się trafia do promptu tylko ze
+  słownika, a kto mówi do kogo, model ustala z kontekstu.
+
 **Otwarte.**
 
 - Pierwszy przebieg ze słownikiem i podpisami na prawdziwym odcinku: czy rodzaj i formy się
@@ -439,3 +449,5 @@ dotyka sieci ani GPU.
   ma dla niego sens.
 - Karta z podpisem tylko przy jednej połowie mogłaby nazwać tę połowę (`?` dla drugiej) – wymaga
   zmiany `HINT_RULES`, a więc kluczy każdego odcinka ze wskazówkami.
+- Szkic słownika powstaje z jednego odcinka i nie łączy się z istniejącym
+  `lektor.glossary.toml`: co z niego wziąć, człowiek przenosi ręcznie.
