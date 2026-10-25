@@ -178,8 +178,9 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
 - `extract`: film bez polskiego tracku tekstowego i bez obcego (albo z `source = "asr"`) nie
   odpada, tylko dostaje downmix i sidecar z `subtitle_origin = "asr"` i tagiem języka audio.
   Niczego tu nie transkrybuje.
-- `transcribe` (`lektorlib/transcribe.py`), krok między `extract` a `translate`: kanał centralny
-  przez `speech.centre_filter` (downmix, gdy centrum brak albo jest ciche), bez Demucsa;
+- `transcribe` (`lektorlib/transcribe.py`), krok między `extract` a `translate`, także osobna
+  komenda (`lektor.py transcribe [--only] [--force]`): kanał centralny przez
+  `speech.extract_centre` (downmix, gdy centrum brak albo jest ciche), bez Demucsa;
   faster-whisper poza interpreterem pipeline'u – skrypt na stdin do pythona z `transcribe.venv`
   albo kontenera, tą samą drogą co forced alignment (`speech.run_script_local/docker`), JSON z
   powrotem. Brak faster-whisper w tamtym interpreterze to osobny kod wyjścia i jeden komunikat,
@@ -205,7 +206,18 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
   transkrypcja jest pewna, a kiedy zależy od tego, co znajdzie `extract`, i że po nowym
   transkrypcie `translate` przetłumaczy odcinek jeszcze raz. Napisy (`sidecar`, `mux`) obejmują
   też film przetłumaczony z transkryptu. Extract i mux z PowerShella omijają film z
-  `subtitle_origin = "asr"` jak przetłumaczony.
+  `subtitle_origin = "asr"` jak przetłumaczony (nieuruchomione: w środowisku nie ma PowerShella).
+- Konfiguracja: nowa tabela `[transcribe]` w `lektor.tuning.toml` – gdzie (`runner`, `venv`,
+  `container`; pusty `container` to `speech.asr_container`), model i dekodowanie (`model =
+  "large-v3"`, `device`, `compute_type`, `beam_size`, `vad*`, `condition_on_previous_text`,
+  `timeout_s`), progi filtrów (`max_no_speech_prob`, `min_avg_logprob`, `max_compression_ratio`,
+  `loop_*`, `max_identical_run`, `min_speech_overlap`, `blacklist`, `blacklist_min_cover`) i
+  kształt kart (`max_line_chars`, `max_lines`, `max_cue_ms`, `min_cue_ms`, `min_gap_ms`,
+  `min_cue_room_ms`, `max_pause_in_cue_ms`, `split_pause_ms`, `linger_ms`, `onset_shift_ms`);
+  w `lektor.toml.example` tylko `runner`, `venv`, `model`, `device`. Instrukcja instalacji
+  runtime'u w `docs/install.md`.
+- Artefakty: `subs/<base>.asr.<lang>.srt` (karty) i `<base>.asr.json` (ścieżka, język i jego
+  pochodzenie, ustawienia, segmenty przyjęte i odrzucone z powodem).
 
 **Odstępstwa od planu.**
 
@@ -220,6 +232,11 @@ kawałki (żaden znany odcinek nie zbliża się do `max_prompt_chars`).
   kontrolę „wróciło nieprzetłumaczone” linia po linii.
 - Pod `mode = "always"` film z polskim trackiem jest transkrybowany tylko przy `source = "asr"`;
   `auto` zostawia mu jego track.
+- Film, którego jedyny polski track to bitmapa (PGS/VobSub) i który nie ma nic innego, jest w
+  `auto` transkrybowany, zamiast odpaść z „OCR it first”; `source = "subs"` zostawia stare
+  pominięcie.
+- Kolumna kroku w planie jest o znak szersza („transcribe” ma 10 liter) – to zmieniło oczekiwane
+  napisy w 8 starych testach planu.
 - `source = "subs"` wyłącza transkrypcję także dla filmu, który wcześniejsza konfiguracja wysłała
   już do `transcribe`: etap go pomija, a `run` zatrzymuje się na nim z powodem.
 
@@ -230,7 +247,8 @@ na prawdziwym audio, jak często detekcja języka myli się na filmie bez tagu, 
 transkryptu i lektora czytającego z niego. Wartości `[transcribe]` są domyślnymi biblioteki albo
 powszechną praktyką Whispera tam, gdzie komentarz to mówi; pozostałe (pętle, powtórzenia, udziały
 mowy i czarnej listy, pauzy, `linger_ms`, `timeout_s`) to nieprzetestowane wybory tego projektu.
-Sam skrypt ASR był uruchomiony tylko przeciw atrapie pakietu `faster_whisper`.
+Sam skrypt ASR był uruchomiony tylko przeciw atrapie pakietu `faster_whisper`. Kroki instalacji
+CUDA w `docs/install.md` są wzięte z dokumentacji faster-whisper, nie wykonane tutaj.
 
 **Kluczowe decyzje.**
 
@@ -254,6 +272,8 @@ ASR przeciw atrapie `faster_whisper`. Żaden nie dotyka sieci ani GPU.
 
 - Pierwszy przebieg na prawdziwym filmie: czas, VRAM, odsetek zrzuconych segmentów, jakość cięcia
   na karty; dopiero potem strojenie progów.
+- Dosuwanie kart do cięć ujęć: `speech` mierzy cięcia dopiero po tym etapie.
+- Ponowne cięcie na karty z istniejącego `<base>.asr.json` bez uruchamiania Whispera od nowa.
 - Whisper nie daje mówców, więc karta z transkryptu nigdy nie ma myślnika zmiany mówcy.
 - Faza 3: słownik serii, rodzaj gramatyczny mówiącego, aligner wielojęzyczny (MMS_FA) – dziś
   transkrypt w innym języku niż angielski nie jest referencją do alignmentu, więc jego karty
